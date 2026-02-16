@@ -56,12 +56,15 @@ class ChapterHtmlSlimParser {
     bool hasBold = false, bold = false;
     bool hasItalic = false, italic = false;
     bool hasUnderline = false, underline = false;
+    bool hasColor = false;
+    uint8_t color = 0;
   };
   std::vector<StyleStackEntry> inlineStyleStack;
   CssStyle currentCssStyle;
   bool effectiveBold = false;
   bool effectiveItalic = false;
   bool effectiveUnderline = false;
+  uint8_t effectiveColor = 0;
 
   void updateEffectiveInlineStyle();
   void startNewTextBlock(const BlockStyle& blockStyle);

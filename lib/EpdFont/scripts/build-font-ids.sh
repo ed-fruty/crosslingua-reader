@@ -116,6 +116,42 @@ ruby -rdigest -e 'puts [
 ].map{|f| Digest::SHA256.hexdigest(File.read(f)).to_i(16) }.sum % (2 ** 32) - (2 ** 31)'
 ))"
 
+echo "#define EDSLAB_12_FONT_ID ($(
+ruby -rdigest -e 'puts [
+  "./edslab_12_regular.h",
+  "./edslab_12_bold.h",
+  "./edslab_12_bolditalic.h",
+  "./edslab_12_italic.h",
+].map{|f| Digest::SHA256.hexdigest(File.read(f)).to_i(16) }.sum % (2 ** 32) - (2 ** 31)'
+))"
+
+echo "#define EDSLAB_14_FONT_ID ($(
+ruby -rdigest -e 'puts [
+  "./edslab_14_regular.h",
+  "./edslab_14_bold.h",
+  "./edslab_14_bolditalic.h",
+  "./edslab_14_italic.h",
+].map{|f| Digest::SHA256.hexdigest(File.read(f)).to_i(16) }.sum % (2 ** 32) - (2 ** 31)'
+))"
+
+echo "#define EDSLAB_16_FONT_ID ($(
+ruby -rdigest -e 'puts [
+  "./edslab_16_regular.h",
+  "./edslab_16_bold.h",
+  "./edslab_16_bolditalic.h",
+  "./edslab_16_italic.h",
+].map{|f| Digest::SHA256.hexdigest(File.read(f)).to_i(16) }.sum % (2 ** 32) - (2 ** 31)'
+))"
+
+echo "#define EDSLAB_18_FONT_ID ($(
+ruby -rdigest -e 'puts [
+  "./edslab_18_regular.h",
+  "./edslab_18_bold.h",
+  "./edslab_18_bolditalic.h",
+  "./edslab_18_italic.h",
+].map{|f| Digest::SHA256.hexdigest(File.read(f)).to_i(16) }.sum % (2 ** 32) - (2 ** 31)'
+))"
+
 echo "#define UI_10_FONT_ID ($(
 ruby -rdigest -e 'puts [
   "./ubuntu_10_regular.h",

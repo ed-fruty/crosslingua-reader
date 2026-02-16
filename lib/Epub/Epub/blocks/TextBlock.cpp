@@ -17,8 +17,11 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
   auto wordXposIt = wordXpos.begin();
   for (size_t i = 0; i < words.size(); i++) {
     const int wordX = *wordXposIt + x;
-    const EpdFontFamily::Style currentStyle = *wordStylesIt;
-    renderer.drawText(fontId, wordX, y, wordIt->c_str(), true, currentStyle);
+    const uint8_t packedStyle = *wordStylesIt;
+    // Unpack gray level from bits 5-6, font style from bits 0-4
+    const uint8_t grayLevel = (packedStyle >> 5) & 0x3;
+    const auto currentStyle = static_cast<EpdFontFamily::Style>(packedStyle & 0x1F);
+    renderer.drawText(fontId, wordX, y, wordIt->c_str(), true, currentStyle, grayLevel);
 
     if ((currentStyle & EpdFontFamily::UNDERLINE) != 0) {
       const std::string& w = *wordIt;

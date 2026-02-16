@@ -134,6 +134,7 @@ uint8_t CrossPointSettings::writeSettings(FsFile& file, bool count_only) const {
   writer.writeItem(file, frontButtonRight);
   writer.writeItem(file, fadingFix);
   writer.writeItem(file, embeddedStyle);
+  writer.writeItem(file, colorTextStyle);
   // New fields need to be added at end for backward compatibility
 
   return writer.item_count;
@@ -203,7 +204,7 @@ bool CrossPointSettings::loadFromFile() {
     if (++settingsRead >= fileSettingsCount) break;
     readAndValidate(inputFile, fontSize, FONT_SIZE_COUNT);
     if (++settingsRead >= fileSettingsCount) break;
-    readAndValidate(inputFile, lineSpacing, LINE_COMPRESSION_COUNT);
+    serialization::readPod(inputFile, lineSpacing);  // uint8_t, accepts both legacy enum (0-2) and new numeric (5-30)
     if (++settingsRead >= fileSettingsCount) break;
     readAndValidate(inputFile, paragraphAlignment, PARAGRAPH_ALIGNMENT_COUNT);
     if (++settingsRead >= fileSettingsCount) break;
@@ -261,6 +262,8 @@ bool CrossPointSettings::loadFromFile() {
     if (++settingsRead >= fileSettingsCount) break;
     serialization::readPod(inputFile, embeddedStyle);
     if (++settingsRead >= fileSettingsCount) break;
+    readAndValidate(inputFile, colorTextStyle, COLOR_TEXT_STYLE_COUNT);
+    if (++settingsRead >= fileSettingsCount) break;
     // New fields added at end for backward compatibility
   } while (false);
 
@@ -276,39 +279,13 @@ bool CrossPointSettings::loadFromFile() {
 }
 
 float CrossPointSettings::getReaderLineCompression() const {
-  switch (fontFamily) {
-    case BOOKERLY:
-    default:
-      switch (lineSpacing) {
-        case TIGHT:
-          return 0.95f;
-        case NORMAL:
-        default:
-          return 1.0f;
-        case WIDE:
-          return 1.1f;
-      }
-    case NOTOSANS:
-      switch (lineSpacing) {
-        case TIGHT:
-          return 0.90f;
-        case NORMAL:
-        default:
-          return 0.95f;
-        case WIDE:
-          return 1.0f;
-      }
-    case OPENDYSLEXIC:
-      switch (lineSpacing) {
-        case TIGHT:
-          return 0.90f;
-        case NORMAL:
-        default:
-          return 0.95f;
-        case WIDE:
-          return 1.0f;
-      }
+  // Backward compat: old enum values 0 (TIGHT), 1 (NORMAL), 2 (WIDE) map to legacy defaults
+  if (lineSpacing <= 2) {
+    const float legacy[] = {0.9f, 1.0f, 1.1f};
+    return legacy[lineSpacing];
   }
+  // New numeric format: value / 10.0 (e.g., 10 = 1.0x, 15 = 1.5x, 20 = 2.0x)
+  return static_cast<float>(lineSpacing) / 10.0f;
 }
 
 unsigned long CrossPointSettings::getSleepTimeoutMs() const {
@@ -358,29 +335,17 @@ int CrossPointSettings::getReaderFontId() const {
         case EXTRA_LARGE:
           return BOOKERLY_18_FONT_ID;
       }
-    case NOTOSANS:
+    case EDSLAB:
       switch (fontSize) {
         case SMALL:
-          return NOTOSANS_12_FONT_ID;
+          return EDSLAB_12_FONT_ID;
         case MEDIUM:
         default:
-          return NOTOSANS_14_FONT_ID;
+          return EDSLAB_14_FONT_ID;
         case LARGE:
-          return NOTOSANS_16_FONT_ID;
+          return EDSLAB_16_FONT_ID;
         case EXTRA_LARGE:
-          return NOTOSANS_18_FONT_ID;
-      }
-    case OPENDYSLEXIC:
-      switch (fontSize) {
-        case SMALL:
-          return OPENDYSLEXIC_8_FONT_ID;
-        case MEDIUM:
-        default:
-          return OPENDYSLEXIC_10_FONT_ID;
-        case LARGE:
-          return OPENDYSLEXIC_12_FONT_ID;
-        case EXTRA_LARGE:
-          return OPENDYSLEXIC_14_FONT_ID;
+          return EDSLAB_18_FONT_ID;
       }
   }
 }

@@ -14,12 +14,13 @@ class TextBlock final : public Block {
  private:
   std::list<std::string> words;
   std::list<uint16_t> wordXpos;
-  std::list<EpdFontFamily::Style> wordStyles;
+  std::list<EpdFontFamily::Style> wordStyles;  // bits 0-4: font style, bits 5-6: gray level (0-3)
   BlockStyle blockStyle;
 
  public:
   explicit TextBlock(std::list<std::string> words, std::list<uint16_t> word_xpos,
-                     std::list<EpdFontFamily::Style> word_styles, const BlockStyle& blockStyle = BlockStyle())
+                     std::list<EpdFontFamily::Style> word_styles,
+                     const BlockStyle& blockStyle = BlockStyle())
       : words(std::move(words)),
         wordXpos(std::move(word_xpos)),
         wordStyles(std::move(word_styles)),

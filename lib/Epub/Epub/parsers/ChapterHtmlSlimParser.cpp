@@ -59,6 +59,7 @@ void ChapterHtmlSlimParser::updateEffectiveInlineStyle() {
   effectiveItalic = currentCssStyle.hasFontStyle() && currentCssStyle.fontStyle == CssFontStyle::Italic;
   effectiveUnderline =
       currentCssStyle.hasTextDecoration() && currentCssStyle.textDecoration == CssTextDecoration::Underline;
+  effectiveColor = currentCssStyle.hasColor() ? currentCssStyle.textGrayLevel : 0;
 
   // Apply inline style stack in order
   for (const auto& entry : inlineStyleStack) {
@@ -70,6 +71,9 @@ void ChapterHtmlSlimParser::updateEffectiveInlineStyle() {
     }
     if (entry.hasUnderline) {
       effectiveUnderline = entry.underline;
+    }
+    if (entry.hasColor) {
+      effectiveColor = entry.color;
     }
   }
 }
@@ -95,7 +99,7 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
 
   // flush the buffer
   partWordBuffer[partWordBufferIndex] = '\0';
-  currentTextBlock->addWord(partWordBuffer, fontStyle, false, nextWordContinues);
+  currentTextBlock->addWord(partWordBuffer, fontStyle, false, nextWordContinues, effectiveColor);
   partWordBufferIndex = 0;
   nextWordContinues = false;
 }
@@ -362,6 +366,10 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       entry.hasItalic = true;
       entry.italic = cssStyle.fontStyle == CssFontStyle::Italic;
     }
+    if (cssStyle.hasColor()) {
+      entry.hasColor = true;
+      entry.color = cssStyle.textGrayLevel;
+    }
     self->inlineStyleStack.push_back(entry);
     self->updateEffectiveInlineStyle();
   } else if (matches(name, BOLD_TAGS, NUM_BOLD_TAGS)) {
@@ -383,6 +391,10 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     if (cssStyle.hasTextDecoration()) {
       entry.hasUnderline = true;
       entry.underline = cssStyle.textDecoration == CssTextDecoration::Underline;
+    }
+    if (cssStyle.hasColor()) {
+      entry.hasColor = true;
+      entry.color = cssStyle.textGrayLevel;
     }
     self->inlineStyleStack.push_back(entry);
     self->updateEffectiveInlineStyle();
@@ -406,11 +418,15 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       entry.hasUnderline = true;
       entry.underline = cssStyle.textDecoration == CssTextDecoration::Underline;
     }
+    if (cssStyle.hasColor()) {
+      entry.hasColor = true;
+      entry.color = cssStyle.textGrayLevel;
+    }
     self->inlineStyleStack.push_back(entry);
     self->updateEffectiveInlineStyle();
   } else if (strcmp(name, "span") == 0 || !isHeaderOrBlock(name)) {
     // Handle span and other inline elements for CSS styling
-    if (cssStyle.hasFontWeight() || cssStyle.hasFontStyle() || cssStyle.hasTextDecoration()) {
+    if (cssStyle.hasFontWeight() || cssStyle.hasFontStyle() || cssStyle.hasTextDecoration() || cssStyle.hasColor()) {
       // Flush buffer before style change so preceding text gets current style
       if (self->partWordBufferIndex > 0) {
         self->flushPartWordBuffer();
@@ -429,6 +445,10 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       if (cssStyle.hasTextDecoration()) {
         entry.hasUnderline = true;
         entry.underline = cssStyle.textDecoration == CssTextDecoration::Underline;
+      }
+      if (cssStyle.hasColor()) {
+        entry.hasColor = true;
+        entry.color = cssStyle.textGrayLevel;
       }
       self->inlineStyleStack.push_back(entry);
       self->updateEffectiveInlineStyle();

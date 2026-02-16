@@ -113,6 +113,7 @@ class CssParser {
   static CssFontWeight interpretFontWeight(const std::string& val);
   static CssTextDecoration interpretDecoration(const std::string& val);
   static CssLength interpretLength(const std::string& val);
+  static uint8_t interpretColor(const std::string& val);
 
   // String utilities
   static std::string normalized(const std::string& s);

@@ -80,7 +80,7 @@ class CrossPointSettings {
   enum SIDE_BUTTON_LAYOUT { PREV_NEXT = 0, NEXT_PREV = 1, SIDE_BUTTON_LAYOUT_COUNT };
 
   // Font family options
-  enum FONT_FAMILY { BOOKERLY = 0, NOTOSANS = 1, OPENDYSLEXIC = 2, FONT_FAMILY_COUNT };
+  enum FONT_FAMILY { BOOKERLY = 0, EDSLAB = 1, FONT_FAMILY_COUNT };
   // Font size options
   enum FONT_SIZE { SMALL = 0, MEDIUM = 1, LARGE = 2, EXTRA_LARGE = 3, FONT_SIZE_COUNT };
   enum LINE_COMPRESSION { TIGHT = 0, NORMAL = 1, WIDE = 2, LINE_COMPRESSION_COUNT };
@@ -150,7 +150,7 @@ class CrossPointSettings {
   // Reader font settings
   uint8_t fontFamily = BOOKERLY;
   uint8_t fontSize = MEDIUM;
-  uint8_t lineSpacing = NORMAL;
+  uint8_t lineSpacing = 10;  // multiplier * 10 (10 = 1.0x, range 5-30)
   uint8_t paragraphAlignment = JUSTIFIED;
   // Auto-sleep timeout setting (default 10 minutes)
   uint8_t sleepTimeout = SLEEP_10_MIN;
@@ -174,6 +174,9 @@ class CrossPointSettings {
   uint8_t fadingFix = 0;
   // Use book's embedded CSS styles for EPUB rendering (1 = enabled, 0 = disabled)
   uint8_t embeddedStyle = 1;
+  // How CSS-colored text renders on e-ink: 0=Normal (black), 1=Dark gray, 2=Light gray, 3=Hidden
+  enum COLOR_TEXT_STYLE { CT_NORMAL = 0, CT_DARK = 1, CT_LIGHT = 2, CT_HIDDEN = 3, COLOR_TEXT_STYLE_COUNT };
+  uint8_t colorTextStyle = CT_DARK;
 
   ~CrossPointSettings() = default;
 

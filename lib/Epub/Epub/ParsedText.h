@@ -15,7 +15,7 @@ class GfxRenderer;
 
 class ParsedText {
   std::list<std::string> words;
-  std::list<EpdFontFamily::Style> wordStyles;
+  std::list<EpdFontFamily::Style> wordStyles;  // bits 0-4: font style, bits 5-6: gray level (0-3)
   std::list<bool> wordContinues;  // true = word attaches to previous (no space before it)
   BlockStyle blockStyle;
   bool extraParagraphSpacing;
@@ -41,7 +41,8 @@ class ParsedText {
       : blockStyle(blockStyle), extraParagraphSpacing(extraParagraphSpacing), hyphenationEnabled(hyphenationEnabled) {}
   ~ParsedText() = default;
 
-  void addWord(std::string word, EpdFontFamily::Style fontStyle, bool underline = false, bool attachToPrevious = false);
+  void addWord(std::string word, EpdFontFamily::Style fontStyle, bool underline = false, bool attachToPrevious = false,
+               uint8_t color = 0);
   void setBlockStyle(const BlockStyle& blockStyle) { this->blockStyle = blockStyle; }
   BlockStyle& getBlockStyle() { return blockStyle; }
   size_t size() const { return words.size(); }

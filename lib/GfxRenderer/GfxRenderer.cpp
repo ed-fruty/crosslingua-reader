@@ -85,13 +85,13 @@ int GfxRenderer::getTextWidth(const int fontId, const char* text, const EpdFontF
 }
 
 void GfxRenderer::drawCenteredText(const int fontId, const int y, const char* text, const bool black,
-                                   const EpdFontFamily::Style style) const {
+                                   const EpdFontFamily::Style style, const uint8_t grayLevel) const {
   const int x = (getScreenWidth() - getTextWidth(fontId, text, style)) / 2;
-  drawText(fontId, x, y, text, black, style);
+  drawText(fontId, x, y, text, black, style, grayLevel);
 }
 
 void GfxRenderer::drawText(const int fontId, const int x, const int y, const char* text, const bool black,
-                           const EpdFontFamily::Style style) const {
+                           const EpdFontFamily::Style style, const uint8_t grayLevel) const {
   const int yPos = y + getFontAscenderSize(fontId);
   int xpos = x;
 
@@ -113,7 +113,7 @@ void GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
 
   uint32_t cp;
   while ((cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&text)))) {
-    renderChar(font, cp, &xpos, &yPos, black, style);
+    renderChar(font, cp, &xpos, &yPos, black, style, grayLevel);
   }
 }
 
@@ -944,7 +944,10 @@ void GfxRenderer::cleanupGrayscaleWithFrameBuffer() const {
 }
 
 void GfxRenderer::renderChar(const EpdFontFamily& fontFamily, const uint32_t cp, int* x, const int* y,
-                             const bool pixelState, const EpdFontFamily::Style style) const {
+                             const bool pixelState, const EpdFontFamily::Style style, const uint8_t grayLevel) const {
+  // Remap CSS-colored text (grayLevel > 0) through the configurable setting
+  const uint8_t effectiveGrayLevel = (grayLevel > 0) ? colorTextGrayLevel : 0;
+
   const EpdGlyph* glyph = fontFamily.getGlyph(cp, style);
   if (!glyph) {
     glyph = fontFamily.getGlyph(REPLACEMENT_GLYPH, style);
@@ -980,23 +983,56 @@ void GfxRenderer::renderChar(const EpdFontFamily& fontFamily, const uint32_t cp,
           // 0 -> black, 1 -> dark grey, 2 -> light grey, 3 -> white
           const uint8_t bmpVal = 3 - (byte >> bit_index) & 0x3;
 
-          if (renderMode == BW && bmpVal < 3) {
-            // Black (also paints over the grays in BW mode)
-            drawPixel(screenX, screenY, pixelState);
-          } else if (renderMode == GRAYSCALE_MSB && (bmpVal == 1 || bmpVal == 2)) {
-            // Light gray (also mark the MSB if it's going to be a dark gray too)
-            // We have to flag pixels in reverse for the gray buffers, as 0 leave alone, 1 update
-            drawPixel(screenX, screenY, false);
-          } else if (renderMode == GRAYSCALE_LSB && bmpVal == 1) {
-            // Dark gray
-            drawPixel(screenX, screenY, false);
+          if (effectiveGrayLevel == 0) {
+            // Normal text: render using font antialiasing with original pixelState
+            if (renderMode == BW && bmpVal < 3) {
+              drawPixel(screenX, screenY, pixelState);
+            } else if (renderMode == GRAYSCALE_MSB && (bmpVal == 1 || bmpVal == 2)) {
+              drawPixel(screenX, screenY, false);
+            } else if (renderMode == GRAYSCALE_LSB && bmpVal == 1) {
+              drawPixel(screenX, screenY, false);
+            }
+          } else if (effectiveGrayLevel == 1) {
+            // Dark gray text: draw in BW as fallback, draw in both grayscale passes
+            if (renderMode == BW && bmpVal < 3) {
+              drawPixel(screenX, screenY, pixelState);
+            } else if (renderMode == GRAYSCALE_MSB && bmpVal < 3) {
+              drawPixel(screenX, screenY, false);
+            } else if (renderMode == GRAYSCALE_LSB && bmpVal < 3) {
+              drawPixel(screenX, screenY, false);
+            }
+          } else if (effectiveGrayLevel == 2) {
+            // Light gray text: draw in BW as fallback, draw only in MSB grayscale pass
+            if (renderMode == BW && bmpVal < 3) {
+              drawPixel(screenX, screenY, pixelState);
+            } else if (renderMode == GRAYSCALE_MSB && bmpVal < 3) {
+              drawPixel(screenX, screenY, false);
+            }
           }
+          // effectiveGrayLevel == 3 (white/invisible): skip all passes
         } else {
           const uint8_t byte = bitmap[pixelPosition / 8];
           const uint8_t bit_index = 7 - (pixelPosition % 8);
 
           if ((byte >> bit_index) & 1) {
-            drawPixel(screenX, screenY, pixelState);
+            if (effectiveGrayLevel == 0) {
+              drawPixel(screenX, screenY, pixelState);
+            } else if (effectiveGrayLevel == 1) {
+              // Dark gray: draw in BW as fallback, draw in both gray passes
+              if (renderMode == BW) {
+                drawPixel(screenX, screenY, pixelState);
+              } else {
+                drawPixel(screenX, screenY, false);
+              }
+            } else if (effectiveGrayLevel == 2) {
+              // Light gray: draw in BW as fallback, draw only in MSB
+              if (renderMode == BW) {
+                drawPixel(screenX, screenY, pixelState);
+              } else if (renderMode == GRAYSCALE_MSB) {
+                drawPixel(screenX, screenY, false);
+              }
+            }
+            // effectiveGrayLevel == 3: skip
           }
         }
       }

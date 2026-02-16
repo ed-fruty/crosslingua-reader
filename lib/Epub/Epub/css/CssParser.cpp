@@ -188,6 +188,62 @@ CssTextDecoration CssParser::interpretDecoration(const std::string& val) {
   return CssTextDecoration::None;
 }
 
+uint8_t CssParser::interpretColor(const std::string& val) {
+  const std::string v = normalized(val);
+  if (v.empty()) return 0;  // black default
+
+  // Named colors
+  if (v == "black") return 0;
+  if (v == "white" || v == "transparent") return 3;
+  if (v == "gray" || v == "grey" || v == "darkgray" || v == "darkgrey") return 1;
+  if (v == "silver" || v == "lightgray" || v == "lightgrey") return 2;
+
+  uint8_t r = 0, g = 0, b = 0;
+  bool parsed = false;
+
+  // Parse #hex colors
+  if (v.size() >= 4 && v[0] == '#') {
+    if (v.size() == 4) {
+      // #RGB -> expand to #RRGGBB
+      char* endPtr;
+      r = static_cast<uint8_t>(strtol(std::string(2, v[1]).c_str(), &endPtr, 16));
+      g = static_cast<uint8_t>(strtol(std::string(2, v[2]).c_str(), &endPtr, 16));
+      b = static_cast<uint8_t>(strtol(std::string(2, v[3]).c_str(), &endPtr, 16));
+      parsed = true;
+    } else if (v.size() >= 7) {
+      // #RRGGBB
+      char* endPtr;
+      r = static_cast<uint8_t>(strtol(v.substr(1, 2).c_str(), &endPtr, 16));
+      g = static_cast<uint8_t>(strtol(v.substr(3, 2).c_str(), &endPtr, 16));
+      b = static_cast<uint8_t>(strtol(v.substr(5, 2).c_str(), &endPtr, 16));
+      parsed = true;
+    }
+  }
+
+  // Parse rgb(r, g, b)
+  if (!parsed && v.size() > 4 && v.substr(0, 4) == "rgb(") {
+    size_t start = 4;
+    const auto parts = splitOnChar(v.substr(start, v.size() - start - 1), ',');
+    if (parts.size() >= 3) {
+      r = static_cast<uint8_t>(std::atoi(parts[0].c_str()));
+      g = static_cast<uint8_t>(std::atoi(parts[1].c_str()));
+      b = static_cast<uint8_t>(std::atoi(parts[2].c_str()));
+      parsed = true;
+    }
+  }
+
+  if (!parsed) return 0;  // default to black for unparsed values
+
+  // Calculate luminance (perceived brightness) using standard weights
+  const int luminance = (r * 77 + g * 150 + b * 29) >> 8;  // 0-255
+
+  // Map to 4 grayscale levels
+  if (luminance < 64) return 0;   // black
+  if (luminance < 128) return 1;  // dark gray
+  if (luminance < 200) return 2;  // light gray
+  return 3;                       // white/invisible
+}
+
 CssLength CssParser::interpretLength(const std::string& val) {
   const std::string v = normalized(val);
   if (v.empty()) return CssLength{};
@@ -295,6 +351,9 @@ void CssParser::parseDeclarationIntoStyle(const std::string& decl, CssStyle& sty
       style.defined.paddingTop = style.defined.paddingRight = style.defined.paddingBottom = style.defined.paddingLeft =
           1;
     }
+  } else if (propNameBuf == "color") {
+    style.textGrayLevel = interpretColor(propValueBuf);
+    style.defined.color = 1;
   }
 }
 
@@ -562,7 +621,7 @@ CssStyle CssParser::parseInlineStyle(const std::string& styleValue) { return par
 // Cache serialization
 
 // Cache format version - increment when format changes
-constexpr uint8_t CSS_CACHE_VERSION = 2;
+constexpr uint8_t CSS_CACHE_VERSION = 3;
 constexpr char rulesCache[] = "/css_rules.cache";
 
 bool CssParser::hasCache() const { return Storage.exists((cachePath + rulesCache).c_str()); }
@@ -614,6 +673,9 @@ bool CssParser::saveToCache() const {
     writeLength(style.paddingLeft);
     writeLength(style.paddingRight);
 
+    // Write textGrayLevel
+    file.write(style.textGrayLevel);
+
     // Write defined flags as uint16_t
     uint16_t definedBits = 0;
     if (style.defined.textAlign) definedBits |= 1 << 0;
@@ -629,6 +691,7 @@ bool CssParser::saveToCache() const {
     if (style.defined.paddingBottom) definedBits |= 1 << 10;
     if (style.defined.paddingLeft) definedBits |= 1 << 11;
     if (style.defined.paddingRight) definedBits |= 1 << 12;
+    if (style.defined.color) definedBits |= 1 << 13;
     file.write(reinterpret_cast<const uint8_t*>(&definedBits), sizeof(definedBits));
   }
 
@@ -736,6 +799,13 @@ bool CssParser::loadFromCache() {
       return false;
     }
 
+    // Read textGrayLevel
+    if (file.read(&style.textGrayLevel, 1) != 1) {
+      rulesBySelector_.clear();
+      file.close();
+      return false;
+    }
+
     // Read defined flags
     uint16_t definedBits = 0;
     if (file.read(&definedBits, sizeof(definedBits)) != sizeof(definedBits)) {
@@ -756,6 +826,7 @@ bool CssParser::loadFromCache() {
     style.defined.paddingBottom = (definedBits & 1 << 10) != 0;
     style.defined.paddingLeft = (definedBits & 1 << 11) != 0;
     style.defined.paddingRight = (definedBits & 1 << 12) != 0;
+    style.defined.color = (definedBits & 1 << 13) != 0;
 
     rulesBySelector_[selector] = style;
   }
