@@ -176,7 +176,11 @@ void EpubReaderActivity::loop() {
     exitActivity();
     enterNewActivity(new EpubReaderMenuActivity(
         this->renderer, this->mappedInput, epub->getTitle(), currentPage, totalPages, bookProgressPercent,
-        SETTINGS.orientation, [this](const uint8_t orientation) { onReaderMenuBack(orientation); },
+        SETTINGS.orientation, SETTINGS.colorTextStyle, SETTINGS.fontFamily, SETTINGS.fontSize, SETTINGS.lineSpacing,
+        [this](const uint8_t orientation, const uint8_t translationMode, const uint8_t fontFamily,
+               const uint8_t fontSize, const uint8_t lineSpacing) {
+          onReaderMenuBack(orientation, translationMode, fontFamily, fontSize, lineSpacing);
+        },
         [this](EpubReaderMenuActivity::MenuAction action) { onReaderMenuConfirm(action); }));
   }
 
@@ -267,11 +271,17 @@ void EpubReaderActivity::loop() {
   }
 }
 
-void EpubReaderActivity::onReaderMenuBack(const uint8_t orientation) {
+void EpubReaderActivity::onReaderMenuBack(const uint8_t orientation, const uint8_t translationMode,
+                                           const uint8_t fontFamily, const uint8_t fontSize,
+                                           const uint8_t lineSpacing) {
   exitActivity();
-  // Apply the user-selected orientation when the menu is dismissed.
-  // This ensures the menu can be navigated without immediately rotating the screen.
+  // Apply all user-selected settings when the menu is dismissed.
+  // This ensures the menu can be navigated without immediately changing the reader.
   applyOrientation(orientation);
+  applyTranslationMode(translationMode);
+  applyFontFamily(fontFamily);
+  applyFontSize(fontSize);
+  applyLineSpacing(lineSpacing);
   requestUpdate();
 }
 
@@ -484,6 +494,87 @@ void EpubReaderActivity::applyOrientation(const uint8_t orientation) {
   }
 }
 
+void EpubReaderActivity::applyTranslationMode(const uint8_t translationMode) {
+  if (SETTINGS.colorTextStyle == translationMode) {
+    return;
+  }
+
+  {
+    RenderLock lock(*this);
+    if (section) {
+      cachedSpineIndex = currentSpineIndex;
+      cachedChapterTotalPageCount = section->pageCount;
+      nextPageNumber = section->currentPage;
+    }
+
+    SETTINGS.colorTextStyle = translationMode;
+    SETTINGS.saveToFile();
+
+    // Reset section to force re-layout with the new translation mode.
+    section.reset();
+  }
+}
+
+void EpubReaderActivity::applyFontFamily(const uint8_t fontFamily) {
+  if (SETTINGS.fontFamily == fontFamily) {
+    return;
+  }
+
+  {
+    RenderLock lock(*this);
+    if (section) {
+      cachedSpineIndex = currentSpineIndex;
+      cachedChapterTotalPageCount = section->pageCount;
+      nextPageNumber = section->currentPage;
+    }
+
+    SETTINGS.fontFamily = fontFamily;
+    SETTINGS.saveToFile();
+
+    section.reset();
+  }
+}
+
+void EpubReaderActivity::applyFontSize(const uint8_t fontSize) {
+  if (SETTINGS.fontSize == fontSize) {
+    return;
+  }
+
+  {
+    RenderLock lock(*this);
+    if (section) {
+      cachedSpineIndex = currentSpineIndex;
+      cachedChapterTotalPageCount = section->pageCount;
+      nextPageNumber = section->currentPage;
+    }
+
+    SETTINGS.fontSize = fontSize;
+    SETTINGS.saveToFile();
+
+    section.reset();
+  }
+}
+
+void EpubReaderActivity::applyLineSpacing(const uint8_t lineSpacing) {
+  if (SETTINGS.lineSpacing == lineSpacing) {
+    return;
+  }
+
+  {
+    RenderLock lock(*this);
+    if (section) {
+      cachedSpineIndex = currentSpineIndex;
+      cachedChapterTotalPageCount = section->pageCount;
+      nextPageNumber = section->currentPage;
+    }
+
+    SETTINGS.lineSpacing = lineSpacing;
+    SETTINGS.saveToFile();
+
+    section.reset();
+  }
+}
+
 // TODO: Failure handling
 void EpubReaderActivity::render(Activity::RenderLock&& lock) {
   if (!epub) {
@@ -538,14 +629,16 @@ void EpubReaderActivity::render(Activity::RenderLock&& lock) {
 
     if (!section->loadSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
                                   SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
-                                  viewportHeight, SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle)) {
+                                  viewportHeight, SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle,
+                                  SETTINGS.colorTextStyle)) {
       LOG_DBG("ERS", "Cache not found, building...");
 
       const auto popupFn = [this]() { GUI.drawPopup(renderer, tr(STR_INDEXING)); };
 
       if (!section->createSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
                                       SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
-                                      viewportHeight, SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle, popupFn)) {
+                                      viewportHeight, SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle,
+                                      SETTINGS.colorTextStyle, popupFn)) {
         LOG_ERR("ERS", "Failed to persist page data to SD");
         section.reset();
         return;

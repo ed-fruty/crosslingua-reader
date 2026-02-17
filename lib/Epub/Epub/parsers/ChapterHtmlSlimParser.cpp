@@ -97,9 +97,27 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
     fontStyle = static_cast<EpdFontFamily::Style>(fontStyle | EpdFontFamily::UNDERLINE);
   }
 
+  uint8_t wordColor = effectiveColor;
+
+  // No Render: strip colored (translated) text entirely
+  if (translationMode == 3 && wordColor > 0) {
+    partWordBufferIndex = 0;
+    nextWordContinues = false;
+    return;
+  }
+  // Invert: strip original text, render translated text as normal black
+  if (translationMode == 4) {
+    if (wordColor == 0) {
+      partWordBufferIndex = 0;
+      nextWordContinues = false;
+      return;
+    }
+    wordColor = 0;
+  }
+
   // flush the buffer
   partWordBuffer[partWordBufferIndex] = '\0';
-  currentTextBlock->addWord(partWordBuffer, fontStyle, false, nextWordContinues, effectiveColor);
+  currentTextBlock->addWord(partWordBuffer, fontStyle, false, nextWordContinues, wordColor);
   partWordBufferIndex = 0;
   nextWordContinues = false;
 }

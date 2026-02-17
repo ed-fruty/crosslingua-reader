@@ -30,9 +30,14 @@ class EpubReaderActivity final : public ActivityWithSubactivity {
   void saveProgress(int spineIndex, int currentPage, int pageCount);
   // Jump to a percentage of the book (0-100), mapping it to spine and page.
   void jumpToPercent(int percent);
-  void onReaderMenuBack(uint8_t orientation);
+  void onReaderMenuBack(uint8_t orientation, uint8_t translationMode, uint8_t fontFamily, uint8_t fontSize,
+                        uint8_t lineSpacing);
   void onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action);
   void applyOrientation(uint8_t orientation);
+  void applyTranslationMode(uint8_t translationMode);
+  void applyFontFamily(uint8_t fontFamily);
+  void applyFontSize(uint8_t fontSize);
+  void applyLineSpacing(uint8_t lineSpacing);
 
  public:
   explicit EpubReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Epub> epub,

@@ -41,6 +41,10 @@ inline std::vector<SettingInfo> getSettingsList() {
                           StrId::STR_CAT_DISPLAY),
 
       // --- Reader ---
+      SettingInfo::Enum(StrId::STR_TRANSLATION_MODE, &CrossPointSettings::colorTextStyle,
+                        {StrId::STR_NORMAL, StrId::STR_DARK, StrId::STR_LIGHT, StrId::STR_NO_RENDER,
+                         StrId::STR_INVERT_TRANSLATION},
+                        "colorTextStyle", StrId::STR_CAT_READER),
       SettingInfo::Enum(StrId::STR_FONT_FAMILY, &CrossPointSettings::fontFamily,
                         {StrId::STR_BOOKERLY, StrId::STR_EDSLAB},
                         "fontFamily", StrId::STR_CAT_READER),
@@ -57,9 +61,6 @@ inline std::vector<SettingInfo> getSettingsList() {
                         "paragraphAlignment", StrId::STR_CAT_READER),
       SettingInfo::Toggle(StrId::STR_EMBEDDED_STYLE, &CrossPointSettings::embeddedStyle, "embeddedStyle",
                           StrId::STR_CAT_READER),
-      SettingInfo::Enum(StrId::STR_COLOR_MODE, &CrossPointSettings::colorTextStyle,
-                        {StrId::STR_NORMAL, StrId::STR_DARK, StrId::STR_LIGHT, StrId::STR_NONE_OPT},
-                        "colorTextStyle", StrId::STR_CAT_READER),
       SettingInfo::Toggle(StrId::STR_HYPHENATION, &CrossPointSettings::hyphenationEnabled, "hyphenationEnabled",
                           StrId::STR_CAT_READER),
       SettingInfo::Enum(StrId::STR_ORIENTATION, &CrossPointSettings::orientation,

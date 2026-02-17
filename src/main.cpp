@@ -321,7 +321,7 @@ void loop() {
   gpio.update();
 
   renderer.setFadingFix(SETTINGS.fadingFix);
-  renderer.setColorTextGrayLevel(SETTINGS.colorTextStyle);
+  renderer.setColorTextGrayLevel(SETTINGS.colorTextStyle <= 2 ? SETTINGS.colorTextStyle : (uint8_t)0);
 
   if (Serial && millis() - lastMemPrint >= 10000) {
     LOG_INF("MEM", "Free: %d bytes, Total: %d bytes, Min Free: %d bytes", ESP.getFreeHeap(), ESP.getHeapSize(),

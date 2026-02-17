@@ -40,6 +40,26 @@ void EpubReaderMenuActivity::loop() {
       requestUpdate();
       return;
     }
+    if (selectedAction == MenuAction::CYCLE_TRANSLATION_MODE) {
+      pendingTranslationMode = (pendingTranslationMode + 1) % translationModeLabels.size();
+      requestUpdate();
+      return;
+    }
+    if (selectedAction == MenuAction::CYCLE_FONT_FAMILY) {
+      pendingFontFamily = (pendingFontFamily + 1) % fontFamilyLabels.size();
+      requestUpdate();
+      return;
+    }
+    if (selectedAction == MenuAction::CYCLE_FONT_SIZE) {
+      pendingFontSize = (pendingFontSize + 1) % fontSizeLabels.size();
+      requestUpdate();
+      return;
+    }
+    if (selectedAction == MenuAction::CYCLE_LINE_SPACING) {
+      pendingLineSpacing = (pendingLineSpacing >= 30) ? 5 : pendingLineSpacing + 1;
+      requestUpdate();
+      return;
+    }
 
     // 1. Capture the callback and action locally
     auto actionCallback = onAction;
@@ -50,8 +70,8 @@ void EpubReaderMenuActivity::loop() {
     // 3. CRITICAL: Return immediately. 'this' is likely deleted now.
     return;
   } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    // Return the pending orientation to the parent so it can apply on exit.
-    onBack(pendingOrientation);
+    // Return the pending values to the parent so it can apply on exit.
+    onBack(pendingOrientation, pendingTranslationMode, pendingFontFamily, pendingFontSize, pendingLineSpacing);
     return;  // Also return here just in case
   }
 }
@@ -111,6 +131,27 @@ void EpubReaderMenuActivity::render(Activity::RenderLock&&) {
       const char* value = I18N.get(orientationLabels[pendingOrientation]);
       const auto width = renderer.getTextWidth(UI_10_FONT_ID, value);
       renderer.drawText(UI_10_FONT_ID, contentX + contentWidth - 20 - width, displayY, value, !isSelected);
+    }
+    if (menuItems[i].action == MenuAction::CYCLE_TRANSLATION_MODE) {
+      const char* value = I18N.get(translationModeLabels[pendingTranslationMode]);
+      const auto width = renderer.getTextWidth(UI_10_FONT_ID, value);
+      renderer.drawText(UI_10_FONT_ID, contentX + contentWidth - 20 - width, displayY, value, !isSelected);
+    }
+    if (menuItems[i].action == MenuAction::CYCLE_FONT_FAMILY) {
+      const char* value = I18N.get(fontFamilyLabels[pendingFontFamily]);
+      const auto width = renderer.getTextWidth(UI_10_FONT_ID, value);
+      renderer.drawText(UI_10_FONT_ID, contentX + contentWidth - 20 - width, displayY, value, !isSelected);
+    }
+    if (menuItems[i].action == MenuAction::CYCLE_FONT_SIZE) {
+      const char* value = I18N.get(fontSizeLabels[pendingFontSize]);
+      const auto width = renderer.getTextWidth(UI_10_FONT_ID, value);
+      renderer.drawText(UI_10_FONT_ID, contentX + contentWidth - 20 - width, displayY, value, !isSelected);
+    }
+    if (menuItems[i].action == MenuAction::CYCLE_LINE_SPACING) {
+      char lineSpacingStr[4];
+      snprintf(lineSpacingStr, sizeof(lineSpacingStr), "%d", pendingLineSpacing);
+      const auto width = renderer.getTextWidth(UI_10_FONT_ID, lineSpacingStr);
+      renderer.drawText(UI_10_FONT_ID, contentX + contentWidth - 20 - width, displayY, lineSpacingStr, !isSelected);
     }
   }
 
