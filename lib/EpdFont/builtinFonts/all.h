@@ -17,6 +17,7 @@
 #include <builtinFonts/bookerly_18_italic.h>
 #include <builtinFonts/bookerly_18_regular.h>
 #include <builtinFonts/notosans_8_regular.h>
+#include <builtinFonts/edslab_10_regular.h>
 #include <builtinFonts/edslab_12_regular.h>
 #include <builtinFonts/edslab_14_regular.h>
 #include <builtinFonts/edslab_16_regular.h>

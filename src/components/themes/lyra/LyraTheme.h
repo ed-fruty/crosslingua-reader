@@ -15,8 +15,8 @@ constexpr ThemeMetrics values = {.batteryWidth = 16,
                                  .contentSidePadding = 20,
                                  .listRowHeight = 40,
                                  .listWithSubtitleRowHeight = 60,
-                                 .menuRowHeight = 64,
-                                 .menuSpacing = 8,
+                                 .menuRowHeight = 80,
+                                 .menuSpacing = 14,
                                  .tabSpacing = 8,
                                  .tabBarHeight = 40,
                                  .scrollBarWidth = 4,
@@ -56,4 +56,12 @@ class LyraTheme : public BaseTheme {
                            const int selectorIndex, bool& coverRendered, bool& coverBufferStored, bool& bufferRestored,
                            std::function<bool()> storeCoverBuffer) const override;
   Rect drawPopup(const GfxRenderer& renderer, const char* message) const override;
+  void drawCoverGrid(GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex, int pageOffset,
+                     const std::function<std::string(int)>& getTitle,
+                     const std::function<std::string(int)>& getThumbPath,
+                     const std::function<bool(int)>& isDirectory) const override;
+  void drawCoverGridSelection(GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex, int pageOffset,
+                              const std::function<std::string(int)>& getTitle,
+                              const std::function<std::string(int)>& getThumbPath,
+                              const std::function<bool(int)>& isDirectory) const override;
 };

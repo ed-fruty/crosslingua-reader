@@ -603,7 +603,7 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(FsFile& pngFile, Print& bmpOu
   bool needsScaling = false;
 
   if (targetWidth > 0 && targetHeight > 0 &&
-      (static_cast<int>(width) > targetWidth || static_cast<int>(height) > targetHeight)) {
+      (static_cast<int>(width) != targetWidth || static_cast<int>(height) != targetHeight)) {
     const float scaleToFitWidth = static_cast<float>(targetWidth) / width;
     const float scaleToFitHeight = static_cast<float>(targetHeight) / height;
     float scale = 1.0;
@@ -770,7 +770,7 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(FsFile& pngFile, Print& bmpOu
       // Check if we've crossed into the next output row
       const uint32_t srcY_fp = static_cast<uint32_t>(y + 1) << 16;
 
-      if (srcY_fp >= nextOutY_srcStart && currentOutY < outHeight) {
+      while (srcY_fp >= nextOutY_srcStart && currentOutY < outHeight) {
         memset(rowBuffer, 0, bytesPerRow);
 
         if (USE_8BIT_OUTPUT && !oneBit) {

@@ -348,7 +348,7 @@ void LyraTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
 
       int tileX = LyraMetrics::values.contentSidePadding + tileWidth * i;
       auto title =
-          renderer.truncatedText(UI_10_FONT_ID, recentBooks[i].title.c_str(), tileWidth - 2 * hPaddingInSelection);
+          renderer.truncatedText(EDSLAB_10_FONT_ID, recentBooks[i].title.c_str(), tileWidth - 2 * hPaddingInSelection);
 
       if (bookSelected) {
         // Draw selection box
@@ -361,11 +361,78 @@ void LyraTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
         renderer.fillRoundedRect(tileX, tileY + LyraMetrics::values.homeCoverHeight + hPaddingInSelection, tileWidth,
                                  bookTitleHeight, cornerRadius, false, false, true, true, Color::LightGray);
       }
-      renderer.drawText(UI_10_FONT_ID, tileX + hPaddingInSelection,
+      renderer.drawText(EDSLAB_10_FONT_ID, tileX + hPaddingInSelection,
                         tileY + tileHeight - bookTitleHeight + hPaddingInSelection + 5, title.c_str(), true);
     }
   }
 }
+
+namespace {
+void drawMenuIcon(const GfxRenderer& renderer, const std::string& iconName, int x, int y) {
+  constexpr int s = 16;  // icon size
+  if (iconName == "folder") {
+    renderer.drawRect(x, y + 4, s, s - 4);
+    renderer.drawRect(x, y + 2, 8, 4);
+  } else if (iconName == "grid") {
+    constexpr int g = 2;
+    constexpr int c = (s - g) / 2;
+    renderer.fillRect(x, y, c, c);
+    renderer.fillRect(x + c + g, y, c, c);
+    renderer.fillRect(x, y + c + g, c, c);
+    renderer.fillRect(x + c + g, y + c + g, c, c);
+  } else if (iconName == "clock") {
+    constexpr int r = s / 2;
+    constexpr int cx = r;
+    constexpr int cy = r;
+    // Circle outline (octagon approximation)
+    renderer.drawLine(x + cx - r, y + cy - 2, x + cx - r, y + cy + 2);      // left
+    renderer.drawLine(x + cx + r, y + cy - 2, x + cx + r, y + cy + 2);      // right
+    renderer.drawLine(x + cx - 2, y + cy - r, x + cx + 2, y + cy - r);      // top
+    renderer.drawLine(x + cx - 2, y + cy + r, x + cx + 2, y + cy + r);      // bottom
+    renderer.drawLine(x + cx - r, y + cy - 2, x + cx - 2, y + cy - r);      // top-left
+    renderer.drawLine(x + cx + 2, y + cy - r, x + cx + r, y + cy - 2);      // top-right
+    renderer.drawLine(x + cx - r, y + cy + 2, x + cx - 2, y + cy + r);      // bottom-left
+    renderer.drawLine(x + cx + 2, y + cy + r, x + cx + r, y + cy + 2);      // bottom-right
+    // Hands
+    renderer.drawLine(x + cx, y + cy, x + cx, y + cy - r + 3);  // minute (up)
+    renderer.drawLine(x + cx, y + cy, x + cx + r - 4, y + cy);  // hour (right)
+  } else if (iconName == "transfer") {
+    // Up arrow
+    renderer.drawLine(x + 4, y + 2, x + 4, y + 8);
+    renderer.drawLine(x + 4, y + 2, x + 2, y + 4);
+    renderer.drawLine(x + 4, y + 2, x + 6, y + 4);
+    // Down arrow
+    renderer.drawLine(x + 11, y + 7, x + 11, y + 13);
+    renderer.drawLine(x + 11, y + 13, x + 9, y + 11);
+    renderer.drawLine(x + 11, y + 13, x + 13, y + 11);
+  } else if (iconName == "gear") {
+    constexpr int cx = s / 2;
+    constexpr int cy = s / 2;
+    renderer.fillRect(x + cx - 2, y + cy - 2, 5, 5);       // center
+    renderer.drawLine(x + cx, y, x + cx, y + s);            // vertical
+    renderer.drawLine(x, y + cy, x + s, y + cy);            // horizontal
+    renderer.drawLine(x + 2, y + 2, x + s - 2, y + s - 2); // diagonal
+    renderer.drawLine(x + s - 2, y + 2, x + 2, y + s - 2); // diagonal
+  } else if (iconName == "globe") {
+    constexpr int r = s / 2;
+    constexpr int cx = r;
+    constexpr int cy = r;
+    // Circle (octagon)
+    renderer.drawLine(x + cx - r, y + cy - 2, x + cx - r, y + cy + 2);
+    renderer.drawLine(x + cx + r, y + cy - 2, x + cx + r, y + cy + 2);
+    renderer.drawLine(x + cx - 2, y + cy - r, x + cx + 2, y + cy - r);
+    renderer.drawLine(x + cx - 2, y + cy + r, x + cx + 2, y + cy + r);
+    renderer.drawLine(x + cx - r, y + cy - 2, x + cx - 2, y + cy - r);
+    renderer.drawLine(x + cx + 2, y + cy - r, x + cx + r, y + cy - 2);
+    renderer.drawLine(x + cx - r, y + cy + 2, x + cx - 2, y + cy + r);
+    renderer.drawLine(x + cx + 2, y + cy + r, x + cx + r, y + cy + 2);
+    // Horizontal line
+    renderer.drawLine(x, y + cy, x + s, y + cy);
+    // Vertical ellipse
+    renderer.drawLine(x + cx, y, x + cx, y + s);
+  }
+}
+}  // namespace
 
 void LyraTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                                const std::function<std::string(int index)>& buttonLabel,
@@ -385,13 +452,176 @@ void LyraTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
 
     std::string labelStr = buttonLabel(i);
     const char* label = labelStr.c_str();
-    const int textX = tileRect.x + 16;
-    const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
-    const int textY = tileRect.y + (LyraMetrics::values.menuRowHeight - lineHeight) / 2;
 
-    // Invert text when the tile is selected, to contrast with the filled background
-    renderer.drawText(UI_12_FONT_ID, textX, textY, label, true);
+    const int textWidth = renderer.getTextWidth(EDSLAB_14_FONT_ID, label);
+    const int lineHeight = renderer.getLineHeight(EDSLAB_14_FONT_ID);
+    const int textY = tileRect.y + (LyraMetrics::values.menuRowHeight - lineHeight) / 2;
+    const int textX = tileRect.x + (tileRect.width - textWidth) / 2;
+    renderer.drawText(EDSLAB_14_FONT_ID, textX, textY, label, true);
   }
+}
+
+void LyraTheme::drawCoverGrid(GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex, int pageOffset,
+                              const std::function<std::string(int)>& getTitle,
+                              const std::function<std::string(int)>& getThumbPath,
+                              const std::function<bool(int)>& isDirectory) const {
+  constexpr int COLS = 3;
+  constexpr int ROWS = 3;
+  constexpr int CELL_PADDING = 6;
+  constexpr int TITLE_AREA = 24;  // small font height + gap below cover
+
+  const int cellWidth = rect.width / COLS;
+  const int cellHeight = rect.height / ROWS;
+
+  // Fill the cell with the cover (no fixed aspect ratio)
+  int thumbWidth = cellWidth - CELL_PADDING * 2;
+  int thumbHeight = cellHeight - CELL_PADDING * 2 - TITLE_AREA;
+
+  const int pageEnd = std::min(pageOffset + COLS * ROWS, itemCount);
+
+  for (int i = pageOffset; i < pageEnd; i++) {
+    const int gridIdx = i - pageOffset;
+    const int col = gridIdx % COLS;
+    const int row = gridIdx / COLS;
+
+    const int cellX = rect.x + col * cellWidth;
+    const int cellY = rect.y + row * cellHeight;
+
+    const bool selected = (i == selectedIndex);
+
+    // Draw selection with rounded rect (Lyra style)
+    if (selected) {
+      renderer.fillRoundedRect(cellX + 2, cellY + 2, cellWidth - 4, cellHeight - 4, cornerRadius, Color::LightGray);
+    }
+
+    // Center the thumbnail area in the cell
+    const int thumbX = cellX + (cellWidth - thumbWidth) / 2;
+    const int thumbY = cellY + CELL_PADDING;
+
+    std::string thumbPath = getThumbPath(i);
+    bool drewCover = false;
+
+    if (!thumbPath.empty() && !isDirectory(i)) {
+      FsFile file;
+      if (Storage.openFileForRead("LIB", thumbPath, file)) {
+        if (file.size() > 0) {
+          Bitmap bitmap(file);
+          if (bitmap.parseHeaders() == BmpReaderError::Ok) {
+            int coverX = thumbX;
+            int coverY = thumbY;
+            if (bitmap.getWidth() > 0 && bitmap.getHeight() > 0) {
+              const float imgRatio = static_cast<float>(bitmap.getWidth()) / static_cast<float>(bitmap.getHeight());
+              const float boxRatio = static_cast<float>(thumbWidth) / static_cast<float>(thumbHeight);
+              if (imgRatio > boxRatio) {
+                coverY = thumbY + (thumbHeight - static_cast<int>(thumbWidth / imgRatio)) / 2;
+              } else {
+                coverX = thumbX + (thumbWidth - static_cast<int>(thumbHeight * imgRatio)) / 2;
+              }
+            }
+            renderer.drawBitmap(bitmap, coverX, coverY, thumbWidth, thumbHeight);
+            drewCover = true;
+          }
+        }
+        file.close();
+      }
+    }
+
+    if (!drewCover) {
+      if (isDirectory(i)) {
+        const int folderW = 80, bodyH = 50, tabW = 28, tabH = 12;
+        const int folderX = thumbX + (thumbWidth - folderW) / 2;
+        const int folderY = thumbY + (thumbHeight - (bodyH + tabH - 2)) / 2;
+        renderer.drawRoundedRect(folderX, folderY, tabW, tabH, 2, 4, true, true, false, false, true);
+        renderer.drawRoundedRect(folderX, folderY + tabH - 2, folderW, bodyH, 2, 6, true);
+      }
+    }
+
+    // Draw title below thumbnail
+    std::string title = getTitle(i);
+    const int titleY = thumbY + thumbHeight + 1;
+    const int maxTitleWidth = cellWidth - CELL_PADDING * 2;
+    auto truncated = renderer.truncatedText(EDSLAB_10_FONT_ID, title.c_str(), maxTitleWidth);
+    const int titleTextWidth = renderer.getTextWidth(EDSLAB_10_FONT_ID, truncated.c_str());
+    const int titleX = cellX + (cellWidth - titleTextWidth) / 2;
+    renderer.drawText(EDSLAB_10_FONT_ID, titleX, titleY, truncated.c_str(), true);
+  }
+}
+
+void LyraTheme::drawCoverGridSelection(GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex,
+                                       int pageOffset, const std::function<std::string(int)>& getTitle,
+                                       const std::function<std::string(int)>& getThumbPath,
+                                       const std::function<bool(int)>& isDirectory) const {
+  if (selectedIndex < pageOffset || selectedIndex >= std::min(pageOffset + 9, itemCount)) return;
+
+  constexpr int COLS = 3;
+  constexpr int CELL_PADDING = 6;
+  constexpr int TITLE_AREA = 24;
+
+  const int cellWidth = rect.width / COLS;
+  const int cellHeight = rect.height / 3;
+  const int thumbWidth = cellWidth - CELL_PADDING * 2;
+  const int thumbHeight = cellHeight - CELL_PADDING * 2 - TITLE_AREA;
+
+  const int gridIdx = selectedIndex - pageOffset;
+  const int col = gridIdx % COLS;
+  const int row = gridIdx / COLS;
+
+  const int cellX = rect.x + col * cellWidth;
+  const int cellY = rect.y + row * cellHeight;
+
+  // Draw selection fill (Lyra style)
+  renderer.fillRoundedRect(cellX + 2, cellY + 2, cellWidth - 4, cellHeight - 4, cornerRadius, Color::LightGray);
+
+  const int thumbX = cellX + (cellWidth - thumbWidth) / 2;
+  const int thumbY = cellY + CELL_PADDING;
+
+  // Re-read and draw the single selected cover
+  std::string thumbPath = getThumbPath(selectedIndex);
+  bool drewCover = false;
+
+  if (!thumbPath.empty() && !isDirectory(selectedIndex)) {
+    FsFile file;
+    if (Storage.openFileForRead("LIB", thumbPath, file)) {
+      if (file.size() > 0) {
+        Bitmap bitmap(file);
+        if (bitmap.parseHeaders() == BmpReaderError::Ok) {
+          int coverX = thumbX;
+          int coverY = thumbY;
+          if (bitmap.getWidth() > 0 && bitmap.getHeight() > 0) {
+            const float imgRatio = static_cast<float>(bitmap.getWidth()) / static_cast<float>(bitmap.getHeight());
+            const float boxRatio = static_cast<float>(thumbWidth) / static_cast<float>(thumbHeight);
+            if (imgRatio > boxRatio) {
+              coverY = thumbY + (thumbHeight - static_cast<int>(thumbWidth / imgRatio)) / 2;
+            } else {
+              coverX = thumbX + (thumbWidth - static_cast<int>(thumbHeight * imgRatio)) / 2;
+            }
+          }
+          renderer.drawBitmap(bitmap, coverX, coverY, thumbWidth, thumbHeight);
+          drewCover = true;
+        }
+      }
+      file.close();
+    }
+  }
+
+  if (!drewCover) {
+    if (isDirectory(selectedIndex)) {
+      const int folderW = 80, bodyH = 50, tabW = 28, tabH = 12;
+      const int folderX = thumbX + (thumbWidth - folderW) / 2;
+      const int folderY = thumbY + (thumbHeight - (bodyH + tabH - 2)) / 2;
+      renderer.drawRoundedRect(folderX, folderY, tabW, tabH, 2, 4, true, true, false, false, true);
+      renderer.drawRoundedRect(folderX, folderY + tabH - 2, folderW, bodyH, 2, 6, true);
+    }
+  }
+
+  // Draw title
+  std::string title = getTitle(selectedIndex);
+  const int titleY = thumbY + thumbHeight + 1;
+  const int maxTitleWidth = cellWidth - CELL_PADDING * 2;
+  auto truncated = renderer.truncatedText(EDSLAB_10_FONT_ID, title.c_str(), maxTitleWidth);
+  const int titleTextWidth = renderer.getTextWidth(EDSLAB_10_FONT_ID, truncated.c_str());
+  const int titleX = cellX + (cellWidth - titleTextWidth) / 2;
+  renderer.drawText(EDSLAB_10_FONT_ID, titleX, titleY, truncated.c_str(), true);
 }
 
 Rect LyraTheme::drawPopup(const GfxRenderer& renderer, const char* message) const {

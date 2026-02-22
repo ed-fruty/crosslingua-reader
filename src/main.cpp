@@ -21,6 +21,7 @@
 #include "activities/boot_sleep/SleepActivity.h"
 #include "activities/browser/OpdsBookBrowserActivity.h"
 #include "activities/home/HomeActivity.h"
+#include "activities/home/LibraryActivity.h"
 #include "activities/home/MyLibraryActivity.h"
 #include "activities/home/RecentBooksActivity.h"
 #include "activities/network/CrossPointWebServerActivity.h"
@@ -64,15 +65,6 @@ EpdFont bookerly18BoldItalicFont(&bookerly_18_bolditalic);
 EpdFontFamily bookerly18FontFamily(&bookerly18RegularFont, &bookerly18BoldFont, &bookerly18ItalicFont,
                                    &bookerly18BoldItalicFont);
 
-// EdsLab has a single weight — reuse the same EpdFont for all style slots to avoid flash duplication
-EpdFont edslab12Font(&edslab_12_regular);
-EpdFontFamily edslab12FontFamily(&edslab12Font, &edslab12Font, &edslab12Font, &edslab12Font);
-EpdFont edslab14Font(&edslab_14_regular);
-EpdFontFamily edslab14FontFamily(&edslab14Font, &edslab14Font, &edslab14Font, &edslab14Font);
-EpdFont edslab16Font(&edslab_16_regular);
-EpdFontFamily edslab16FontFamily(&edslab16Font, &edslab16Font, &edslab16Font, &edslab16Font);
-EpdFont edslab18Font(&edslab_18_regular);
-EpdFontFamily edslab18FontFamily(&edslab18Font, &edslab18Font, &edslab18Font, &edslab18Font);
 #endif  // OMIT_FONTS
 
 EpdFont smallFont(&notosans_8_regular);
@@ -85,6 +77,20 @@ EpdFontFamily ui10FontFamily(&ui10RegularFont, &ui10BoldFont);
 EpdFont ui12RegularFont(&ubuntu_12_regular);
 EpdFont ui12BoldFont(&ubuntu_12_bold);
 EpdFontFamily ui12FontFamily(&ui12RegularFont, &ui12BoldFont);
+
+// EdsLab: regular weight only — borrow Bookerly bold/italic for styled text, Ubuntu bold for size 10
+EpdFont edslab10Font(&edslab_10_regular);
+EpdFontFamily edslab10FontFamily(&edslab10Font, &ui10BoldFont, &edslab10Font, &ui10BoldFont);
+#ifndef OMIT_FONTS
+EpdFont edslab12Font(&edslab_12_regular);
+EpdFontFamily edslab12FontFamily(&edslab12Font, &bookerly12BoldFont, &bookerly12ItalicFont, &bookerly12BoldItalicFont);
+EpdFont edslab14Font(&edslab_14_regular);
+EpdFontFamily edslab14FontFamily(&edslab14Font, &bookerly14BoldFont, &bookerly14ItalicFont, &bookerly14BoldItalicFont);
+EpdFont edslab16Font(&edslab_16_regular);
+EpdFontFamily edslab16FontFamily(&edslab16Font, &bookerly16BoldFont, &bookerly16ItalicFont, &bookerly16BoldItalicFont);
+EpdFont edslab18Font(&edslab_18_regular);
+EpdFontFamily edslab18FontFamily(&edslab18Font, &bookerly18BoldFont, &bookerly18ItalicFont, &bookerly18BoldItalicFont);
+#endif  // OMIT_FONTS
 
 // measurement of power button press duration calibration value
 unsigned long t1 = 0;
@@ -188,6 +194,11 @@ void onGoToSettings() {
   enterNewActivity(new SettingsActivity(renderer, mappedInputManager, onGoHome));
 }
 
+void onGoToLibrary() {
+  exitActivity();
+  enterNewActivity(new LibraryActivity(renderer, mappedInputManager, onGoHome, onGoToReader));
+}
+
 void onGoToMyLibrary() {
   exitActivity();
   enterNewActivity(new MyLibraryActivity(renderer, mappedInputManager, onGoHome, onGoToReader));
@@ -210,8 +221,8 @@ void onGoToBrowser() {
 
 void onGoHome() {
   exitActivity();
-  enterNewActivity(new HomeActivity(renderer, mappedInputManager, onGoToReader, onGoToMyLibrary, onGoToRecentBooks,
-                                    onGoToSettings, onGoToFileTransfer, onGoToBrowser));
+  enterNewActivity(new HomeActivity(renderer, mappedInputManager, onGoToReader, onGoToMyLibrary, onGoToLibrary,
+                                    onGoToRecentBooks, onGoToSettings, onGoToFileTransfer, onGoToBrowser));
 }
 
 void setupDisplayAndFonts() {
@@ -224,6 +235,7 @@ void setupDisplayAndFonts() {
   renderer.insertFont(BOOKERLY_16_FONT_ID, bookerly16FontFamily);
   renderer.insertFont(BOOKERLY_18_FONT_ID, bookerly18FontFamily);
 
+  renderer.insertFont(EDSLAB_10_FONT_ID, edslab10FontFamily);
   renderer.insertFont(EDSLAB_12_FONT_ID, edslab12FontFamily);
   renderer.insertFont(EDSLAB_14_FONT_ID, edslab14FontFamily);
   renderer.insertFont(EDSLAB_16_FONT_ID, edslab16FontFamily);

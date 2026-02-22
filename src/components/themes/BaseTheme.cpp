@@ -596,6 +596,66 @@ void BaseTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
   }
 }
 
+namespace {
+void drawBaseMenuIcon(const GfxRenderer& renderer, const std::string& iconName, int x, int y, bool invert) {
+  constexpr int s = 16;
+  if (iconName == "folder") {
+    renderer.drawRect(x, y + 4, s, s - 4, invert);
+    renderer.drawRect(x, y + 2, 8, 4, invert);
+  } else if (iconName == "grid") {
+    constexpr int g = 2;
+    constexpr int c = (s - g) / 2;
+    renderer.fillRect(x, y, c, c, invert);
+    renderer.fillRect(x + c + g, y, c, c, invert);
+    renderer.fillRect(x, y + c + g, c, c, invert);
+    renderer.fillRect(x + c + g, y + c + g, c, c, invert);
+  } else if (iconName == "clock") {
+    constexpr int r = s / 2;
+    constexpr int cx = r;
+    constexpr int cy = r;
+    renderer.drawLine(x + cx - r, y + cy - 2, x + cx - r, y + cy + 2, invert);
+    renderer.drawLine(x + cx + r, y + cy - 2, x + cx + r, y + cy + 2, invert);
+    renderer.drawLine(x + cx - 2, y + cy - r, x + cx + 2, y + cy - r, invert);
+    renderer.drawLine(x + cx - 2, y + cy + r, x + cx + 2, y + cy + r, invert);
+    renderer.drawLine(x + cx - r, y + cy - 2, x + cx - 2, y + cy - r, invert);
+    renderer.drawLine(x + cx + 2, y + cy - r, x + cx + r, y + cy - 2, invert);
+    renderer.drawLine(x + cx - r, y + cy + 2, x + cx - 2, y + cy + r, invert);
+    renderer.drawLine(x + cx + 2, y + cy + r, x + cx + r, y + cy + 2, invert);
+    renderer.drawLine(x + cx, y + cy, x + cx, y + cy - r + 3, invert);
+    renderer.drawLine(x + cx, y + cy, x + cx + r - 4, y + cy, invert);
+  } else if (iconName == "transfer") {
+    renderer.drawLine(x + 4, y + 2, x + 4, y + 8, invert);
+    renderer.drawLine(x + 4, y + 2, x + 2, y + 4, invert);
+    renderer.drawLine(x + 4, y + 2, x + 6, y + 4, invert);
+    renderer.drawLine(x + 11, y + 7, x + 11, y + 13, invert);
+    renderer.drawLine(x + 11, y + 13, x + 9, y + 11, invert);
+    renderer.drawLine(x + 11, y + 13, x + 13, y + 11, invert);
+  } else if (iconName == "gear") {
+    constexpr int cx = s / 2;
+    constexpr int cy = s / 2;
+    renderer.fillRect(x + cx - 2, y + cy - 2, 5, 5, invert);
+    renderer.drawLine(x + cx, y, x + cx, y + s, invert);
+    renderer.drawLine(x, y + cy, x + s, y + cy, invert);
+    renderer.drawLine(x + 2, y + 2, x + s - 2, y + s - 2, invert);
+    renderer.drawLine(x + s - 2, y + 2, x + 2, y + s - 2, invert);
+  } else if (iconName == "globe") {
+    constexpr int r = s / 2;
+    constexpr int cx = r;
+    constexpr int cy = r;
+    renderer.drawLine(x + cx - r, y + cy - 2, x + cx - r, y + cy + 2, invert);
+    renderer.drawLine(x + cx + r, y + cy - 2, x + cx + r, y + cy + 2, invert);
+    renderer.drawLine(x + cx - 2, y + cy - r, x + cx + 2, y + cy - r, invert);
+    renderer.drawLine(x + cx - 2, y + cy + r, x + cx + 2, y + cy + r, invert);
+    renderer.drawLine(x + cx - r, y + cy - 2, x + cx - 2, y + cy - r, invert);
+    renderer.drawLine(x + cx + 2, y + cy - r, x + cx + r, y + cy - 2, invert);
+    renderer.drawLine(x + cx - r, y + cy + 2, x + cx - 2, y + cy + r, invert);
+    renderer.drawLine(x + cx + 2, y + cy + r, x + cx + r, y + cy + 2, invert);
+    renderer.drawLine(x, y + cy, x + s, y + cy, invert);
+    renderer.drawLine(x + cx, y, x + cx, y + s, invert);
+  }
+}
+}  // namespace
+
 void BaseTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                                const std::function<std::string(int index)>& buttonLabel,
                                const std::function<std::string(int index)>& rowIcon) const {
@@ -608,20 +668,16 @@ void BaseTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
     if (selected) {
       renderer.fillRect(rect.x + BaseMetrics::values.contentSidePadding, tileY,
                         rect.width - BaseMetrics::values.contentSidePadding * 2, BaseMetrics::values.menuRowHeight);
-    } else {
-      renderer.drawRect(rect.x + BaseMetrics::values.contentSidePadding, tileY,
-                        rect.width - BaseMetrics::values.contentSidePadding * 2, BaseMetrics::values.menuRowHeight);
     }
 
     std::string labelStr = buttonLabel(i);
     const char* label = labelStr.c_str();
-    const int textWidth = renderer.getTextWidth(UI_10_FONT_ID, label);
+
+    const int textWidth = renderer.getTextWidth(EDSLAB_14_FONT_ID, label);
+    const int lineHeight = renderer.getLineHeight(EDSLAB_14_FONT_ID);
+    const int textYPos = tileY + (BaseMetrics::values.menuRowHeight - lineHeight) / 2;
     const int textX = rect.x + (rect.width - textWidth) / 2;
-    const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
-    const int textY =
-        tileY + (BaseMetrics::values.menuRowHeight - lineHeight) / 2;  // vertically centered assuming y is top of text
-    // Invert text when the tile is selected, to contrast with the filled background
-    renderer.drawText(UI_10_FONT_ID, textX, textY, label, selectedIndex != i);
+    renderer.drawText(EDSLAB_14_FONT_ID, textX, textYPos, label, selectedIndex != i);
   }
 }
 
@@ -655,6 +711,169 @@ void BaseTheme::fillPopupProgress(const GfxRenderer& renderer, const Rect& layou
   renderer.fillRect(barX, barY, fillWidth, barHeight, true);
 
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+}
+
+void BaseTheme::drawCoverGrid(GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex, int pageOffset,
+                              const std::function<std::string(int)>& getTitle,
+                              const std::function<std::string(int)>& getThumbPath,
+                              const std::function<bool(int)>& isDirectory) const {
+  constexpr int COLS = 3;
+  constexpr int ROWS = 3;
+  constexpr int CELL_PADDING = 6;
+  constexpr int TITLE_AREA = 24;  // small font height + gap below cover
+
+  const int cellWidth = rect.width / COLS;
+  const int cellHeight = rect.height / ROWS;
+
+  // Fill the cell with the cover (no fixed aspect ratio)
+  int thumbWidth = cellWidth - CELL_PADDING * 2;
+  int thumbHeight = cellHeight - CELL_PADDING * 2 - TITLE_AREA;
+
+  const int pageEnd = std::min(pageOffset + COLS * ROWS, itemCount);
+
+  for (int i = pageOffset; i < pageEnd; i++) {
+    const int gridIdx = i - pageOffset;
+    const int col = gridIdx % COLS;
+    const int row = gridIdx / COLS;
+
+    const int cellX = rect.x + col * cellWidth;
+    const int cellY = rect.y + row * cellHeight;
+
+    const bool selected = (i == selectedIndex);
+
+    // Draw selection
+    if (selected) {
+      renderer.fillRect(cellX + 2, cellY + 2, cellWidth - 4, cellHeight - 4);
+    }
+
+    // Center the thumbnail area in the cell
+    const int thumbX = cellX + (cellWidth - thumbWidth) / 2;
+    const int thumbY = cellY + CELL_PADDING;
+
+    std::string thumbPath = getThumbPath(i);
+    bool drewCover = false;
+
+    if (!thumbPath.empty() && !isDirectory(i)) {
+      FsFile file;
+      if (Storage.openFileForRead("LIB", thumbPath, file)) {
+        if (file.size() > 0) {
+          Bitmap bitmap(file);
+          if (bitmap.parseHeaders() == BmpReaderError::Ok) {
+            int coverX = thumbX;
+            int coverY = thumbY;
+            if (bitmap.getWidth() > 0 && bitmap.getHeight() > 0) {
+              const float imgRatio = static_cast<float>(bitmap.getWidth()) / static_cast<float>(bitmap.getHeight());
+              const float boxRatio = static_cast<float>(thumbWidth) / static_cast<float>(thumbHeight);
+              if (imgRatio > boxRatio) {
+                coverY = thumbY + (thumbHeight - static_cast<int>(thumbWidth / imgRatio)) / 2;
+              } else {
+                coverX = thumbX + (thumbWidth - static_cast<int>(thumbHeight * imgRatio)) / 2;
+              }
+            }
+            renderer.drawBitmap(bitmap, coverX, coverY, thumbWidth, thumbHeight);
+            drewCover = true;
+          }
+        }
+        file.close();
+      }
+    }
+
+    if (!drewCover) {
+      if (isDirectory(i)) {
+        const int folderW = 80, bodyH = 50, tabW = 28, tabH = 12;
+        const int folderX = thumbX + (thumbWidth - folderW) / 2;
+        const int folderY = thumbY + (thumbHeight - (bodyH + tabH - 2)) / 2;
+        renderer.drawRoundedRect(folderX, folderY, tabW, tabH, 2, 4, true, true, false, false, !selected);
+        renderer.drawRoundedRect(folderX, folderY + tabH - 2, folderW, bodyH, 2, 6, !selected);
+      }
+    }
+
+    // Draw title below thumbnail
+    std::string title = getTitle(i);
+    const int titleY = thumbY + thumbHeight + 1;
+    const int maxTitleWidth = cellWidth - CELL_PADDING * 2;
+    auto truncated = renderer.truncatedText(EDSLAB_10_FONT_ID, title.c_str(), maxTitleWidth);
+    const int titleTextWidth = renderer.getTextWidth(EDSLAB_10_FONT_ID, truncated.c_str());
+    const int titleX = cellX + (cellWidth - titleTextWidth) / 2;
+    renderer.drawText(EDSLAB_10_FONT_ID, titleX, titleY, truncated.c_str(), !selected);
+  }
+}
+
+void BaseTheme::drawCoverGridSelection(GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex,
+                                       int pageOffset, const std::function<std::string(int)>& getTitle,
+                                       const std::function<std::string(int)>& getThumbPath,
+                                       const std::function<bool(int)>& isDirectory) const {
+  if (selectedIndex < pageOffset || selectedIndex >= std::min(pageOffset + 9, itemCount)) return;
+
+  constexpr int COLS = 3;
+  constexpr int CELL_PADDING = 6;
+  constexpr int TITLE_AREA = 24;
+
+  const int cellWidth = rect.width / COLS;
+  const int cellHeight = rect.height / 3;
+  const int thumbWidth = cellWidth - CELL_PADDING * 2;
+  const int thumbHeight = cellHeight - CELL_PADDING * 2 - TITLE_AREA;
+
+  const int gridIdx = selectedIndex - pageOffset;
+  const int col = gridIdx % COLS;
+  const int row = gridIdx / COLS;
+
+  const int cellX = rect.x + col * cellWidth;
+  const int cellY = rect.y + row * cellHeight;
+
+  // Draw selection fill
+  renderer.fillRect(cellX + 2, cellY + 2, cellWidth - 4, cellHeight - 4);
+
+  const int thumbX = cellX + (cellWidth - thumbWidth) / 2;
+  const int thumbY = cellY + CELL_PADDING;
+
+  // Re-read and draw the single selected cover
+  std::string thumbPath = getThumbPath(selectedIndex);
+  bool drewCover = false;
+
+  if (!thumbPath.empty() && !isDirectory(selectedIndex)) {
+    FsFile file;
+    if (Storage.openFileForRead("LIB", thumbPath, file)) {
+      if (file.size() > 0) {
+        Bitmap bitmap(file);
+        if (bitmap.parseHeaders() == BmpReaderError::Ok) {
+          int coverX = thumbX;
+          int coverY = thumbY;
+          if (bitmap.getWidth() > 0 && bitmap.getHeight() > 0) {
+            const float imgRatio = static_cast<float>(bitmap.getWidth()) / static_cast<float>(bitmap.getHeight());
+            const float boxRatio = static_cast<float>(thumbWidth) / static_cast<float>(thumbHeight);
+            if (imgRatio > boxRatio) {
+              coverY = thumbY + (thumbHeight - static_cast<int>(thumbWidth / imgRatio)) / 2;
+            } else {
+              coverX = thumbX + (thumbWidth - static_cast<int>(thumbHeight * imgRatio)) / 2;
+            }
+          }
+          renderer.drawBitmap(bitmap, coverX, coverY, thumbWidth, thumbHeight);
+          drewCover = true;
+        }
+      }
+      file.close();
+    }
+  }
+
+  if (!drewCover) {
+    if (isDirectory(selectedIndex)) {
+      const int folderW = 80, bodyH = 50, tabW = 28, tabH = 12;
+      const int folderX = thumbX + (thumbWidth - folderW) / 2;
+      const int folderY = thumbY + (thumbHeight - (bodyH + tabH - 2)) / 2;
+      renderer.drawRoundedRect(folderX, folderY, tabW, tabH, 2, 4, true, true, false, false, false);
+      renderer.drawRoundedRect(folderX, folderY + tabH - 2, folderW, bodyH, 2, 6, false);
+    }
+  }
+
+  // Draw inverted title
+  std::string title = getTitle(selectedIndex);
+  const int titleY = thumbY + thumbHeight + 1;
+  const int maxTitleWidth = cellWidth - CELL_PADDING * 2;
+  auto truncated = renderer.truncatedText(EDSLAB_10_FONT_ID, title.c_str(), maxTitleWidth);
+  const int titleTextWidth = renderer.getTextWidth(EDSLAB_10_FONT_ID, truncated.c_str());
+  const int titleX = cellX + (cellWidth - titleTextWidth) / 2;
+  renderer.drawText(EDSLAB_10_FONT_ID, titleX, titleY, truncated.c_str(), false);
 }
 
 void BaseTheme::drawReadingProgressBar(const GfxRenderer& renderer, const size_t bookProgress) const {

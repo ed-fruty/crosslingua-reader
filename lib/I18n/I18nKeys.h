@@ -352,6 +352,7 @@ enum class StrId : uint16_t {
   STR_OPDS_SERVER_URL,
   STR_NO_RENDER,
   STR_INVERT_TRANSLATION,
+  STR_LIBRARY,
   // Sentinel - must be last
   _COUNT
 };

@@ -5,6 +5,7 @@
 #include <JpegToBmpConverter.h>
 #include <Logging.h>
 #include <PngToBmpConverter.h>
+#include <Serialization.h>
 #include <ZipFile.h>
 
 #include "Epub/parsers/ContainerParser.h"
@@ -44,7 +45,7 @@ bool Epub::findContentOpfFile(std::string* contentOpfFile) const {
   return true;
 }
 
-bool Epub::parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata) {
+bool Epub::parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, bool metadataOnly) {
   std::string contentOpfFilePath;
   if (!findContentOpfFile(&contentOpfFilePath)) {
     LOG_ERR("EBP", "Could not find content.opf in zip");
@@ -61,7 +62,9 @@ bool Epub::parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata) {
     return false;
   }
 
-  ContentOpfParser opfParser(getCachePath(), getBasePath(), contentOpfSize, bookMetadataCache.get());
+  // When metadataOnly is true, pass nullptr as cache to skip spine creation
+  ContentOpfParser opfParser(getCachePath(), getBasePath(), contentOpfSize,
+                             metadataOnly ? nullptr : bookMetadataCache.get());
   if (!opfParser.setup()) {
     LOG_ERR("EBP", "Could not setup content.opf parser");
     return false;
@@ -452,13 +455,94 @@ void Epub::setupCacheDir() const {
   Storage.mkdir(cachePath.c_str());
 }
 
+bool Epub::saveMetadataFile(const BookMetadataCache::BookMetadata& metadata) const {
+  const auto metaPath = cachePath + "/meta.bin";
+  FsFile file;
+  if (!Storage.openFileForWrite("EBP", metaPath, file)) {
+    LOG_ERR("EBP", "Could not open meta.bin for writing");
+    return false;
+  }
+
+  constexpr uint8_t META_VERSION = 1;
+  serialization::writePod(file, META_VERSION);
+  serialization::writeString(file, metadata.title);
+  serialization::writeString(file, metadata.author);
+  serialization::writeString(file, metadata.language);
+  serialization::writeString(file, metadata.coverItemHref);
+  file.close();
+
+  LOG_DBG("EBP", "Saved meta.bin");
+  return true;
+}
+
+bool Epub::loadMetadataFile() {
+  const auto metaPath = cachePath + "/meta.bin";
+  FsFile file;
+  if (!Storage.openFileForRead("EBP", metaPath, file)) {
+    return false;
+  }
+
+  uint8_t version;
+  serialization::readPod(file, version);
+  if (version != 1) {
+    file.close();
+    return false;
+  }
+
+  if (!bookMetadataCache) {
+    bookMetadataCache.reset(new BookMetadataCache(cachePath));
+  }
+
+  serialization::readString(file, bookMetadataCache->coreMetadata.title);
+  serialization::readString(file, bookMetadataCache->coreMetadata.author);
+  serialization::readString(file, bookMetadataCache->coreMetadata.language);
+  serialization::readString(file, bookMetadataCache->coreMetadata.coverItemHref);
+  file.close();
+
+  LOG_DBG("EBP", "Loaded meta.bin: title=%s", bookMetadataCache->coreMetadata.title.c_str());
+  return true;
+}
+
+bool Epub::loadMetadataOnly() {
+  LOG_DBG("EBP", "Loading metadata only: %s", filepath.c_str());
+
+  // Initialize bookMetadataCache
+  bookMetadataCache.reset(new BookMetadataCache(cachePath));
+
+  // 1. Try full cache first (book was previously opened)
+  if (bookMetadataCache->load()) {
+    LOG_DBG("EBP", "Metadata from full cache");
+    return true;
+  }
+
+  // 2. Try lightweight meta.bin
+  if (loadMetadataFile()) {
+    LOG_DBG("EBP", "Metadata from meta.bin");
+    return true;
+  }
+
+  // 3. Parse from scratch (metadata only — no spine/TOC)
+  setupCacheDir();
+  BookMetadataCache::BookMetadata metadata;
+  if (!parseContentOpf(metadata, true)) {
+    LOG_ERR("EBP", "Could not parse content.opf for metadata");
+    return false;
+  }
+
+  bookMetadataCache->coreMetadata = metadata;
+  saveMetadataFile(metadata);
+
+  LOG_DBG("EBP", "Metadata parsed from EPUB: %s", metadata.title.c_str());
+  return true;
+}
+
 const std::string& Epub::getCachePath() const { return cachePath; }
 
 const std::string& Epub::getPath() const { return filepath; }
 
 const std::string& Epub::getTitle() const {
   static std::string blank;
-  if (!bookMetadataCache || !bookMetadataCache->isLoaded()) {
+  if (!bookMetadataCache) {
     return blank;
   }
 
@@ -467,7 +551,7 @@ const std::string& Epub::getTitle() const {
 
 const std::string& Epub::getAuthor() const {
   static std::string blank;
-  if (!bookMetadataCache || !bookMetadataCache->isLoaded()) {
+  if (!bookMetadataCache) {
     return blank;
   }
 
@@ -476,7 +560,7 @@ const std::string& Epub::getAuthor() const {
 
 const std::string& Epub::getLanguage() const {
   static std::string blank;
-  if (!bookMetadataCache || !bookMetadataCache->isLoaded()) {
+  if (!bookMetadataCache) {
     return blank;
   }
 
@@ -494,7 +578,7 @@ bool Epub::generateCoverBmp(bool cropped) const {
     return true;
   }
 
-  if (!bookMetadataCache || !bookMetadataCache->isLoaded()) {
+  if (!bookMetadataCache) {
     LOG_ERR("EBP", "Cannot generate cover BMP, cache not loaded");
     return false;
   }
@@ -585,7 +669,7 @@ bool Epub::generateThumbBmp(int height) const {
     return true;
   }
 
-  if (!bookMetadataCache || !bookMetadataCache->isLoaded()) {
+  if (!bookMetadataCache) {
     LOG_ERR("EBP", "Cannot generate thumb BMP, cache not loaded");
     return false;
   }

@@ -70,8 +70,8 @@ constexpr ThemeMetrics values = {.batteryWidth = 15,
                                  .contentSidePadding = 20,
                                  .listRowHeight = 30,
                                  .listWithSubtitleRowHeight = 65,
-                                 .menuRowHeight = 45,
-                                 .menuSpacing = 8,
+                                 .menuRowHeight = 56,
+                                 .menuSpacing = 12,
                                  .tabSpacing = 10,
                                  .tabBarHeight = 50,
                                  .scrollBarWidth = 4,
@@ -118,4 +118,14 @@ class BaseTheme {
   virtual Rect drawPopup(const GfxRenderer& renderer, const char* message) const;
   virtual void fillPopupProgress(const GfxRenderer& renderer, const Rect& layout, const int progress) const;
   virtual void drawReadingProgressBar(const GfxRenderer& renderer, const size_t bookProgress) const;
+
+  virtual void drawCoverGrid(GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex, int pageOffset,
+                             const std::function<std::string(int)>& getTitle,
+                             const std::function<std::string(int)>& getThumbPath,
+                             const std::function<bool(int)>& isDirectory) const;
+
+  virtual void drawCoverGridSelection(GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex,
+                                      int pageOffset, const std::function<std::string(int)>& getTitle,
+                                      const std::function<std::string(int)>& getThumbPath,
+                                      const std::function<bool(int)>& isDirectory) const;
 };
