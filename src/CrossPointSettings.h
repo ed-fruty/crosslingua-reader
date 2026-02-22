@@ -175,7 +175,7 @@ class CrossPointSettings {
   // Use book's embedded CSS styles for EPUB rendering (1 = enabled, 0 = disabled)
   uint8_t embeddedStyle = 1;
   // How CSS-colored text renders on e-ink: 0=Normal, 1=Dark, 2=Light, 3=No Render, 4=Invert
-  enum COLOR_TEXT_STYLE { CT_NORMAL = 0, CT_DARK = 1, CT_LIGHT = 2, CT_NO_RENDER = 3, CT_INVERT = 4, COLOR_TEXT_STYLE_COUNT };
+  enum COLOR_TEXT_STYLE { CT_NORMAL = 0, CT_DARK = 1, CT_LIGHT = 2, CT_NO_RENDER = 3, CT_INVERT = 4, CT_SIDE_BY_SIDE = 5, COLOR_TEXT_STYLE_COUNT };
   uint8_t colorTextStyle = CT_DARK;
 
   ~CrossPointSettings() = default;

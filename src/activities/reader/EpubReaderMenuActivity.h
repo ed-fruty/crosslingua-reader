@@ -77,7 +77,8 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
                                                 StrId::STR_LANDSCAPE_CCW};
   uint8_t pendingTranslationMode = 0;
   const std::vector<StrId> translationModeLabels = {StrId::STR_NORMAL, StrId::STR_DARK, StrId::STR_LIGHT,
-                                                    StrId::STR_NO_RENDER, StrId::STR_INVERT_TRANSLATION};
+                                                    StrId::STR_NO_RENDER, StrId::STR_INVERT_TRANSLATION,
+                                                    StrId::STR_SIDE_BY_SIDE};
   uint8_t pendingFontFamily = 0;
   const std::vector<StrId> fontFamilyLabels = {StrId::STR_BOOKERLY, StrId::STR_EDSLAB};
   uint8_t pendingFontSize = 0;

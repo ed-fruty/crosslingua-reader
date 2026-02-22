@@ -71,6 +71,12 @@ class ChapterHtmlSlimParser {
   void startNewTextBlock(const BlockStyle& blockStyle);
   void flushPartWordBuffer();
   void makePages();
+  // Side-by-side translation mode
+  std::unique_ptr<ParsedText> bufferedOriginalBlock;
+  bool currentBlockHasColoredText = false;
+  void makePagesTableMode();
+  void flushBufferedOriginal();
+  void renderSideBySide(std::unique_ptr<ParsedText> leftBlock, std::unique_ptr<ParsedText> rightBlock);
   // XML callbacks
   static void XMLCALL startElement(void* userData, const XML_Char* name, const XML_Char** atts);
   static void XMLCALL characterData(void* userData, const XML_Char* s, int len);

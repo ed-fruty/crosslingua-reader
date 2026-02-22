@@ -114,6 +114,11 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
     }
     wordColor = 0;
   }
+  // Side by side: track colored blocks, render all text as black
+  if (translationMode == 5 && wordColor > 0) {
+    currentBlockHasColoredText = true;
+    wordColor = 0;
+  }
 
   // flush the buffer
   partWordBuffer[partWordBufferIndex] = '\0';
@@ -135,9 +140,14 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
       return;
     }
 
-    makePages();
+    if (translationMode == 5) {
+      makePagesTableMode();
+    } else {
+      makePages();
+    }
   }
   currentTextBlock.reset(new ParsedText(extraParagraphSpacing, hyphenationEnabled, blockStyle));
+  currentBlockHasColoredText = false;
 }
 
 void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char* name, const XML_Char** atts) {
@@ -545,7 +555,8 @@ void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char
   // There should be enough here to build out 1-2 full pages and doing this will free up a lot of
   // memory.
   // Spotted when reading Intermezzo, there are some really long text blocks in there.
-  if (self->currentTextBlock->size() > 750) {
+  // Skip in side-by-side mode since intact paragraphs are needed for pairing.
+  if (self->translationMode != 5 && self->currentTextBlock->size() > 750) {
     LOG_DBG("EHP", "Text block too long, splitting into multiple pages");
     self->currentTextBlock->layoutAndExtractLines(
         self->renderer, self->fontId, self->viewportWidth,
@@ -722,7 +733,15 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
 
   // Process last page if there is still text
   if (currentTextBlock) {
-    makePages();
+    if (translationMode == 5) {
+      makePagesTableMode();
+      // Flush any remaining buffered original
+      if (bufferedOriginalBlock) {
+        flushBufferedOriginal();
+      }
+    } else {
+      makePages();
+    }
     completePageFn(std::move(currentPage));
     currentPage.reset();
     currentTextBlock.reset();
@@ -786,6 +805,90 @@ void ChapterHtmlSlimParser::makePages() {
   }
 
   // Extra paragraph spacing if enabled (default behavior)
+  if (extraParagraphSpacing) {
+    currentPageNextY += lineHeight / 2;
+  }
+}
+
+void ChapterHtmlSlimParser::flushBufferedOriginal() {
+  if (!bufferedOriginalBlock) return;
+  // Temporarily swap buffered block into currentTextBlock for makePages()
+  auto saved = std::move(currentTextBlock);
+  currentTextBlock = std::move(bufferedOriginalBlock);
+  makePages();
+  currentTextBlock = std::move(saved);
+}
+
+void ChapterHtmlSlimParser::makePagesTableMode() {
+  if (!currentTextBlock || currentTextBlock->isEmpty()) return;
+
+  if (currentBlockHasColoredText) {
+    // This is a translation paragraph
+    if (bufferedOriginalBlock) {
+      // Pair with buffered original: render side by side
+      renderSideBySide(std::move(bufferedOriginalBlock), std::move(currentTextBlock));
+    } else {
+      // No buffered original: render full-width as fallback
+      makePages();
+    }
+  } else {
+    // This is an original paragraph
+    if (bufferedOriginalBlock) {
+      // Previous original was unpaired: flush it full-width
+      flushBufferedOriginal();
+    }
+    // Buffer this original for potential pairing with next paragraph
+    bufferedOriginalBlock = std::move(currentTextBlock);
+  }
+}
+
+void ChapterHtmlSlimParser::renderSideBySide(std::unique_ptr<ParsedText> leftBlock,
+                                              std::unique_ptr<ParsedText> rightBlock) {
+  if (!currentPage) {
+    currentPage.reset(new Page());
+    currentPageNextY = 0;
+  }
+
+  const int lineHeight = renderer.getLineHeight(fontId) * lineCompression;
+  const uint16_t gapWidth = viewportWidth * 0.04f;
+  const uint16_t colWidth = (viewportWidth - gapWidth) / 2;
+  const int16_t rightColX = colWidth + gapWidth;
+
+  // Layout both columns into line vectors
+  std::vector<std::shared_ptr<TextBlock>> leftLines, rightLines;
+  leftBlock->layoutAndExtractLines(renderer, fontId, colWidth,
+                                   [&leftLines](const std::shared_ptr<TextBlock>& line) { leftLines.push_back(line); });
+  rightBlock->layoutAndExtractLines(
+      renderer, fontId, colWidth,
+      [&rightLines](const std::shared_ptr<TextBlock>& line) { rightLines.push_back(line); });
+
+  // Apply top spacing from the original block
+  const BlockStyle& bs = leftBlock->getBlockStyle();
+  if (bs.marginTop > 0) currentPageNextY += bs.marginTop;
+  if (bs.paddingTop > 0) currentPageNextY += bs.paddingTop;
+
+  // Place lines on pages
+  const size_t maxLines = std::max(leftLines.size(), rightLines.size());
+  for (size_t i = 0; i < maxLines; i++) {
+    if (currentPageNextY + lineHeight > viewportHeight) {
+      completePageFn(std::move(currentPage));
+      currentPage.reset(new Page());
+      currentPageNextY = 0;
+    }
+
+    if (i < leftLines.size()) {
+      currentPage->elements.push_back(std::make_shared<PageLine>(leftLines[i], 0, currentPageNextY));
+    }
+    if (i < rightLines.size()) {
+      currentPage->elements.push_back(std::make_shared<PageLine>(rightLines[i], rightColX, currentPageNextY));
+    }
+
+    currentPageNextY += lineHeight;
+  }
+
+  // Apply bottom spacing
+  if (bs.marginBottom > 0) currentPageNextY += bs.marginBottom;
+  if (bs.paddingBottom > 0) currentPageNextY += bs.paddingBottom;
   if (extraParagraphSpacing) {
     currentPageNextY += lineHeight / 2;
   }

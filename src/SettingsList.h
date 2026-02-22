@@ -43,7 +43,7 @@ inline std::vector<SettingInfo> getSettingsList() {
       // --- Reader ---
       SettingInfo::Enum(StrId::STR_TRANSLATION_MODE, &CrossPointSettings::colorTextStyle,
                         {StrId::STR_NORMAL, StrId::STR_DARK, StrId::STR_LIGHT, StrId::STR_NO_RENDER,
-                         StrId::STR_INVERT_TRANSLATION},
+                         StrId::STR_INVERT_TRANSLATION, StrId::STR_SIDE_BY_SIDE},
                         "colorTextStyle", StrId::STR_CAT_READER),
       SettingInfo::Enum(StrId::STR_FONT_FAMILY, &CrossPointSettings::fontFamily,
                         {StrId::STR_BOOKERLY, StrId::STR_EDSLAB},
