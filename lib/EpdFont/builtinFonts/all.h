@@ -22,6 +22,14 @@
 #include <builtinFonts/edslab_14_regular.h>
 #include <builtinFonts/edslab_16_regular.h>
 #include <builtinFonts/edslab_18_regular.h>
+#include <builtinFonts/alegreya_12_regular.h>
+#include <builtinFonts/alegreya_14_regular.h>
+#include <builtinFonts/alegreya_16_regular.h>
+#include <builtinFonts/alegreya_18_regular.h>
+#include <builtinFonts/gpro_12_regular.h>
+#include <builtinFonts/gpro_14_regular.h>
+#include <builtinFonts/gpro_16_regular.h>
+#include <builtinFonts/gpro_18_regular.h>
 #include <builtinFonts/ubuntu_10_bold.h>
 #include <builtinFonts/ubuntu_10_regular.h>
 #include <builtinFonts/ubuntu_12_bold.h>
