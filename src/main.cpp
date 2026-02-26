@@ -90,6 +90,24 @@ EpdFont edslab16Font(&edslab_16_regular);
 EpdFontFamily edslab16FontFamily(&edslab16Font, &bookerly16BoldFont, &bookerly16ItalicFont, &bookerly16BoldItalicFont);
 EpdFont edslab18Font(&edslab_18_regular);
 EpdFontFamily edslab18FontFamily(&edslab18Font, &bookerly18BoldFont, &bookerly18ItalicFont, &bookerly18BoldItalicFont);
+// Alegreya: regular weight only — borrow Bookerly bold/italic for styled text
+EpdFont alegreya12Font(&alegreya_12_regular);
+EpdFontFamily alegreya12FontFamily(&alegreya12Font, &bookerly12BoldFont, &bookerly12ItalicFont, &bookerly12BoldItalicFont);
+EpdFont alegreya14Font(&alegreya_14_regular);
+EpdFontFamily alegreya14FontFamily(&alegreya14Font, &bookerly14BoldFont, &bookerly14ItalicFont, &bookerly14BoldItalicFont);
+EpdFont alegreya16Font(&alegreya_16_regular);
+EpdFontFamily alegreya16FontFamily(&alegreya16Font, &bookerly16BoldFont, &bookerly16ItalicFont, &bookerly16BoldItalicFont);
+EpdFont alegreya18Font(&alegreya_18_regular);
+EpdFontFamily alegreya18FontFamily(&alegreya18Font, &bookerly18BoldFont, &bookerly18ItalicFont, &bookerly18BoldItalicFont);
+// GPro: regular weight only — borrow Bookerly bold/italic for styled text
+EpdFont gpro12Font(&gpro_12_regular);
+EpdFontFamily gpro12FontFamily(&gpro12Font, &bookerly12BoldFont, &bookerly12ItalicFont, &bookerly12BoldItalicFont);
+EpdFont gpro14Font(&gpro_14_regular);
+EpdFontFamily gpro14FontFamily(&gpro14Font, &bookerly14BoldFont, &bookerly14ItalicFont, &bookerly14BoldItalicFont);
+EpdFont gpro16Font(&gpro_16_regular);
+EpdFontFamily gpro16FontFamily(&gpro16Font, &bookerly16BoldFont, &bookerly16ItalicFont, &bookerly16BoldItalicFont);
+EpdFont gpro18Font(&gpro_18_regular);
+EpdFontFamily gpro18FontFamily(&gpro18Font, &bookerly18BoldFont, &bookerly18ItalicFont, &bookerly18BoldItalicFont);
 #endif  // OMIT_FONTS
 
 // measurement of power button press duration calibration value
@@ -240,6 +258,16 @@ void setupDisplayAndFonts() {
   renderer.insertFont(EDSLAB_14_FONT_ID, edslab14FontFamily);
   renderer.insertFont(EDSLAB_16_FONT_ID, edslab16FontFamily);
   renderer.insertFont(EDSLAB_18_FONT_ID, edslab18FontFamily);
+
+  renderer.insertFont(ALEGREYA_12_FONT_ID, alegreya12FontFamily);
+  renderer.insertFont(ALEGREYA_14_FONT_ID, alegreya14FontFamily);
+  renderer.insertFont(ALEGREYA_16_FONT_ID, alegreya16FontFamily);
+  renderer.insertFont(ALEGREYA_18_FONT_ID, alegreya18FontFamily);
+
+  renderer.insertFont(GPRO_12_FONT_ID, gpro12FontFamily);
+  renderer.insertFont(GPRO_14_FONT_ID, gpro14FontFamily);
+  renderer.insertFont(GPRO_16_FONT_ID, gpro16FontFamily);
+  renderer.insertFont(GPRO_18_FONT_ID, gpro18FontFamily);
 #endif  // OMIT_FONTS
   renderer.insertFont(UI_10_FONT_ID, ui10FontFamily);
   renderer.insertFont(UI_12_FONT_ID, ui12FontFamily);
