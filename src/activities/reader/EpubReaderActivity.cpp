@@ -13,6 +13,7 @@
 #include "EpubReaderPercentSelectionActivity.h"
 #include "KOReaderCredentialStore.h"
 #include "KOReaderSyncActivity.h"
+#include "activities/translator/TranslatorActivity.h"
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
@@ -139,6 +140,16 @@ void EpubReaderActivity::loop() {
         onGoHome();
       }
       return;  // Don't access 'this' after callback
+    }
+    // Deferred translate: launch TranslatorActivity after menu subactivity is gone
+    if (pendingTranslate) {
+      pendingTranslate = false;
+      if (onGoToTranslator && epub) {
+        const std::string path = epub->getPath();
+        auto cb = onGoToTranslator;
+        cb(path);
+      }
+      return;
     }
     return;
   }
@@ -444,6 +455,13 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       }
       // Defer go home to avoid race condition with display task
       pendingGoHome = true;
+      break;
+    }
+    case EpubReaderMenuActivity::MenuAction::TRANSLATE_BOOK: {
+      if (onGoToTranslator && epub) {
+        pendingTranslate = true;
+        exitActivity();  // close the menu subactivity; loop() will fire onGoToTranslator
+      }
       break;
     }
     case EpubReaderMenuActivity::MenuAction::SYNC: {

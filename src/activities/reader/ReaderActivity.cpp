@@ -84,8 +84,9 @@ void ReaderActivity::onGoToEpubReader(std::unique_ptr<Epub> epub) {
   const auto epubPath = epub->getPath();
   currentBookPath = epubPath;
   exitActivity();
-  enterNewActivity(new EpubReaderActivity(
-      renderer, mappedInput, std::move(epub), [this, epubPath] { goToLibrary(epubPath); }, [this] { onGoBack(); }));
+  enterNewActivity(new EpubReaderActivity(renderer, mappedInput, std::move(epub),
+                                           [this, epubPath] { goToLibrary(epubPath); }, [this] { onGoBack(); },
+                                           onGoToTranslator));
 }
 
 void ReaderActivity::onGoToXtcReader(std::unique_ptr<Xtc> xtc) {

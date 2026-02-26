@@ -22,7 +22,8 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
     CYCLE_LINE_SPACING,
     GO_HOME,
     SYNC,
-    DELETE_CACHE
+    DELETE_CACHE,
+    TRANSLATE_BOOK
   };
 
   explicit EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title,
@@ -66,7 +67,8 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
                                            {MenuAction::GO_TO_PERCENT, StrId::STR_GO_TO_PERCENT},
                                            {MenuAction::GO_HOME, StrId::STR_GO_HOME_BUTTON},
                                            {MenuAction::SYNC, StrId::STR_SYNC_PROGRESS},
-                                           {MenuAction::DELETE_CACHE, StrId::STR_DELETE_CACHE}};
+                                           {MenuAction::DELETE_CACHE, StrId::STR_DELETE_CACHE},
+                                           {MenuAction::TRANSLATE_BOOK, StrId::STR_TRANSLATE_BOOK}};
 
   int selectedIndex = 0;
 
