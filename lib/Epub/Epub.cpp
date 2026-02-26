@@ -438,7 +438,7 @@ bool Epub::clearCache() const {
     return true;
   }
 
-  if (!Storage.removeDir(cachePath.c_str())) {
+  if (!Storage.forceRemoveDir(cachePath.c_str())) {
     LOG_ERR("EPB", "Failed to clear cache");
     return false;
   }

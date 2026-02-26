@@ -113,6 +113,9 @@ void EpubReaderActivity::onExit() {
 
   APP_STATE.readerActivityLoadCount = 0;
   APP_STATE.saveToFile();
+  if (section && epub) {
+    saveProgress(currentSpineIndex, section->currentPage, section->pageCount);
+  }
   section.reset();
   epub.reset();
 }
@@ -429,7 +432,9 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
 
           section.reset();
           // 3. WIPE: Clear the cache directory
-          epub->clearCache();
+          if (!epub->clearCache()) {
+            LOG_ERR("ERS", "clearCache failed - partial cleanup only");
+          }
 
           // 4. RESTORE: Re-setup the directory and rewrite the progress file
           epub->setupCacheDir();
@@ -714,8 +719,8 @@ void EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageC
   FsFile f;
   if (Storage.openFileForWrite("ERS", epub->getCachePath() + "/progress.bin", f)) {
     uint8_t data[6];
-    data[0] = currentSpineIndex & 0xFF;
-    data[1] = (currentSpineIndex >> 8) & 0xFF;
+    data[0] = spineIndex & 0xFF;
+    data[1] = (spineIndex >> 8) & 0xFF;
     data[2] = currentPage & 0xFF;
     data[3] = (currentPage >> 8) & 0xFF;
     data[4] = pageCount & 0xFF;
