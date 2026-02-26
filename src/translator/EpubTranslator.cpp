@@ -107,7 +107,7 @@ void EpubTranslator::run(const std::string& epubPath, const char* targetLang, co
   LOG_DBG("ET", "Starting translation: %s -> %s", epubPath.c_str(), outputPath.c_str());
 
   // ── 1. Load EPUB metadata to get spine item paths ──────────────────────────
-  auto epub = std::make_unique<Epub>(epubPath, "/tmp/et_cache");
+  auto epub = std::make_unique<Epub>(epubPath, "/.crosspoint");
   if (!epub->load(false, true)) {
     LOG_ERR("ET", "Failed to load EPUB metadata");
     Progress p;
