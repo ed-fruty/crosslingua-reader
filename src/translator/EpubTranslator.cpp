@@ -1,13 +1,11 @@
 #include "EpubTranslator.h"
 
-#include <Epub.h>
 #include <FsHelpers.h>
 #include <HalStorage.h>
 #include <Logging.h>
 #include <miniz.h>
 
 #include <cstring>
-#include <unordered_set>
 
 #include "TranslatingHtmlRewriter.h"
 
@@ -76,7 +74,7 @@ bool EpubTranslator::start(const std::string& epubPath, const char* targetLang, 
   progress = {};
 
   auto* params = new TaskParams{this, epubPath, targetLang, outputPath};
-  xTaskCreate(taskFunc, "EpubTranslate", 8192, params, 1, nullptr);
+  xTaskCreate(taskFunc, "EpubTranslate", 12288, params, 1, nullptr);
   return true;
 }
 
@@ -103,36 +101,16 @@ static std::string patchOpf(const char* data, size_t size, const char* targetLan
   return opf;
 }
 
+static bool isHtmlEntry(const char* filename) {
+  const char* dot = strrchr(filename, '.');
+  if (!dot) return false;
+  return strcmp(dot, ".html") == 0 || strcmp(dot, ".xhtml") == 0 || strcmp(dot, ".htm") == 0;
+}
+
 void EpubTranslator::run(const std::string& epubPath, const char* targetLang, const std::string& outputPath) {
   LOG_DBG("ET", "Starting translation: %s -> %s", epubPath.c_str(), outputPath.c_str());
 
-  // ── 1. Load EPUB metadata to get spine item paths ──────────────────────────
-  auto epub = std::make_unique<Epub>(epubPath, "/.crosspoint");
-  if (!epub->load(false, true)) {
-    LOG_ERR("ET", "Failed to load EPUB metadata");
-    Progress p;
-    p.failed = true;
-    snprintf(p.statusMsg, sizeof(p.statusMsg), "Failed to load EPUB");
-    setProgress(p);
-    return;
-  }
-
-  // Build set of ZIP paths for HTML spine chapters
-  const std::string& basePath = epub->getBasePath();
-  std::unordered_set<std::string> chapterZipPaths;
-  const int spineCount = epub->getSpineItemsCount();
-  for (int i = 0; i < spineCount; i++) {
-    std::string href = epub->getSpineItem(i).href;
-    // Strip anchor
-    size_t anchor = href.find('#');
-    if (anchor != std::string::npos) href = href.substr(0, anchor);
-    // Build ZIP path
-    std::string zipPath = basePath.empty() ? href : (basePath + "/" + href);
-    chapterZipPaths.insert(zipPath);
-  }
-  LOG_DBG("ET", "Spine chapters: %d", (int)chapterZipPaths.size());
-
-  // ── 2. Open source EPUB with miniz (custom FsFile read callback) ────────────
+  // ── 1. Open source EPUB with miniz (custom FsFile read callback) ────────────
   FsFile srcFile;
   if (!Storage.openFileForRead("ET", epubPath, srcFile)) {
     LOG_ERR("ET", "Cannot open source EPUB");
@@ -190,10 +168,17 @@ void EpubTranslator::run(const std::string& epubPath, const char* targetLang, co
     return;
   }
 
-  // ── 4. Iterate ZIP entries ──────────────────────────────────────────────────
+  // ── 4. Count HTML chapters for progress reporting ──────────────────────────
   int numFiles = static_cast<int>(mz_zip_reader_get_num_files(&srcZip));
+  int totalChapters = 0;
+  for (int i = 0; i < numFiles; i++) {
+    mz_zip_archive_file_stat stat;
+    if (mz_zip_reader_file_stat(&srcZip, i, &stat) && isHtmlEntry(stat.m_filename)) totalChapters++;
+  }
+  LOG_DBG("ET", "HTML chapters to translate: %d", totalChapters);
+
+  // ── 5. Iterate ZIP entries ──────────────────────────────────────────────────
   int currentChapter = 0;
-  bool anyFailed = false;
 
   // Add mimetype first (EPUB spec: must be first + uncompressed)
   int mimetypeIdx = mz_zip_reader_locate_file(&srcZip, "mimetype", nullptr, 0);
@@ -212,17 +197,17 @@ void EpubTranslator::run(const std::string& epubPath, const char* targetLang, co
     mz_zip_archive_file_stat stat;
     if (!mz_zip_reader_file_stat(&srcZip, i, &stat)) continue;
 
-    const std::string filename(stat.m_filename);
     const bool isDir = mz_zip_reader_is_file_a_directory(&srcZip, i);
     if (isDir) {
       mz_zip_writer_add_from_zip_reader(&dstZip, &srcZip, i);
       continue;
     }
 
-    const bool isChapter = chapterZipPaths.count(filename) > 0;
+    const char* filename = stat.m_filename;
 
     // Check if this is the OPF file (ends with .opf)
-    const bool isOpf = filename.size() > 4 && filename.substr(filename.size() - 4) == ".opf";
+    const char* dot = strrchr(filename, '.');
+    const bool isOpf = dot && strcmp(dot, ".opf") == 0;
 
     if (isOpf) {
       // Patch OPF: update title to include language tag
@@ -231,28 +216,26 @@ void EpubTranslator::run(const std::string& epubPath, const char* targetLang, co
       if (data) {
         std::string patched = patchOpf(static_cast<const char*>(data), extractSize, targetLang);
         mz_free(data);
-        mz_zip_writer_add_mem(&dstZip, filename.c_str(), patched.c_str(), patched.size(), MZ_BEST_SPEED);
+        mz_zip_writer_add_mem(&dstZip, filename, patched.c_str(), patched.size(), MZ_BEST_SPEED);
       } else {
         mz_zip_writer_add_from_zip_reader(&dstZip, &srcZip, i);
       }
-    } else if (isChapter) {
+    } else if (isHtmlEntry(filename)) {
       currentChapter++;
       {
         Progress p;
         p.currentChapter = currentChapter;
-        p.totalChapters = static_cast<int>(chapterZipPaths.size());
-        snprintf(p.statusMsg, sizeof(p.statusMsg), "Chapter %d / %d", currentChapter,
-                 static_cast<int>(chapterZipPaths.size()));
+        p.totalChapters = totalChapters;
+        snprintf(p.statusMsg, sizeof(p.statusMsg), "Chapter %d / %d", currentChapter, totalChapters);
         setProgress(p);
       }
-      LOG_DBG("ET", "Translating chapter %d: %s", currentChapter, filename.c_str());
+      LOG_DBG("ET", "Translating chapter %d: %s", currentChapter, filename);
 
       size_t htmlSize = 0;
       void* htmlData = mz_zip_reader_extract_to_heap(&srcZip, i, &htmlSize, 0);
-      if (!htmlData || htmlSize > 120 * 1024) {
+      if (!htmlData || htmlSize > 60 * 1024) {
         // Chapter too large for RAM processing — copy as-is
-        LOG_DBG("ET", "Chapter %s too large (%u bytes), copying without translation", filename.c_str(),
-                (unsigned)htmlSize);
+        LOG_DBG("ET", "Chapter %s too large (%u bytes), copying without translation", filename, (unsigned)htmlSize);
         if (htmlData) mz_free(htmlData);
         mz_zip_writer_add_from_zip_reader(&dstZip, &srcZip, i);
         continue;
@@ -275,7 +258,7 @@ void EpubTranslator::run(const std::string& epubPath, const char* targetLang, co
       if (outHtml.empty()) {
         mz_zip_writer_add_from_zip_reader(&dstZip, &srcZip, i);
       } else {
-        mz_zip_writer_add_mem(&dstZip, filename.c_str(), outHtml.c_str(), outHtml.size(), MZ_BEST_SPEED);
+        mz_zip_writer_add_mem(&dstZip, filename, outHtml.c_str(), outHtml.size(), MZ_BEST_SPEED);
       }
     } else {
       // Non-chapter asset: copy directly (images, CSS, fonts, etc.)
@@ -285,7 +268,7 @@ void EpubTranslator::run(const std::string& epubPath, const char* targetLang, co
 
   // ── 5. Finalize ─────────────────────────────────────────────────────────────
   bool finalizeOk = false;
-  if (!cancelRequested && !anyFailed) {
+  if (!cancelRequested) {
     finalizeOk = mz_zip_writer_finalize_archive(&dstZip);
     if (!finalizeOk) LOG_ERR("ET", "Failed to finalize ZIP archive");
   }
@@ -301,7 +284,7 @@ void EpubTranslator::run(const std::string& epubPath, const char* targetLang, co
 
   Progress p;
   p.currentChapter = currentChapter;
-  p.totalChapters = static_cast<int>(chapterZipPaths.size());
+  p.totalChapters = totalChapters;
   if (cancelRequested) {
     p.cancelled = true;
     snprintf(p.statusMsg, sizeof(p.statusMsg), "Cancelled");
