@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 /**
  * SAX-based HTML rewriter that inserts machine-translated paragraphs after
@@ -58,6 +59,16 @@ class TranslatingHtmlRewriter {
   int paragraphsSkipped = 0;
   bool wasCancelled = false;
 
+  // ─── Batch buffering ─────────────────────────────────────────────────────
+  struct BatchEntry {
+    std::string htmlBefore;   // all HTML output accumulated before this entry's translation slot
+    std::string trimmedText;  // plain text to translate (empty = untranslatable, skip)
+  };
+  std::vector<BatchEntry> batch;
+  std::string pendingHtml;       // accumulates writeOut() calls between block flushes
+  size_t batchTextBytes = 0;     // running total of trimmedText bytes in current batch
+  static constexpr size_t BATCH_TARGET_BYTES = 1500;  // flush threshold (under MAX_TEXT_BYTES=1800)
+
   static const char* BLOCK_TAGS[];
   static const int NUM_BLOCK_TAGS;
 
@@ -66,15 +77,25 @@ class TranslatingHtmlRewriter {
   // Append XML-escaped version of `s` to `buf`
   static void appendEscaped(const char* s, size_t len, std::string& buf);
 
-  // Write to output Print stream
+  // Write to pendingHtml buffer (not directly to out)
   void writeOut(const char* s, size_t len);
   void writeOut(const std::string& s);
+
+  // Write directly to output Print stream (bypasses buffer)
+  void writeRaw(const char* s, size_t len);
+  void writeRaw(const std::string& s);
 
   // Build opening tag string "<name attr1=...>"
   static std::string makeOpenTag(const XML_Char* name, const XML_Char** atts);
 
-  // Called when a block element closes: write block HTML, then translation
+  // Called when a block element closes: accumulate into batch
   void flushBlock(const char* endTagName);
+
+  // Translate all accumulated batch entries in one API call, write to out
+  void flushBatch();
+
+  // Split string by "\n\n" separator
+  static std::vector<std::string> splitByDoubleLF(const std::string& s);
 
   static void XMLCALL onStart(void* ud, const XML_Char* name, const XML_Char** atts);
   static void XMLCALL onEnd(void* ud, const XML_Char* name);

@@ -43,6 +43,6 @@ class ParagraphTranslator {
   static bool parseOpenAIResponse(const std::string& json, std::string& result);
   static bool parseGeminiResponse(const std::string& json, std::string& result);
 
-  // Build LLM translation prompt
-  static std::string buildLlmPrompt(const char* sourceLang, const char* targetLang);
+  // Build LLM translation prompt. When batch=true, adds instructions to preserve \n\n separators.
+  static std::string buildLlmPrompt(const char* sourceLang, const char* targetLang, bool batch = false);
 };

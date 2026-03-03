@@ -24,6 +24,7 @@ class ChapterTranslatorActivity final : public ActivityWithSubactivity {
  public:
   enum State {
     CONFIRM_RETRANSLATE,
+    SOURCE_LANG_SELECTION,
     LANG_SELECTION,
     WIFI_SELECTION,
     TRANSLATING,
@@ -56,9 +57,11 @@ class ChapterTranslatorActivity final : public ActivityWithSubactivity {
   int spineIndex;
   std::string translatedHtmlPath;
   bool alreadyTranslated;
+  std::string sourceLangCode = "auto";
+  std::string sourceLangName = "Auto Detect";
   std::string targetLangCode;
   std::string targetLangName;
-  State state = LANG_SELECTION;
+  State state = SOURCE_LANG_SELECTION;
 
   // Translation task
   TaskHandle_t taskHandle = nullptr;
@@ -76,6 +79,9 @@ class ChapterTranslatorActivity final : public ActivityWithSubactivity {
   const std::function<void()> onCancel;
   const std::function<void()> onComplete;
 
+  void launchSourcePicker();
+  void launchTargetPicker();
+  void onSourceLangSelected(const char* code, const char* name);
   void onLangSelected(const char* code, const char* name);
   void onWifiConnected(bool success);
   void startTranslation();

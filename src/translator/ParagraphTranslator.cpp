@@ -246,7 +246,7 @@ bool ParagraphTranslator::parseOpenAIResponse(const std::string& json, std::stri
   return extractJsonStringValue(json, pos, result);
 }
 
-std::string ParagraphTranslator::buildLlmPrompt(const char* sourceLang, const char* targetLang) {
+std::string ParagraphTranslator::buildLlmPrompt(const char* sourceLang, const char* targetLang, bool batch) {
   // Map common language codes to display names for the prompt
   struct LangName {
     const char* code;
@@ -283,7 +283,14 @@ std::string ParagraphTranslator::buildLlmPrompt(const char* sourceLang, const ch
     prompt = "Translate the following text to ";
     prompt += tgtName;
   }
-  prompt += ". Output only the translation, nothing else.";
+  if (batch) {
+    prompt +=
+        ". The text contains multiple paragraphs separated by blank lines. "
+        "Translate each paragraph and keep the blank line separators in your output. "
+        "Output only the translations, nothing else.";
+  } else {
+    prompt += ". Output only the translation, nothing else.";
+  }
   return prompt;
 }
 
@@ -292,7 +299,8 @@ bool ParagraphTranslator::translateOpenAICompat(const std::string& text, const c
                                                  const char* model, std::string& result) {
   LOG_DBG("Translator", "OpenAI-compat: endpoint=%s, model=%s", endpoint, model);
 
-  std::string prompt = buildLlmPrompt(sourceLang, targetLang);
+  const bool isBatch = text.find("\n\n") != std::string::npos;
+  std::string prompt = buildLlmPrompt(sourceLang, targetLang, isBatch);
 
   // Build JSON body
   auto jsonEscape = [](const std::string& s) {
@@ -350,7 +358,8 @@ bool ParagraphTranslator::translateGemini(const std::string& text, const char* s
                                            const char* apiKey, std::string& result) {
   LOG_DBG("Translator", "Gemini: src=%s, tgt=%s", sourceLang, targetLang);
 
-  std::string prompt = buildLlmPrompt(sourceLang, targetLang);
+  const bool isBatch = text.find("\n\n") != std::string::npos;
+  std::string prompt = buildLlmPrompt(sourceLang, targetLang, isBatch);
   prompt += "\n\n";
   prompt += text;
 

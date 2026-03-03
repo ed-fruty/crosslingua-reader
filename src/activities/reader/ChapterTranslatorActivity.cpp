@@ -27,14 +27,35 @@ void ChapterTranslatorActivity::onEnter() {
     return;
   }
 
-  // If language is saved, reuse it and skip the picker
-  if (SETTINGS.translationLanguage != 0xFF &&
-      SETTINGS.translationLanguage < LanguagePickerActivity::NUM_LANGUAGES) {
-    const auto& lang = LanguagePickerActivity::LANGUAGES[SETTINGS.translationLanguage];
-    onLangSelected(lang.code, lang.name);
-    return;
-  }
+  // Always start with source language picker
+  launchSourcePicker();
+}
 
+void ChapterTranslatorActivity::launchSourcePicker() {
+  state = SOURCE_LANG_SELECTION;
+  enterNewActivity(new LanguagePickerActivity(
+      renderer, mappedInput,
+      [this](const char* code) {
+        if (strcmp(code, "auto") == 0) {
+          onSourceLangSelected("auto", "Auto Detect");
+        } else {
+          for (int i = 0; i < LanguagePickerActivity::NUM_LANGUAGES; i++) {
+            if (strcmp(LanguagePickerActivity::LANGUAGES[i].code, code) == 0) {
+              onSourceLangSelected(code, LanguagePickerActivity::LANGUAGES[i].name);
+              return;
+            }
+          }
+          onSourceLangSelected(code, code);
+        }
+      },
+      [this] {
+        auto cb = onCancel;
+        cb();
+      },
+      "Source Language", true));
+}
+
+void ChapterTranslatorActivity::launchTargetPicker() {
   state = LANG_SELECTION;
   enterNewActivity(new LanguagePickerActivity(
       renderer, mappedInput,
@@ -52,7 +73,16 @@ void ChapterTranslatorActivity::onEnter() {
       [this] {
         auto cb = onCancel;
         cb();
-      }));
+      },
+      "Target Language"));
+}
+
+void ChapterTranslatorActivity::onSourceLangSelected(const char* code, const char* name) {
+  exitActivity();
+  sourceLangCode = code;
+  sourceLangName = name;
+  LOG_DBG("CHT", "Source language: %s (%s)", name, code);
+  launchTargetPicker();
 }
 
 void ChapterTranslatorActivity::onExit() {
@@ -160,11 +190,9 @@ void ChapterTranslatorActivity::runTranslation() {
     return;
   }
 
-  // Determine source language
-  const char* srcLang = "auto";
-  if (SETTINGS.sourceLanguage != 0xFF && SETTINGS.sourceLanguage < LanguagePickerActivity::NUM_LANGUAGES) {
-    srcLang = LanguagePickerActivity::LANGUAGES[SETTINGS.sourceLanguage].code;
-  }
+  // Use user-selected source language
+  const char* srcLang = sourceLangCode.c_str();
+  LOG_DBG("CHT", "Using source=%s, target=%s", srcLang, targetLangCode.c_str());
 
   TranslatingHtmlRewriter rewriter;
   lastResult = rewriter.rewriteFromFile(tmpPath, outFile, srcLang, targetLangCode.c_str(),
@@ -219,25 +247,8 @@ void ChapterTranslatorActivity::loop() {
   // CONFIRM_RETRANSLATE: confirm or back
   if (state == CONFIRM_RETRANSLATE) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-      // User confirmed re-translate — always show language picker
-      state = LANG_SELECTION;
-      enterNewActivity(new LanguagePickerActivity(
-          renderer, mappedInput,
-          [this](const char* code) {
-            for (int i = 0; i < LanguagePickerActivity::NUM_LANGUAGES; i++) {
-              if (strcmp(LanguagePickerActivity::LANGUAGES[i].code, code) == 0) {
-                SETTINGS.translationLanguage = static_cast<uint8_t>(i);
-                SETTINGS.saveToFile();
-                onLangSelected(code, LanguagePickerActivity::LANGUAGES[i].name);
-                return;
-              }
-            }
-            onLangSelected(code, code);
-          },
-          [this] {
-            auto cb = onCancel;
-            cb();
-          }));
+      // User confirmed re-translate — show source + target language pickers
+      launchSourcePicker();
       return;
     }
     if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
@@ -309,7 +320,7 @@ void ChapterTranslatorActivity::render(RenderLock&&) {
   } else if (state == TRANSLATING) {
     // Language line
     if (!targetLangName.empty()) {
-      std::string langLine = std::string(tr(STR_TRANSLATE_TO)) + " " + targetLangName;
+      std::string langLine = sourceLangName + " -> " + targetLangName;
       renderer.drawCenteredText(UI_10_FONT_ID, 50, langLine.c_str());
     }
 
@@ -351,7 +362,7 @@ void ChapterTranslatorActivity::render(RenderLock&&) {
   } else if (state == DONE) {
     // Language line
     if (!targetLangName.empty()) {
-      std::string langLine = std::string(tr(STR_TRANSLATE_TO)) + " " + targetLangName;
+      std::string langLine = sourceLangName + " -> " + targetLangName;
       renderer.drawCenteredText(UI_10_FONT_ID, 50, langLine.c_str());
     }
 

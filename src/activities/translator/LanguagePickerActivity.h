@@ -17,8 +17,13 @@ class LanguagePickerActivity final : public Activity {
 
   explicit LanguagePickerActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                   const std::function<void(const char*)>& onSelect,
-                                  const std::function<void()>& onCancel)
-      : Activity("LangPicker", renderer, mappedInput), onSelect(onSelect), onCancel(onCancel) {}
+                                  const std::function<void()>& onCancel,
+                                  const char* customTitle = nullptr, bool includeAutoDetect = false)
+      : Activity("LangPicker", renderer, mappedInput),
+        onSelect(onSelect),
+        onCancel(onCancel),
+        customTitle(customTitle),
+        includeAutoDetect(includeAutoDetect) {}
 
   void onEnter() override;
   void onExit() override;
@@ -34,4 +39,10 @@ class LanguagePickerActivity final : public Activity {
 
   const std::function<void(const char*)> onSelect;
   const std::function<void()> onCancel;
+  const char* customTitle;
+  bool includeAutoDetect;
+
+  int itemCount() const { return includeAutoDetect ? NUM_LANGUAGES + 1 : NUM_LANGUAGES; }
+  const char* itemName(int idx) const;
+  const char* itemCode(int idx) const;
 };

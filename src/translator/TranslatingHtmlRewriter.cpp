@@ -33,11 +33,34 @@ void TranslatingHtmlRewriter::appendEscaped(const char* s, size_t len, std::stri
 }
 
 void TranslatingHtmlRewriter::writeOut(const char* s, size_t len) {
-  out->write(reinterpret_cast<const uint8_t*>(s), len);
+  pendingHtml.append(s, len);
 }
 
 void TranslatingHtmlRewriter::writeOut(const std::string& s) {
-  if (!s.empty()) writeOut(s.c_str(), s.size());
+  if (!s.empty()) pendingHtml.append(s);
+}
+
+void TranslatingHtmlRewriter::writeRaw(const char* s, size_t len) {
+  out->write(reinterpret_cast<const uint8_t*>(s), len);
+}
+
+void TranslatingHtmlRewriter::writeRaw(const std::string& s) {
+  if (!s.empty()) writeRaw(s.c_str(), s.size());
+}
+
+std::vector<std::string> TranslatingHtmlRewriter::splitByDoubleLF(const std::string& s) {
+  std::vector<std::string> parts;
+  size_t start = 0;
+  while (start < s.size()) {
+    size_t pos = s.find("\n\n", start);
+    if (pos == std::string::npos) {
+      parts.push_back(s.substr(start));
+      break;
+    }
+    parts.push_back(s.substr(start, pos - start));
+    start = pos + 2;
+  }
+  return parts;
 }
 
 std::string TranslatingHtmlRewriter::makeOpenTag(const XML_Char* name, const XML_Char** atts) {
@@ -62,13 +85,13 @@ std::string TranslatingHtmlRewriter::makeOpenTag(const XML_Char* name, const XML
 }
 
 void TranslatingHtmlRewriter::flushBlock(const char* endTagName) {
-  // Write the original block HTML (already reconstructed in blockHtml)
+  // Append closing tag to pendingHtml via writeOut (buffered)
   writeOut(blockHtml);
   writeOut("</", 2);
   writeOut(endTagName, strlen(endTagName));
   writeOut(">\n", 2);
 
-  // Try to translate the plain text we collected
+  // Trim block text for translation
   const std::string trimmed = [&] {
     size_t s = blockText.find_first_not_of(" \t\n\r");
     if (s == std::string::npos) return std::string{};
@@ -76,43 +99,133 @@ void TranslatingHtmlRewriter::flushBlock(const char* endTagName) {
     return blockText.substr(s, e - s + 1);
   }();
 
+  // Create batch entry: move pendingHtml into htmlBefore, store trimmedText
+  BatchEntry entry;
+  entry.htmlBefore = std::move(pendingHtml);
+  pendingHtml.clear();
   if (!trimmed.empty() && trimmed.size() <= ParagraphTranslator::MAX_TEXT_BYTES) {
-    std::string translated;
-    // Retry up to 2 times
-    bool ok = false;
-    for (int attempt = 0; attempt < 2 && !ok; attempt++) {
-      if (attempt > 0) delay(500);
-      ok = ParagraphTranslator::translate(trimmed, sourceLang, targetLang, engine, apiKey, translated);
-    }
-    if (ok && !translated.empty() && translated != trimmed) {
-      // Write translation paragraph with lang + data-translation attrs (grey, auto direction)
-      static constexpr char kTagOpen[] = "<p lang=\"";
-      static constexpr char kTagAttrs[] = "\" data-translation=\"true\" dir=\"auto\" style=\"color:#5A5A5A\">";
-      writeOut(kTagOpen, sizeof(kTagOpen) - 1);
-      writeOut(targetLang, strlen(targetLang));
-      writeOut(kTagAttrs, sizeof(kTagAttrs) - 1);
-      // Write escaped translation text
-      std::string escaped;
-      appendEscaped(translated.c_str(), translated.size(), escaped);
-      writeOut(escaped);
-      writeOut("</p>\n", 5);
-      paragraphsTranslated++;
-    } else {
-      paragraphsSkipped++;
-    }
-    delay(100);  // rate-limit between requests
-  } else {
-    paragraphsSkipped++;
+    entry.trimmedText = trimmed;
+    batchTextBytes += trimmed.size();
   }
+  batch.push_back(std::move(entry));
 
-  LOG_DBG("HtmlRW", "Block <%s> text=%u bytes, translated=%d skipped=%d", endTagName, (unsigned)blockText.size(),
-          paragraphsTranslated, paragraphsSkipped);
+  LOG_DBG("HtmlRW", "Block <%s> text=%u bytes, batch=%u entries, batchBytes=%u", endTagName,
+          (unsigned)blockText.size(), (unsigned)batch.size(), (unsigned)batchTextBytes);
 
-  if (progressOut) *progressOut = paragraphsTranslated + paragraphsSkipped;
+  // Flush batch if we've accumulated enough text
+  if (batchTextBytes >= BATCH_TARGET_BYTES) {
+    flushBatch();
+  }
 
   blockHtml.clear();
   blockText.clear();
   blockDepth = -1;
+}
+
+void TranslatingHtmlRewriter::flushBatch() {
+  if (batch.empty()) return;
+
+  // If cancelled, write all HTML without translations
+  if (wasCancelled || (cancelled && *cancelled)) {
+    for (auto& entry : batch) {
+      writeRaw(entry.htmlBefore);
+      if (!entry.trimmedText.empty()) paragraphsSkipped++;
+      if (progressOut) *progressOut = paragraphsTranslated + paragraphsSkipped;
+    }
+    batch.clear();
+    batchTextBytes = 0;
+    return;
+  }
+
+  // Collect indices of translatable entries and build merged text
+  std::vector<size_t> translatableIndices;
+  std::string mergedText;
+  for (size_t i = 0; i < batch.size(); i++) {
+    if (!batch[i].trimmedText.empty()) {
+      if (!mergedText.empty()) mergedText += "\n\n";
+      mergedText += batch[i].trimmedText;
+      translatableIndices.push_back(i);
+    }
+  }
+
+  // Translate the merged text
+  std::vector<std::string> translations;
+  if (!translatableIndices.empty()) {
+    if (mergedText.size() <= ParagraphTranslator::MAX_TEXT_BYTES) {
+      // Single batched API call
+      std::string translated;
+      bool ok = false;
+      for (int attempt = 0; attempt < 2 && !ok; attempt++) {
+        if (attempt > 0) delay(500);
+        ok = ParagraphTranslator::translate(mergedText, sourceLang, targetLang, engine, apiKey, translated);
+      }
+      if (ok && !translated.empty()) {
+        translations = splitByDoubleLF(translated);
+        LOG_DBG("HtmlRW", "Batch: sent %u paragraphs, got %u back, response %.120s",
+                (unsigned)translatableIndices.size(), (unsigned)translations.size(), translated.c_str());
+      }
+    } else {
+      // Merged text too large — fall back to individual calls
+      LOG_DBG("HtmlRW", "Batch too large (%u bytes), falling back to individual calls",
+              (unsigned)mergedText.size());
+      for (size_t i = 0; i < translatableIndices.size(); i++) {
+        if (wasCancelled || (cancelled && *cancelled)) break;
+        std::string translated;
+        bool ok = false;
+        for (int attempt = 0; attempt < 2 && !ok; attempt++) {
+          if (attempt > 0) delay(500);
+          ok = ParagraphTranslator::translate(batch[translatableIndices[i]].trimmedText, sourceLang, targetLang,
+                                              engine, apiKey, translated);
+        }
+        translations.push_back(ok ? std::move(translated) : std::string{});
+        if (i + 1 < translatableIndices.size()) delay(100);
+      }
+    }
+  }
+
+  // Write all entries to output, interleaving translations
+  size_t tIdx = 0;
+  for (size_t i = 0; i < batch.size(); i++) {
+    writeRaw(batch[i].htmlBefore);
+
+    if (!batch[i].trimmedText.empty()) {
+      // Find this entry's position in translatableIndices
+      std::string thisTranslation;
+      if (tIdx < translations.size()) {
+        thisTranslation = std::move(translations[tIdx]);
+        // If this is the last translatable entry and there are excess translations, merge them
+        if (tIdx == translatableIndices.size() - 1 && translations.size() > translatableIndices.size()) {
+          for (size_t extra = translatableIndices.size(); extra < translations.size(); extra++) {
+            thisTranslation += "\n";
+            thisTranslation += translations[extra];
+          }
+        }
+      }
+      tIdx++;
+
+      if (!thisTranslation.empty() && thisTranslation != batch[i].trimmedText) {
+        static constexpr char kTagOpen[] = "<p lang=\"";
+        static constexpr char kTagAttrs[] =
+            "\" data-translation=\"true\" dir=\"auto\" style=\"color:#5A5A5A\">";
+        writeRaw(kTagOpen, sizeof(kTagOpen) - 1);
+        writeRaw(targetLang, strlen(targetLang));
+        writeRaw(kTagAttrs, sizeof(kTagAttrs) - 1);
+        std::string escaped;
+        appendEscaped(thisTranslation.c_str(), thisTranslation.size(), escaped);
+        writeRaw(escaped);
+        writeRaw("</p>\n", 5);
+        paragraphsTranslated++;
+      } else {
+        paragraphsSkipped++;
+      }
+    }
+
+    if (progressOut) *progressOut = paragraphsTranslated + paragraphsSkipped;
+  }
+
+  delay(100);  // rate-limit between batches
+  batch.clear();
+  batchTextBytes = 0;
 }
 
 void XMLCALL TranslatingHtmlRewriter::onStart(void* ud, const XML_Char* name, const XML_Char** atts) {
@@ -276,6 +389,9 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewrite(const char* inp
   paragraphsTranslated = 0;
   paragraphsSkipped = 0;
   wasCancelled = false;
+  batch.clear();
+  pendingHtml.clear();
+  batchTextBytes = 0;
 
   XML_Parser parser = XML_ParserCreate("UTF-8");
   if (!parser) {
@@ -304,6 +420,12 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewrite(const char* inp
   }
 
   XML_ParserFree(parser);
+
+  // Flush remaining batch entries (flushBatch handles cancellation internally —
+  // writes HTML without translations when cancelled) and any trailing buffered HTML
+  flushBatch();
+  writeRaw(pendingHtml);
+  pendingHtml.clear();
 
   Result res;
   res.paragraphsTranslated = paragraphsTranslated;
@@ -335,6 +457,9 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewriteFromFile(const s
   paragraphsTranslated = 0;
   paragraphsSkipped = 0;
   wasCancelled = false;
+  batch.clear();
+  pendingHtml.clear();
+  batchTextBytes = 0;
 
   FsFile inputFile;
   if (!Storage.openFileForRead("HtmlRW", inputPath, inputFile)) {
@@ -380,6 +505,12 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewriteFromFile(const s
 
   XML_ParserFree(parser);
   inputFile.close();
+
+  // Flush remaining batch entries (flushBatch handles cancellation internally —
+  // writes HTML without translations when cancelled) and any trailing buffered HTML
+  flushBatch();
+  writeRaw(pendingHtml);
+  pendingHtml.clear();
 
   Result res;
   res.paragraphsTranslated = paragraphsTranslated;
