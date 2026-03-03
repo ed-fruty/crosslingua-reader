@@ -26,7 +26,6 @@
 #include "activities/home/RecentBooksActivity.h"
 #include "activities/network/CrossPointWebServerActivity.h"
 #include "activities/reader/ReaderActivity.h"
-#include "activities/translator/TranslatorActivity.h"
 #include "activities/settings/SettingsActivity.h"
 #include "activities/util/FullScreenMessageActivity.h"
 #include "components/UITheme.h"
@@ -197,15 +196,10 @@ void enterDeepSleep() {
 void onGoHome();
 void onGoToMyLibraryWithPath(const std::string& path);
 void onGoToRecentBooks();
-void onGoToTranslator(const std::string& epubPath);
 void onGoToReader(const std::string& initialEpubPath) {
   exitActivity();
   enterNewActivity(new ReaderActivity(renderer, mappedInputManager, initialEpubPath, onGoHome,
-                                      onGoToMyLibraryWithPath, onGoToTranslator));
-}
-void onGoToTranslator(const std::string& epubPath) {
-  exitActivity();
-  enterNewActivity(new TranslatorActivity(renderer, mappedInputManager, epubPath, onGoHome));
+                                      onGoToMyLibraryWithPath));
 }
 
 void onGoToFileTransfer() {

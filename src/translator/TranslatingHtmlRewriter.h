@@ -2,6 +2,7 @@
 #include <Print.h>
 #include <expat.h>
 
+#include <cstdint>
 #include <string>
 
 /**
@@ -20,15 +21,30 @@ class TranslatingHtmlRewriter {
     bool cancelled = false;
   };
 
+  // Count translatable block elements in a file without translating.
+  // Used for progress bar total.
+  static int countBlocksInFile(const std::string& inputPath);
+
   // Rewrite HTML from `inputBuf` (size `inputSize`) into `out`.
   // Returns summary of what happened.
-  Result rewrite(const char* inputBuf, size_t inputSize, Print& out, const char* targetLang,
-                 volatile const bool* cancelled);
+  Result rewrite(const char* inputBuf, size_t inputSize, Print& out, const char* sourceLang, const char* targetLang,
+                 uint8_t engine, const char* apiKey, volatile const bool* cancelled,
+                 volatile int* progressOut = nullptr);
+
+  // Rewrite HTML from a file on SD card into `out`, reading in 1KB chunks.
+  // This avoids loading the entire chapter HTML into memory.
+  Result rewriteFromFile(const std::string& inputPath, Print& out, const char* sourceLang, const char* targetLang,
+                         uint8_t engine, const char* apiKey, volatile const bool* cancelled,
+                         volatile int* progressOut = nullptr);
 
  private:
   Print* out = nullptr;
+  const char* sourceLang = nullptr;
   const char* targetLang = nullptr;
+  uint8_t engine = 0;
+  const char* apiKey = nullptr;
   volatile const bool* cancelled = nullptr;
+  volatile int* progressOut = nullptr;
 
   int depth = 0;
   int blockDepth = -1;   // depth where current block element began; -1 = not in block
@@ -64,4 +80,7 @@ class TranslatingHtmlRewriter {
   static void XMLCALL onEnd(void* ud, const XML_Char* name);
   static void XMLCALL onChars(void* ud, const XML_Char* s, int len);
   static void XMLCALL onDefault(void* ud, const XML_Char* s, int len);
+
+  // Counting-only callbacks (for countBlocksInFile)
+  static void XMLCALL onStartCount(void* ud, const XML_Char* name, const XML_Char** atts);
 };

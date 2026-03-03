@@ -62,6 +62,45 @@ bool HttpDownloader::fetchUrl(const std::string& url, std::string& outContent) {
   return true;
 }
 
+bool HttpDownloader::postJson(const std::string& url, const std::string& jsonBody, const std::string& authHeader,
+                               std::string& outContent) {
+  std::unique_ptr<WiFiClient> client;
+  if (UrlUtils::isHttpsUrl(url)) {
+    auto* secureClient = new WiFiClientSecure();
+    secureClient->setInsecure();
+    client.reset(secureClient);
+  } else {
+    client.reset(new WiFiClient());
+  }
+  HTTPClient http;
+
+  LOG_DBG("HTTP", "POST: %s (body=%u bytes)", url.c_str(), (unsigned)jsonBody.size());
+
+  http.begin(*client, url.c_str());
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.addHeader("User-Agent", "CrossPoint-ESP32-" CROSSPOINT_VERSION);
+  http.addHeader("Content-Type", "application/json");
+  if (!authHeader.empty()) {
+    http.addHeader("Authorization", authHeader.c_str());
+  }
+
+  const int httpCode = http.POST(jsonBody.c_str());
+  if (httpCode != HTTP_CODE_OK) {
+    LOG_ERR("HTTP", "POST failed: %d", httpCode);
+    http.end();
+    return false;
+  }
+
+  StreamString stream;
+  http.writeToStream(&stream);
+  outContent = stream.c_str();
+
+  http.end();
+
+  LOG_DBG("HTTP", "POST response: %d (%u bytes)", httpCode, (unsigned)outContent.size());
+  return true;
+}
+
 HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& url, const std::string& destPath,
                                                              ProgressCallback progress) {
   // Use WiFiClientSecure for HTTPS, regular WiFiClient for HTTP

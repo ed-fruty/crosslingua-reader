@@ -7,6 +7,7 @@
 
 #include <cstring>
 
+#include "CrossPointSettings.h"
 #include "TranslatingHtmlRewriter.h"
 
 // ─── miniz FsFile callbacks ───────────────────────────────────────────────────
@@ -243,8 +244,8 @@ void EpubTranslator::run(const std::string& epubPath, const char* targetLang, co
 
       StringPrint resultBuf;
       TranslatingHtmlRewriter rewriter;
-      auto res = rewriter.rewrite(static_cast<const char*>(htmlData), htmlSize, resultBuf, targetLang,
-                                  &cancelRequested);
+      auto res = rewriter.rewrite(static_cast<const char*>(htmlData), htmlSize, resultBuf, "auto", targetLang,
+                                  SETTINGS.translationEngine, SETTINGS.translateApiKey, &cancelRequested);
       mz_free(htmlData);
 
       LOG_DBG("ET", "Chapter done: %d translated, %d skipped", res.paragraphsTranslated, res.paragraphsSkipped);

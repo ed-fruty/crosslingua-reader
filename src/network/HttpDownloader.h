@@ -30,6 +30,17 @@ class HttpDownloader {
   static bool fetchUrl(const std::string& url, Stream& stream);
 
   /**
+   * POST JSON to a URL and return the response body.
+   * @param url The URL to POST to
+   * @param jsonBody The JSON request body
+   * @param authHeader Authorization header value (e.g. "Bearer xxx"), empty to skip
+   * @param outContent The response body (output)
+   * @return true if request succeeded (HTTP 200), false on error
+   */
+  static bool postJson(const std::string& url, const std::string& jsonBody, const std::string& authHeader,
+                        std::string& outContent);
+
+  /**
    * Download a file to the SD card.
    * @param url The URL to download
    * @param destPath The destination path on SD card

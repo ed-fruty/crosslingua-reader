@@ -13,7 +13,6 @@
 #include "EpubReaderPercentSelectionActivity.h"
 #include "KOReaderCredentialStore.h"
 #include "KOReaderSyncActivity.h"
-#include "activities/translator/TranslatorActivity.h"
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
@@ -141,13 +140,37 @@ void EpubReaderActivity::loop() {
       }
       return;  // Don't access 'this' after callback
     }
-    // Deferred translate: launch TranslatorActivity after menu subactivity is gone
-    if (pendingTranslate) {
-      pendingTranslate = false;
-      if (onGoToTranslator && epub) {
-        const std::string path = epub->getPath();
-        auto cb = onGoToTranslator;
-        cb(path);
+    // Deferred translate: launch ChapterTranslatorActivity after menu subactivity is gone
+    if (pendingTranslateChapter) {
+      pendingTranslateChapter = false;
+      if (epub && section) {
+        const bool alreadyTranslated = section->hasTranslatedHtml();
+        const auto translatedPath = section->getTranslatedHtmlPath();
+        const int si = currentSpineIndex;
+        enterNewActivity(new ChapterTranslatorActivity(
+            renderer, mappedInput, epub, si, translatedPath, alreadyTranslated,
+            [this] {
+              // Cancel: just return to reader
+              exitActivity();
+              requestUpdate();
+              skipNextButtonCheck = true;
+            },
+            [this] {
+              // Complete: clear binary section cache so it rebuilds from translated HTML
+              exitActivity();
+              {
+                RenderLock lock(*this);
+                if (section) {
+                  cachedSpineIndex = currentSpineIndex;
+                  cachedChapterTotalPageCount = section->pageCount;
+                  nextPageNumber = section->currentPage;
+                  section->clearCache();  // Delete .bin so loadSectionFile() fails → createSectionFile() runs
+                }
+                section.reset();
+              }
+              requestUpdate();
+              skipNextButtonCheck = true;
+            }));
       }
       return;
     }
@@ -187,10 +210,12 @@ void EpubReaderActivity::loop() {
       bookProgress = epub->calculateProgress(currentSpineIndex, chapterProgress) * 100.0f;
     }
     const int bookProgressPercent = clampPercent(static_cast<int>(bookProgress + 0.5f));
+    const bool chapterIsTranslated = section && section->hasTranslatedHtml();
     exitActivity();
     enterNewActivity(new EpubReaderMenuActivity(
         this->renderer, this->mappedInput, epub->getTitle(), currentPage, totalPages, bookProgressPercent,
         SETTINGS.orientation, SETTINGS.colorTextStyle, SETTINGS.fontFamily, SETTINGS.fontSize, SETTINGS.lineSpacing,
+        chapterIsTranslated,
         [this](const uint8_t orientation, const uint8_t translationMode, const uint8_t fontFamily,
                const uint8_t fontSize, const uint8_t lineSpacing) {
           onReaderMenuBack(orientation, translationMode, fontFamily, fontSize, lineSpacing);
@@ -457,10 +482,10 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       pendingGoHome = true;
       break;
     }
-    case EpubReaderMenuActivity::MenuAction::TRANSLATE_BOOK: {
-      if (onGoToTranslator && epub) {
-        pendingTranslate = true;
-        exitActivity();  // close the menu subactivity; loop() will fire onGoToTranslator
+    case EpubReaderMenuActivity::MenuAction::TRANSLATE_CHAPTER: {
+      if (epub && section) {
+        pendingTranslateChapter = true;
+        exitActivity();  // close the menu subactivity; loop() will launch ChapterTranslatorActivity
       }
       break;
     }

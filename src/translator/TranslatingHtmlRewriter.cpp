@@ -1,12 +1,12 @@
 #include "TranslatingHtmlRewriter.h"
 
+#include <HalStorage.h>
 #include <Logging.h>
 
 #include <cstring>
 
 #include "ParagraphTranslator.h"
 
-static constexpr const char* TRANSLATION_STYLE = " dir=\"auto\" style=\"color:#5A5A5A\"";
 static constexpr size_t PARSE_CHUNK = 1024;
 
 const char* TranslatingHtmlRewriter::BLOCK_TAGS[] = {"p",   "h1",        "h2",        "h3",
@@ -82,13 +82,15 @@ void TranslatingHtmlRewriter::flushBlock(const char* endTagName) {
     bool ok = false;
     for (int attempt = 0; attempt < 2 && !ok; attempt++) {
       if (attempt > 0) delay(500);
-      ok = ParagraphTranslator::translate(trimmed, targetLang, translated);
+      ok = ParagraphTranslator::translate(trimmed, sourceLang, targetLang, engine, apiKey, translated);
     }
     if (ok && !translated.empty() && translated != trimmed) {
-      // Write translation paragraph (grey, auto direction)
-      writeOut("<p", 2);
-      writeOut(TRANSLATION_STYLE, strlen(TRANSLATION_STYLE));
-      writeOut(">", 1);
+      // Write translation paragraph with lang + data-translation attrs (grey, auto direction)
+      static constexpr char kTagOpen[] = "<p lang=\"";
+      static constexpr char kTagAttrs[] = "\" data-translation=\"true\" dir=\"auto\" style=\"color:#5A5A5A\">";
+      writeOut(kTagOpen, sizeof(kTagOpen) - 1);
+      writeOut(targetLang, strlen(targetLang));
+      writeOut(kTagAttrs, sizeof(kTagAttrs) - 1);
       // Write escaped translation text
       std::string escaped;
       appendEscaped(translated.c_str(), translated.size(), escaped);
@@ -102,6 +104,11 @@ void TranslatingHtmlRewriter::flushBlock(const char* endTagName) {
   } else {
     paragraphsSkipped++;
   }
+
+  LOG_DBG("HtmlRW", "Block <%s> text=%u bytes, translated=%d skipped=%d", endTagName, (unsigned)blockText.size(),
+          paragraphsTranslated, paragraphsSkipped);
+
+  if (progressOut) *progressOut = paragraphsTranslated + paragraphsSkipped;
 
   blockHtml.clear();
   blockText.clear();
@@ -199,12 +206,68 @@ void XMLCALL TranslatingHtmlRewriter::onDefault(void* ud, const XML_Char* s, int
   }
 }
 
-TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewrite(const char* inputBuf, size_t inputSize, Print& outPrint,
-                                                                   const char* lang,
-                                                                   volatile const bool* cancelFlag) {
+// ─── Block counting (for progress bar) ──────────────────────────────────────
+
+void XMLCALL TranslatingHtmlRewriter::onStartCount(void* ud, const XML_Char* name, const XML_Char** atts) {
+  (void)atts;
+  auto* count = static_cast<int*>(ud);
+  if (isBlockTag(name)) {
+    (*count)++;
+  }
+}
+
+int TranslatingHtmlRewriter::countBlocksInFile(const std::string& inputPath) {
+  FsFile inputFile;
+  if (!Storage.openFileForRead("HtmlRW", inputPath, inputFile)) {
+    LOG_ERR("HtmlRW", "countBlocks: failed to open %s", inputPath.c_str());
+    return 0;
+  }
+
+  const size_t fileSize = inputFile.size();
+
+  XML_Parser parser = XML_ParserCreate("UTF-8");
+  if (!parser) {
+    inputFile.close();
+    return 0;
+  }
+
+  int blockCount = 0;
+  XML_SetUserData(parser, &blockCount);
+  XML_SetStartElementHandler(parser, onStartCount);
+
+  char buf[PARSE_CHUNK];
+  size_t totalRead = 0;
+  while (totalRead < fileSize) {
+    const size_t toRead = ((fileSize - totalRead) < PARSE_CHUNK) ? (fileSize - totalRead) : PARSE_CHUNK;
+    const int bytesRead = inputFile.read(reinterpret_cast<uint8_t*>(buf), toRead);
+    if (bytesRead <= 0) break;
+    totalRead += bytesRead;
+    const bool done = (totalRead >= fileSize);
+    if (XML_Parse(parser, buf, bytesRead, done ? 1 : 0) == XML_STATUS_ERROR) break;
+  }
+
+  XML_ParserFree(parser);
+  inputFile.close();
+
+  LOG_DBG("HtmlRW", "Pre-scan: %d translatable blocks in %s", blockCount, inputPath.c_str());
+  return blockCount;
+}
+
+// ─── rewrite (buffer) ───────────────────────────────────────────────────────
+
+TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewrite(const char* inputBuf, size_t inputSize,
+                                                                   Print& outPrint, const char* srcLang,
+                                                                   const char* tgtLang, uint8_t eng,
+                                                                   const char* key,
+                                                                   volatile const bool* cancelFlag,
+                                                                   volatile int* progress) {
   out = &outPrint;
-  targetLang = lang;
+  sourceLang = srcLang;
+  targetLang = tgtLang;
+  engine = eng;
+  apiKey = key;
   cancelled = cancelFlag;
+  progressOut = progress;
   depth = 0;
   blockDepth = -1;
   insideHead = false;
@@ -241,6 +304,82 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewrite(const char* inp
   }
 
   XML_ParserFree(parser);
+
+  Result res;
+  res.paragraphsTranslated = paragraphsTranslated;
+  res.paragraphsSkipped = paragraphsSkipped;
+  res.cancelled = wasCancelled || (cancelled && *cancelled);
+  return res;
+}
+
+// ─── rewriteFromFile ────────────────────────────────────────────────────────
+
+TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewriteFromFile(const std::string& inputPath,
+                                                                          Print& outPrint, const char* srcLang,
+                                                                          const char* tgtLang, uint8_t eng,
+                                                                          const char* key,
+                                                                          volatile const bool* cancelFlag,
+                                                                          volatile int* progress) {
+  out = &outPrint;
+  sourceLang = srcLang;
+  targetLang = tgtLang;
+  engine = eng;
+  apiKey = key;
+  cancelled = cancelFlag;
+  progressOut = progress;
+  depth = 0;
+  blockDepth = -1;
+  insideHead = false;
+  blockHtml.clear();
+  blockText.clear();
+  paragraphsTranslated = 0;
+  paragraphsSkipped = 0;
+  wasCancelled = false;
+
+  FsFile inputFile;
+  if (!Storage.openFileForRead("HtmlRW", inputPath, inputFile)) {
+    LOG_ERR("HtmlRW", "Failed to open input file: %s", inputPath.c_str());
+    return {0, 0, false};
+  }
+
+  const size_t fileSize = inputFile.size();
+
+  XML_Parser parser = XML_ParserCreate("UTF-8");
+  if (!parser) {
+    LOG_ERR("HtmlRW", "Failed to create expat parser");
+    inputFile.close();
+    return {0, 0, false};
+  }
+
+  XML_SetUserData(parser, this);
+  XML_SetElementHandler(parser, onStart, onEnd);
+  XML_SetCharacterDataHandler(parser, onChars);
+  XML_SetDefaultHandlerExpand(parser, onDefault);
+
+  char buf[PARSE_CHUNK];
+  size_t totalRead = 0;
+  bool ok = true;
+  while (totalRead < fileSize && !wasCancelled) {
+    const size_t toRead = ((fileSize - totalRead) < PARSE_CHUNK) ? (fileSize - totalRead) : PARSE_CHUNK;
+    const int bytesRead = inputFile.read(reinterpret_cast<uint8_t*>(buf), toRead);
+    if (bytesRead <= 0) {
+      LOG_ERR("HtmlRW", "Read error at offset %u", totalRead);
+      ok = false;
+      break;
+    }
+    totalRead += bytesRead;
+    const bool done = (totalRead >= fileSize);
+
+    if (XML_Parse(parser, buf, bytesRead, done ? 1 : 0) == XML_STATUS_ERROR) {
+      LOG_ERR("HtmlRW", "Parse error at line %lu: %s", XML_GetCurrentLineNumber(parser),
+              XML_ErrorString(XML_GetErrorCode(parser)));
+      ok = false;
+      break;
+    }
+  }
+
+  XML_ParserFree(parser);
+  inputFile.close();
 
   Result res;
   res.paragraphsTranslated = paragraphsTranslated;

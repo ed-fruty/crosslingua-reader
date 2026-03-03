@@ -177,6 +177,23 @@ class CrossPointSettings {
   // How CSS-colored text renders on e-ink: 0=Normal, 1=Dark, 2=Light, 3=No Render, 4=Invert
   enum COLOR_TEXT_STYLE { CT_NORMAL = 0, CT_DARK = 1, CT_LIGHT = 2, CT_NO_RENDER = 3, CT_INVERT = 4, CT_SIDE_BY_SIDE = 5, COLOR_TEXT_STYLE_COUNT };
   uint8_t colorTextStyle = CT_DARK;
+  // Last-used translation language (index into LanguagePickerActivity::LANGUAGES[], 0xFF = unset)
+  uint8_t translationLanguage = 0xFF;
+
+  // Translation engine selection
+  enum TRANSLATION_ENGINE : uint8_t {
+    ENGINE_GOOGLE_FREE = 0,
+    ENGINE_DEEPL = 1,
+    ENGINE_DEEPL_PRO = 2,
+    ENGINE_OPENAI = 3,
+    ENGINE_DEEPSEEK = 4,
+    ENGINE_GEMINI = 5,
+    TRANSLATION_ENGINE_COUNT
+  };
+  uint8_t translationEngine = ENGINE_GOOGLE_FREE;
+  char translateApiKey[128] = "";
+  // Source language for translation (0xFF = auto-detect, otherwise index into LANGUAGES[])
+  uint8_t sourceLanguage = 0xFF;
 
   ~CrossPointSettings() = default;
 

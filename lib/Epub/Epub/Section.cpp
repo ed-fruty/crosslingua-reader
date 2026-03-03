@@ -114,7 +114,12 @@ bool Section::loadSectionFile(const int fontId, const float lineCompression, con
   return true;
 }
 
-// Your updated class method (assuming you are using the 'SD' object, which is a wrapper for a specific filesystem)
+std::string Section::getTranslatedHtmlPath() const {
+  return epub->getCachePath() + "/sections/" + std::to_string(spineIndex) + ".translated.html";
+}
+
+bool Section::hasTranslatedHtml() const { return Storage.exists(getTranslatedHtmlPath().c_str()); }
+
 bool Section::clearCache() const {
   if (!Storage.exists(filePath.c_str())) {
     LOG_DBG("SCT", "Cache does not exist, no action needed");
@@ -135,7 +140,6 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
                                 const uint16_t viewportHeight, const bool hyphenationEnabled, const bool embeddedStyle,
                                 const uint8_t translationMode, const std::function<void()>& popupFn) {
   const auto localPath = epub->getSpineItem(spineIndex).href;
-  const auto tmpHtmlPath = epub->getCachePath() + "/.tmp_" + std::to_string(spineIndex) + ".html";
 
   // Create cache directory if it doesn't exist
   {
@@ -143,41 +147,54 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
     Storage.mkdir(sectionsDir.c_str());
   }
 
-  // Retry logic for SD card timing issues
-  bool success = false;
-  uint32_t fileSize = 0;
-  for (int attempt = 0; attempt < 3 && !success; attempt++) {
-    if (attempt > 0) {
-      LOG_DBG("SCT", "Retrying stream (attempt %d)...", attempt + 1);
-      delay(50);  // Brief delay before retry
+  // Check if a persisted bilingual HTML exists — use it instead of extracting from EPUB.
+  // This allows translated content to survive cache invalidation (font/size changes).
+  const auto translatedPath = getTranslatedHtmlPath();
+  const bool usingTranslatedSource = Storage.exists(translatedPath.c_str());
+  std::string tmpHtmlPath;
+
+  if (usingTranslatedSource) {
+    tmpHtmlPath = translatedPath;
+    LOG_DBG("SCT", "Using translated HTML: %s", tmpHtmlPath.c_str());
+  } else {
+    tmpHtmlPath = epub->getCachePath() + "/.tmp_" + std::to_string(spineIndex) + ".html";
+
+    // Retry logic for SD card timing issues
+    bool success = false;
+    uint32_t fileSize = 0;
+    for (int attempt = 0; attempt < 3 && !success; attempt++) {
+      if (attempt > 0) {
+        LOG_DBG("SCT", "Retrying stream (attempt %d)...", attempt + 1);
+        delay(50);  // Brief delay before retry
+      }
+
+      // Remove any incomplete file from previous attempt before retrying
+      if (Storage.exists(tmpHtmlPath.c_str())) {
+        Storage.remove(tmpHtmlPath.c_str());
+      }
+
+      FsFile tmpHtml;
+      if (!Storage.openFileForWrite("SCT", tmpHtmlPath, tmpHtml)) {
+        continue;
+      }
+      success = epub->readItemContentsToStream(localPath, tmpHtml, 1024);
+      fileSize = tmpHtml.size();
+      tmpHtml.close();
+
+      // If streaming failed, remove the incomplete file immediately
+      if (!success && Storage.exists(tmpHtmlPath.c_str())) {
+        Storage.remove(tmpHtmlPath.c_str());
+        LOG_DBG("SCT", "Removed incomplete temp file after failed attempt");
+      }
     }
 
-    // Remove any incomplete file from previous attempt before retrying
-    if (Storage.exists(tmpHtmlPath.c_str())) {
-      Storage.remove(tmpHtmlPath.c_str());
+    if (!success) {
+      LOG_ERR("SCT", "Failed to stream item contents to temp file after retries");
+      return false;
     }
 
-    FsFile tmpHtml;
-    if (!Storage.openFileForWrite("SCT", tmpHtmlPath, tmpHtml)) {
-      continue;
-    }
-    success = epub->readItemContentsToStream(localPath, tmpHtml, 1024);
-    fileSize = tmpHtml.size();
-    tmpHtml.close();
-
-    // If streaming failed, remove the incomplete file immediately
-    if (!success && Storage.exists(tmpHtmlPath.c_str())) {
-      Storage.remove(tmpHtmlPath.c_str());
-      LOG_DBG("SCT", "Removed incomplete temp file after failed attempt");
-    }
+    LOG_DBG("SCT", "Streamed temp HTML to %s (%d bytes)", tmpHtmlPath.c_str(), fileSize);
   }
-
-  if (!success) {
-    LOG_ERR("SCT", "Failed to stream item contents to temp file after retries");
-    return false;
-  }
-
-  LOG_DBG("SCT", "Streamed temp HTML to %s (%d bytes)", tmpHtmlPath.c_str(), fileSize);
 
   if (!Storage.openFileForWrite("SCT", filePath, file)) {
     return false;
@@ -207,9 +224,12 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
       [this, &lut](std::unique_ptr<Page> page) { lut.emplace_back(this->onPageComplete(std::move(page))); },
       embeddedStyle, contentBase, imageBasePath, popupFn, cssParser, translationMode);
   Hyphenator::setPreferredLanguage(epub->getLanguage());
-  success = visitor.parseAndBuildPages();
+  bool success = visitor.parseAndBuildPages();
 
-  Storage.remove(tmpHtmlPath.c_str());
+  // Only delete the temp file if it's not the persisted translated HTML
+  if (!usingTranslatedSource) {
+    Storage.remove(tmpHtmlPath.c_str());
+  }
   if (!success) {
     LOG_ERR("SCT", "Failed to parse XML and build pages");
     file.close();
