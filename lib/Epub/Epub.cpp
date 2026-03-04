@@ -128,6 +128,7 @@ bool Epub::parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, bool m
     }
   }
 
+  hasCalibreTranslation_ = opfParser.hasCalibreTranslation;
   bookMetadata.textReferenceHref = opfParser.textReferenceHref;
 
   if (!opfParser.tocNcxPath.empty()) {

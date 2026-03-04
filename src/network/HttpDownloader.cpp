@@ -13,6 +13,8 @@
 #include "CrossPointSettings.h"
 #include "util/UrlUtils.h"
 
+int HttpDownloader::lastHttpCode = 0;
+
 bool HttpDownloader::fetchUrl(const std::string& url, Stream& outContent) {
   // Use WiFiClientSecure for HTTPS, regular WiFiClient for HTTP
   std::unique_ptr<WiFiClient> client;
@@ -39,6 +41,7 @@ bool HttpDownloader::fetchUrl(const std::string& url, Stream& outContent) {
   }
 
   const int httpCode = http.GET();
+  lastHttpCode = httpCode;
   if (httpCode != HTTP_CODE_OK) {
     LOG_ERR("HTTP", "Fetch failed: %d", httpCode);
     http.end();
@@ -62,8 +65,8 @@ bool HttpDownloader::fetchUrl(const std::string& url, std::string& outContent) {
   return true;
 }
 
-bool HttpDownloader::postJson(const std::string& url, const std::string& jsonBody, const std::string& authHeader,
-                               std::string& outContent) {
+bool HttpDownloader::post(const std::string& url, const std::string& body, const char* contentType,
+                           const char* extraHeaderName, const char* extraHeaderValue, std::string& outContent) {
   std::unique_ptr<WiFiClient> client;
   if (UrlUtils::isHttpsUrl(url)) {
     auto* secureClient = new WiFiClientSecure();
@@ -74,17 +77,18 @@ bool HttpDownloader::postJson(const std::string& url, const std::string& jsonBod
   }
   HTTPClient http;
 
-  LOG_DBG("HTTP", "POST: %s (body=%u bytes)", url.c_str(), (unsigned)jsonBody.size());
+  LOG_DBG("HTTP", "POST: %s (body=%u bytes)", url.c_str(), (unsigned)body.size());
 
   http.begin(*client, url.c_str());
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   http.addHeader("User-Agent", "CrossPoint-ESP32-" CROSSPOINT_VERSION);
-  http.addHeader("Content-Type", "application/json");
-  if (!authHeader.empty()) {
-    http.addHeader("Authorization", authHeader.c_str());
+  http.addHeader("Content-Type", contentType);
+  if (extraHeaderName && extraHeaderValue) {
+    http.addHeader(extraHeaderName, extraHeaderValue);
   }
 
-  const int httpCode = http.POST(jsonBody.c_str());
+  const int httpCode = http.POST(body.c_str());
+  lastHttpCode = httpCode;
   if (httpCode != HTTP_CODE_OK) {
     LOG_ERR("HTTP", "POST failed: %d", httpCode);
     http.end();
@@ -99,6 +103,13 @@ bool HttpDownloader::postJson(const std::string& url, const std::string& jsonBod
 
   LOG_DBG("HTTP", "POST response: %d (%u bytes)", httpCode, (unsigned)outContent.size());
   return true;
+}
+
+bool HttpDownloader::postJson(const std::string& url, const std::string& jsonBody, const std::string& authHeader,
+                               std::string& outContent) {
+  const char* authName = authHeader.empty() ? nullptr : "Authorization";
+  const char* authValue = authHeader.empty() ? nullptr : authHeader.c_str();
+  return post(url, jsonBody, "application/json", authName, authValue, outContent);
 }
 
 HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& url, const std::string& destPath,

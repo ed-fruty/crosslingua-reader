@@ -12,10 +12,11 @@ class ParagraphTranslator {
   // sourceLang: BCP-47 code or "auto" for auto-detect.
   // Returns true and populates `result` on success.
   static bool translate(const std::string& text, const char* sourceLang, const char* targetLang, uint8_t engine,
-                        const char* apiKey, std::string& result);
+                        const char* apiKey, std::string& result, std::string* errorOut = nullptr);
 
   // Convenience: reads engine/apiKey/sourceLang from SETTINGS
-  static bool translate(const std::string& text, const char* targetLang, std::string& result);
+  static bool translate(const std::string& text, const char* targetLang, std::string& result,
+                        std::string* errorOut = nullptr);
 
   static constexpr size_t MAX_TEXT_BYTES = 1800;
 
@@ -36,12 +37,18 @@ class ParagraphTranslator {
                                     std::string& result);
   static bool translateGemini(const std::string& text, const char* sourceLang, const char* targetLang,
                               const char* apiKey, std::string& result);
+  static bool translateGoogleV2(const std::string& text, const char* sourceLang, const char* targetLang,
+                                std::string& result);
+  static bool translateGoogleHtml(const std::string& text, const char* sourceLang, const char* targetLang,
+                                  std::string& result);
 
   // Response parsers
   static bool parseGoogleResponse(const std::string& json, std::string& result);
   static bool parseDeepLResponse(const std::string& json, std::string& result);
   static bool parseOpenAIResponse(const std::string& json, std::string& result);
   static bool parseGeminiResponse(const std::string& json, std::string& result);
+  static bool parseGoogleV2Response(const std::string& json, std::string& result);
+  static bool parseGoogleHtmlResponse(const std::string& json, std::string& result);
 
   // Build LLM translation prompt. When batch=true, adds instructions to preserve \n\n separators.
   static std::string buildLlmPrompt(const char* sourceLang, const char* targetLang, bool batch = false);

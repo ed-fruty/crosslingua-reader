@@ -397,22 +397,121 @@ bool ParagraphTranslator::translateGemini(const std::string& text, const char* s
   return true;
 }
 
+// ─── Google Translate v2 (free, GET-based) ────────────────────────────────────
+
+bool ParagraphTranslator::parseGoogleV2Response(const std::string& json, std::string& result) {
+  // Response: {"translation":"...","detectedLanguage":"...","model":"..."}
+  size_t pos = json.find("\"translation\"");
+  if (pos == std::string::npos) return false;
+  pos += 13;  // skip past "translation"
+  pos = json.find(':', pos);
+  if (pos == std::string::npos) return false;
+  pos++;
+  return extractJsonStringValue(json, pos, result);
+}
+
+bool ParagraphTranslator::translateGoogleV2(const std::string& text, const char* sourceLang, const char* targetLang,
+                                             std::string& result) {
+  const char* src = (sourceLang && strcmp(sourceLang, "auto") != 0) ? sourceLang : "auto";
+  LOG_DBG("Translator", "GoogleV2: src=%s, tgt=%s", src, targetLang);
+
+  static constexpr char kApiKey[] = "AIzaSyDLEeFI5OtFBwYBIoK_jj5m32rZK5CkCXA";
+
+  std::string url = "https://translate-pa.googleapis.com/v1/translate?params.client=gtx&query.source_language=";
+  url += src;
+  url += "&query.target_language=";
+  url += targetLang;
+  url += "&query.display_language=en-US&data_types=TRANSLATION&key=";
+  url += kApiKey;
+  url += "&query.text=";
+  url += urlEncode(text);
+
+  std::string response;
+  if (!HttpDownloader::fetchUrl(url, response)) {
+    LOG_ERR("Translator", "GoogleV2 HTTP fetch failed");
+    return false;
+  }
+
+  if (!parseGoogleV2Response(response, result)) {
+    LOG_ERR("Translator", "GoogleV2 parse failed (%.80s)", response.c_str());
+    return false;
+  }
+  return true;
+}
+
+// ─── Google Translate HTML (free, POST-based) ─────────────────────────────────
+
+bool ParagraphTranslator::parseGoogleHtmlResponse(const std::string& json, std::string& result) {
+  // Response: [["translated text"]] — nested JSON array, extract first string at [0][0]
+  size_t pos = json.find("[[");
+  if (pos == std::string::npos) return false;
+  pos += 2;
+  return extractJsonStringValue(json, pos - 1, result);
+}
+
+bool ParagraphTranslator::translateGoogleHtml(const std::string& text, const char* sourceLang, const char* targetLang,
+                                               std::string& result) {
+  const char* src = (sourceLang && strcmp(sourceLang, "auto") != 0) ? sourceLang : "auto";
+  LOG_DBG("Translator", "GoogleHtml: src=%s, tgt=%s", src, targetLang);
+
+  static constexpr char kApiKey[] = "AIzaSyATBXajvzQLTDHEQbcpq0Ihe0vWDHmO520";
+  static constexpr char kEndpoint[] = "https://translate-pa.googleapis.com/v1/translateHtml";
+
+  // Build body: [[["<text>"],"<src>","<tgt>"],"wt_lib"]
+  auto jsonEscape = [](const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 16);
+    for (char c : s) {
+      if (c == '"') out += "\\\"";
+      else if (c == '\\') out += "\\\\";
+      else if (c == '\n') out += "\\n";
+      else if (c == '\r') out += "\\r";
+      else if (c == '\t') out += "\\t";
+      else out += c;
+    }
+    return out;
+  };
+
+  std::string body = "[[[\"";
+  body += jsonEscape(text);
+  body += "\"],\"";
+  body += src;
+  body += "\",\"";
+  body += targetLang;
+  body += "\"],\"wt_lib\"]";
+
+  std::string response;
+  if (!HttpDownloader::post(kEndpoint, body, "application/json+protobuf", "X-Goog-Api-Key", kApiKey, response)) {
+    LOG_ERR("Translator", "GoogleHtml HTTP POST failed");
+    return false;
+  }
+
+  if (!parseGoogleHtmlResponse(response, result)) {
+    LOG_ERR("Translator", "GoogleHtml parse failed (%.80s)", response.c_str());
+    return false;
+  }
+  return true;
+}
+
 // ─── Main dispatch ───────────────────────────────────────────────────────────
 
 bool ParagraphTranslator::translate(const std::string& text, const char* sourceLang, const char* targetLang,
-                                     uint8_t engine, const char* apiKey, std::string& result) {
+                                     uint8_t engine, const char* apiKey, std::string& result,
+                                     std::string* errorOut) {
   if (text.size() < 3) {
     result = text;
     return true;
   }
   if (text.size() > MAX_TEXT_BYTES) {
     LOG_ERR("Translator", "Text too long (%u bytes), skipping", (unsigned)text.size());
+    if (errorOut) *errorOut = "Text too long";
     return false;
   }
 
   LOG_DBG("Translator", "Engine=%d, text=%u bytes, src=%s, tgt=%s", engine, (unsigned)text.size(), sourceLang,
           targetLang);
 
+  HttpDownloader::lastHttpCode = 0;
   bool ok = false;
   switch (engine) {
     case CrossPointSettings::ENGINE_GOOGLE_FREE:
@@ -435,17 +534,37 @@ bool ParagraphTranslator::translate(const std::string& text, const char* sourceL
     case CrossPointSettings::ENGINE_GEMINI:
       ok = translateGemini(text, sourceLang, targetLang, apiKey, result);
       break;
+    case CrossPointSettings::ENGINE_GOOGLE_V2:
+      ok = translateGoogleV2(text, sourceLang, targetLang, result);
+      break;
+    case CrossPointSettings::ENGINE_GOOGLE_HTML:
+      ok = translateGoogleHtml(text, sourceLang, targetLang, result);
+      break;
     default:
       LOG_ERR("Translator", "Unknown engine: %d", engine);
+      if (errorOut) *errorOut = "Unknown engine";
       return false;
   }
 
   if (ok) {
     LOG_DBG("Translator", "Translation OK, result=%u bytes", (unsigned)result.size());
+  } else if (errorOut) {
+    // Format error from HTTP code
+    int code = HttpDownloader::lastHttpCode;
+    char buf[64];
+    if (code == 0) {
+      snprintf(buf, sizeof(buf), "HTTP request failed");
+    } else if (code < 0) {
+      snprintf(buf, sizeof(buf), "Connection failed (code %d)", code);
+    } else {
+      snprintf(buf, sizeof(buf), "HTTP error %d", code);
+    }
+    *errorOut = buf;
   }
   return ok;
 }
 
-bool ParagraphTranslator::translate(const std::string& text, const char* targetLang, std::string& result) {
-  return translate(text, "auto", targetLang, SETTINGS.translationEngine, SETTINGS.translateApiKey, result);
+bool ParagraphTranslator::translate(const std::string& text, const char* targetLang, std::string& result,
+                                     std::string* errorOut) {
+  return translate(text, "auto", targetLang, SETTINGS.translationEngine, SETTINGS.translateApiKey, result, errorOut);
 }

@@ -12,7 +12,7 @@
  *
  * Strategy: reconstruct the original markup from expat callbacks, and after
  * each closing block tag (p, h1-h6, li, blockquote) append a translated
- * paragraph in a grey colour (<p style="color:#5A5A5A">).
+ * paragraph marked with a lang attribute (<p lang="xx">).
  */
 class TranslatingHtmlRewriter {
  public:
@@ -20,11 +20,17 @@ class TranslatingHtmlRewriter {
     int paragraphsTranslated = 0;
     int paragraphsSkipped = 0;
     bool cancelled = false;
+    bool abortedOnErrors = false;
+    char errorDetail[64] = {};  // last error message when abortedOnErrors
   };
 
   // Count translatable block elements in a file without translating.
   // Used for progress bar total.
   static int countBlocksInFile(const std::string& inputPath);
+
+  // Check if a chapter HTML file contains embedded translations (Calibre or CrossPoint).
+  // Lightweight SAX scan — stops at the first block element with a `lang` attribute.
+  static bool hasEmbeddedTranslations(const std::string& inputPath);
 
   // Rewrite HTML from `inputBuf` (size `inputSize`) into `out`.
   // Returns summary of what happened.
@@ -52,17 +58,28 @@ class TranslatingHtmlRewriter {
   bool insideHead = false;
   bool wroteXmlDecl = false;
 
-  std::string blockHtml;  // Reconstructed markup of current block (for output)
-  std::string blockText;  // Plain text of current block (for translation)
+  std::string blockHtml;     // Reconstructed markup of current block (for output)
+  std::string blockText;     // Plain text of current block (for translation)
+  std::string blockTagName;  // tag name of current block (e.g., "p", "h1")
+  std::string blockClass;    // class attribute of current block
+
+  int skipBlockDepth = -1;  // depth of a block being skipped (existing translation)
 
   int paragraphsTranslated = 0;
   int paragraphsSkipped = 0;
+  int blocksProcessed = 0;  // all batch entries including empty blocks (for progress bar)
   bool wasCancelled = false;
+  int consecutiveFailures = 0;         // reset on success, increment on failure
+  bool abortedOnErrors = false;        // set when consecutiveFailures hits threshold
+  std::string lastError;               // last translation error message
+  static constexpr int MAX_CONSECUTIVE_FAILURES = 20;
 
   // ─── Batch buffering ─────────────────────────────────────────────────────
   struct BatchEntry {
-    std::string htmlBefore;   // all HTML output accumulated before this entry's translation slot
-    std::string trimmedText;  // plain text to translate (empty = untranslatable, skip)
+    std::string htmlBefore;    // all HTML output accumulated before this entry's translation slot
+    std::string trimmedText;   // plain text to translate (empty = untranslatable, skip)
+    std::string blockTagName;  // tag name of original block (e.g., "p", "h1")
+    std::string blockClass;    // class attribute of original block (for CSS spacing)
   };
   std::vector<BatchEntry> batch;
   std::string pendingHtml;       // accumulates writeOut() calls between block flushes
@@ -104,4 +121,10 @@ class TranslatingHtmlRewriter {
 
   // Counting-only callbacks (for countBlocksInFile)
   static void XMLCALL onStartCount(void* ud, const XML_Char* name, const XML_Char** atts);
+
+  // Detection callback (for hasEmbeddedTranslations)
+  struct EmbeddedDetectState {
+    bool found = false;
+  };
+  static void XMLCALL onStartDetectEmbedded(void* ud, const XML_Char* name, const XML_Char** atts);
 };

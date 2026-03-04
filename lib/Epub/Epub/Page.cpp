@@ -70,6 +70,72 @@ bool Page::serialize(FsFile& file) const {
   return true;
 }
 
+std::string Page::extractText() const {
+  std::string result;
+  int16_t prevY = -1;
+  for (const auto& el : elements) {
+    if (el->getTag() != TAG_PageLine) continue;
+    auto* line = static_cast<PageLine*>(el.get());
+    const auto& words = line->getTextBlock()->getWords();
+    if (words.empty()) continue;
+
+    // Detect paragraph boundary via y-position gap
+    if (prevY >= 0) {
+      int16_t gap = el->yPos - prevY;
+      if (gap > 30) {
+        result += "\n\n";
+      } else if (!result.empty() && result.back() != '\n') {
+        result += ' ';
+      }
+    }
+    prevY = el->yPos;
+
+    bool first = true;
+    for (const auto& w : words) {
+      if (!first) result += ' ';
+      result += w;
+      first = false;
+    }
+  }
+  return result;
+}
+
+std::string Page::extractTranslatedText() const {
+  std::string result;
+  int16_t prevY = -1;
+  for (const auto& el : elements) {
+    if (el->getTag() != TAG_PageLine) continue;
+    auto* line = static_cast<PageLine*>(el.get());
+    const auto& words = line->getTextBlock()->getWords();
+    const auto& styles = line->getTextBlock()->getWordStyles();
+    if (words.empty()) continue;
+
+    // Detect paragraph boundary via y-position gap
+    if (prevY >= 0) {
+      int16_t gap = el->yPos - prevY;
+      if (gap > 30) {
+        result += "\n\n";
+      } else if (!result.empty() && result.back() != '\n') {
+        result += ' ';
+      }
+    }
+    prevY = el->yPos;
+
+    auto wIt = words.begin();
+    auto sIt = styles.begin();
+    bool first = true;
+    for (; wIt != words.end() && sIt != styles.end(); ++wIt, ++sIt) {
+      // grayLevel is stored in bits 5-6 of the style byte
+      const uint8_t grayLevel = (static_cast<uint8_t>(*sIt) >> 5) & 0x03;
+      if (grayLevel == 0) continue;
+      if (!first) result += ' ';
+      result += *wIt;
+      first = false;
+    }
+  }
+  return result;
+}
+
 std::unique_ptr<Page> Page::deserialize(FsFile& file) {
   auto page = std::unique_ptr<Page>(new Page());
 

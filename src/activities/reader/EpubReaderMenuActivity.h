@@ -23,7 +23,8 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
     GO_HOME,
     SYNC,
     DELETE_CACHE,
-    TRANSLATE_CHAPTER
+    TRANSLATE_CHAPTER,
+    TRANSLATE_PAGE
   };
 
   explicit EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title,
@@ -48,7 +49,6 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
     // Build menu items with dynamic translate label based on chapter translation state
     menuItems = {{MenuAction::SELECT_CHAPTER, StrId::STR_SELECT_CHAPTER},
                  {MenuAction::ROTATE_SCREEN, StrId::STR_ORIENTATION},
-                 {MenuAction::CYCLE_TRANSLATION_MODE, StrId::STR_TRANSLATION_MODE},
                  {MenuAction::CYCLE_FONT_FAMILY, StrId::STR_FONT_FAMILY},
                  {MenuAction::CYCLE_FONT_SIZE, StrId::STR_FONT_SIZE},
                  {MenuAction::CYCLE_LINE_SPACING, StrId::STR_LINE_SPACING},
@@ -57,7 +57,9 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
                  {MenuAction::SYNC, StrId::STR_SYNC_PROGRESS},
                  {MenuAction::DELETE_CACHE, StrId::STR_DELETE_CACHE},
                  {MenuAction::TRANSLATE_CHAPTER,
-                  chapterIsTranslated ? StrId::STR_RETRANSLATE_CHAPTER : StrId::STR_TRANSLATE_CHAPTER}};
+                  chapterIsTranslated ? StrId::STR_RETRANSLATE_CHAPTER : StrId::STR_TRANSLATE_CHAPTER},
+                 {MenuAction::TRANSLATE_PAGE, StrId::STR_TRANSLATE_PAGE},
+                 {MenuAction::CYCLE_TRANSLATION_MODE, StrId::STR_TRANSLATION_MODE}};
   }
 
   void onEnter() override;
@@ -82,9 +84,9 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   const std::vector<StrId> orientationLabels = {StrId::STR_PORTRAIT, StrId::STR_LANDSCAPE_CW, StrId::STR_INVERTED,
                                                 StrId::STR_LANDSCAPE_CCW};
   uint8_t pendingTranslationMode = 0;
-  const std::vector<StrId> translationModeLabels = {StrId::STR_NORMAL, StrId::STR_DARK, StrId::STR_LIGHT,
-                                                    StrId::STR_NO_RENDER, StrId::STR_INVERT_TRANSLATION,
-                                                    StrId::STR_SIDE_BY_SIDE};
+  const std::vector<StrId> translationModeLabels = {StrId::STR_NORMAL, StrId::STR_TRANSLATION_GREY,
+                                                    StrId::STR_TRANSLATION_LIGHT_GREY, StrId::STR_NO_RENDER,
+                                                    StrId::STR_INVERT_TRANSLATION, StrId::STR_SIDE_BY_SIDE};
   uint8_t pendingFontFamily = 0;
   const std::vector<StrId> fontFamilyLabels = {StrId::STR_BOOKERLY, StrId::STR_EDSLAB, StrId::STR_ALEGREYA,
                                                 StrId::STR_GPRO};

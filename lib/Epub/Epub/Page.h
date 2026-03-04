@@ -2,6 +2,7 @@
 #include <HalStorage.h>
 
 #include <algorithm>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -34,6 +35,7 @@ class PageLine final : public PageElement {
       : PageElement(xPos, yPos), block(std::move(block)) {}
   void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) override;
   bool serialize(FsFile& file) override;
+  const std::shared_ptr<TextBlock>& getTextBlock() const { return block; }
   PageElementTag getTag() const override { return TAG_PageLine; }
   static std::unique_ptr<PageLine> deserialize(FsFile& file);
 };
@@ -58,6 +60,12 @@ class Page {
   void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) const;
   bool serialize(FsFile& file) const;
   static std::unique_ptr<Page> deserialize(FsFile& file);
+
+  // Extract plain text from all TextBlocks on this page.
+  std::string extractText() const;
+
+  // Extract only translated text (words with grayLevel > 0) from this page.
+  std::string extractTranslatedText() const;
 
   // Check if page contains any images (used to force full refresh)
   bool hasImages() const {

@@ -5,6 +5,7 @@
 
 #include <cstring>
 
+#include "CrossPointSettings.h"
 #include "ParagraphTranslator.h"
 
 static constexpr size_t PARSE_CHUNK = 1024;
@@ -102,6 +103,8 @@ void TranslatingHtmlRewriter::flushBlock(const char* endTagName) {
   // Create batch entry: move pendingHtml into htmlBefore, store trimmedText
   BatchEntry entry;
   entry.htmlBefore = std::move(pendingHtml);
+  entry.blockTagName = blockTagName;
+  entry.blockClass = std::move(blockClass);
   pendingHtml.clear();
   if (!trimmed.empty() && trimmed.size() <= ParagraphTranslator::MAX_TEXT_BYTES) {
     entry.trimmedText = trimmed;
@@ -125,12 +128,13 @@ void TranslatingHtmlRewriter::flushBlock(const char* endTagName) {
 void TranslatingHtmlRewriter::flushBatch() {
   if (batch.empty()) return;
 
-  // If cancelled, write all HTML without translations
-  if (wasCancelled || (cancelled && *cancelled)) {
+  // If cancelled or aborted due to errors, write all HTML without translations
+  if (wasCancelled || abortedOnErrors || (cancelled && *cancelled)) {
     for (auto& entry : batch) {
       writeRaw(entry.htmlBefore);
       if (!entry.trimmedText.empty()) paragraphsSkipped++;
-      if (progressOut) *progressOut = paragraphsTranslated + paragraphsSkipped;
+      blocksProcessed++;
+      if (progressOut) *progressOut = blocksProcessed;
     }
     batch.clear();
     batchTextBytes = 0;
@@ -149,36 +153,61 @@ void TranslatingHtmlRewriter::flushBatch() {
   }
 
   // Translate the merged text
+  // Only LLM engines support batch merging (they can preserve \n\n separators)
+  bool canBatchMerge = engine == CrossPointSettings::ENGINE_OPENAI ||
+                       engine == CrossPointSettings::ENGINE_DEEPSEEK ||
+                       engine == CrossPointSettings::ENGINE_GEMINI;
   std::vector<std::string> translations;
   if (!translatableIndices.empty()) {
-    if (mergedText.size() <= ParagraphTranslator::MAX_TEXT_BYTES) {
-      // Single batched API call
+    if (canBatchMerge && mergedText.size() <= ParagraphTranslator::MAX_TEXT_BYTES) {
+      // Single batched API call (LLM/DeepL engines that can handle merged text)
       std::string translated;
       bool ok = false;
       for (int attempt = 0; attempt < 2 && !ok; attempt++) {
         if (attempt > 0) delay(500);
-        ok = ParagraphTranslator::translate(mergedText, sourceLang, targetLang, engine, apiKey, translated);
+        ok = ParagraphTranslator::translate(mergedText, sourceLang, targetLang, engine, apiKey, translated,
+                                             &lastError);
       }
       if (ok && !translated.empty()) {
         translations = splitByDoubleLF(translated);
+        consecutiveFailures = 0;
         LOG_DBG("HtmlRW", "Batch: sent %u paragraphs, got %u back, response %.120s",
                 (unsigned)translatableIndices.size(), (unsigned)translations.size(), translated.c_str());
+      } else {
+        consecutiveFailures++;
+        LOG_ERR("HtmlRW", "Batch translate failed (%d consecutive)", consecutiveFailures);
+        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+          LOG_ERR("HtmlRW", "Aborting: %d consecutive failures", consecutiveFailures);
+          abortedOnErrors = true;
+        }
       }
     } else {
-      // Merged text too large — fall back to individual calls
-      LOG_DBG("HtmlRW", "Batch too large (%u bytes), falling back to individual calls",
-              (unsigned)mergedText.size());
+      // Individual calls — either engine doesn't support batch merging, or merged text too large
+      LOG_DBG("HtmlRW", "Individual calls: %u paragraphs (canBatch=%d, mergedBytes=%u)",
+              (unsigned)translatableIndices.size(), canBatchMerge, (unsigned)mergedText.size());
       for (size_t i = 0; i < translatableIndices.size(); i++) {
-        if (wasCancelled || (cancelled && *cancelled)) break;
+        if (wasCancelled || abortedOnErrors || (cancelled && *cancelled)) break;
         std::string translated;
         bool ok = false;
         for (int attempt = 0; attempt < 2 && !ok; attempt++) {
           if (attempt > 0) delay(500);
           ok = ParagraphTranslator::translate(batch[translatableIndices[i]].trimmedText, sourceLang, targetLang,
-                                              engine, apiKey, translated);
+                                              engine, apiKey, translated, &lastError);
+        }
+        if (ok) {
+          consecutiveFailures = 0;
+        } else {
+          consecutiveFailures++;
+          LOG_ERR("HtmlRW", "Translate failed (%d consecutive)", consecutiveFailures);
+          if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+            LOG_ERR("HtmlRW", "Aborting: %d consecutive failures", consecutiveFailures);
+            abortedOnErrors = true;
+          }
         }
         translations.push_back(ok ? std::move(translated) : std::string{});
-        if (i + 1 < translatableIndices.size()) delay(100);
+        if (i + 1 < translatableIndices.size()) {
+          delay(ok ? 100 : 2000);  // longer delay after error to let heap recover
+        }
       }
     }
   }
@@ -204,26 +233,37 @@ void TranslatingHtmlRewriter::flushBatch() {
       tIdx++;
 
       if (!thisTranslation.empty() && thisTranslation != batch[i].trimmedText) {
-        static constexpr char kTagOpen[] = "<p lang=\"";
-        static constexpr char kTagAttrs[] =
-            "\" data-translation=\"true\" dir=\"auto\" style=\"color:#5A5A5A\">";
-        writeRaw(kTagOpen, sizeof(kTagOpen) - 1);
+        // Use original block's tag name and class so translated paragraph inherits same CSS spacing
+        const auto& tag = batch[i].blockTagName.empty() ? "p" : batch[i].blockTagName.c_str();
+        writeRaw("<", 1);
+        writeRaw(tag, strlen(tag));
+        if (!batch[i].blockClass.empty()) {
+          writeRaw(" class=\"", 8);
+          writeRaw(batch[i].blockClass);
+          writeRaw("\"", 1);
+        }
+        static constexpr char kLangAttr[] = " lang=\"";
+        static constexpr char kTagAttrs[] = "\" data-translation=\"true\" dir=\"auto\">";
+        writeRaw(kLangAttr, sizeof(kLangAttr) - 1);
         writeRaw(targetLang, strlen(targetLang));
         writeRaw(kTagAttrs, sizeof(kTagAttrs) - 1);
         std::string escaped;
         appendEscaped(thisTranslation.c_str(), thisTranslation.size(), escaped);
         writeRaw(escaped);
-        writeRaw("</p>\n", 5);
+        writeRaw("</", 2);
+        writeRaw(tag, strlen(tag));
+        writeRaw(">\n", 2);
         paragraphsTranslated++;
       } else {
         paragraphsSkipped++;
       }
     }
 
-    if (progressOut) *progressOut = paragraphsTranslated + paragraphsSkipped;
+    blocksProcessed++;
+    if (progressOut) *progressOut = blocksProcessed;
   }
 
-  delay(100);  // rate-limit between batches
+  delay(consecutiveFailures > 0 ? 2000 : 100);  // longer delay after errors to let heap recover
   batch.clear();
   batchTextBytes = 0;
 }
@@ -239,15 +279,43 @@ void XMLCALL TranslatingHtmlRewriter::onStart(void* ud, const XML_Char* name, co
 
   const std::string tag = makeOpenTag(name, atts);
 
-  if (self->blockDepth != -1) {
+  if (self->skipBlockDepth != -1) {
+    // Inside a block being skipped (existing translation): ignore everything
+  } else if (self->blockDepth != -1) {
     // Inside a block element: accumulate
     self->blockHtml += tag;
     // Also track plain text for inner inline tags (no text here, just tag)
   } else if (!self->insideHead && isBlockTag(name)) {
-    // Start of a new block element
-    self->blockDepth = self->depth;
-    self->blockHtml = tag;
-    self->blockText.clear();
+    // Check for existing translation (Calibre or CrossPoint) — block element with `lang` attribute
+    bool hasLangAttr = false;
+    if (atts) {
+      for (int i = 0; atts[i]; i += 2) {
+        if (strcmp(atts[i], "lang") == 0 || strcmp(atts[i], "xml:lang") == 0) {
+          hasLangAttr = true;
+          break;
+        }
+      }
+    }
+    if (hasLangAttr) {
+      // Skip this block entirely — it's an existing translation paragraph
+      self->skipBlockDepth = self->depth;
+      self->paragraphsSkipped++;
+    } else {
+      // Start of a new block element
+      self->blockDepth = self->depth;
+      self->blockHtml = tag;
+      self->blockText.clear();
+      self->blockTagName = name;
+      self->blockClass.clear();
+      if (atts) {
+        for (int i = 0; atts[i]; i += 2) {
+          if (strcmp(atts[i], "class") == 0) {
+            self->blockClass = atts[i + 1];
+            break;
+          }
+        }
+      }
+    }
   } else {
     // Structural / head element: pass through directly
     self->writeOut(tag);
@@ -260,7 +328,12 @@ void XMLCALL TranslatingHtmlRewriter::onEnd(void* ud, const XML_Char* name) {
   auto* self = static_cast<TranslatingHtmlRewriter*>(ud);
   self->depth--;
 
-  if (self->blockDepth == self->depth) {
+  if (self->skipBlockDepth == self->depth) {
+    // Done skipping an existing translation block
+    self->skipBlockDepth = -1;
+  } else if (self->skipBlockDepth != -1) {
+    // Still inside a skipped block — ignore
+  } else if (self->blockDepth == self->depth) {
     // Closing the outermost block element we're tracking
     if (self->cancelled && *self->cancelled) {
       self->wasCancelled = true;
@@ -287,6 +360,7 @@ void XMLCALL TranslatingHtmlRewriter::onEnd(void* ud, const XML_Char* name) {
 
 void XMLCALL TranslatingHtmlRewriter::onChars(void* ud, const XML_Char* s, int len) {
   auto* self = static_cast<TranslatingHtmlRewriter*>(ud);
+  if (self->skipBlockDepth != -1) return;  // inside a skipped translation block
   if (self->blockDepth != -1) {
     // Inside a block: add to both HTML output and plain text
     appendEscaped(s, static_cast<size_t>(len), self->blockHtml);
@@ -301,6 +375,7 @@ void XMLCALL TranslatingHtmlRewriter::onChars(void* ud, const XML_Char* s, int l
 
 void XMLCALL TranslatingHtmlRewriter::onDefault(void* ud, const XML_Char* s, int len) {
   auto* self = static_cast<TranslatingHtmlRewriter*>(ud);
+  if (self->skipBlockDepth != -1) return;  // inside a skipped translation block
   // Handle HTML entities and pass through XML declarations / DOCTYPE
   if (len >= 2 && s[0] == '&' && s[len - 1] == ';') {
     // Entity reference — pass through as-is (expat already tried to expand)
@@ -386,9 +461,15 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewrite(const char* inp
   insideHead = false;
   blockHtml.clear();
   blockText.clear();
+  blockTagName.clear();
+  blockClass.clear();
+  skipBlockDepth = -1;
   paragraphsTranslated = 0;
   paragraphsSkipped = 0;
   wasCancelled = false;
+  consecutiveFailures = 0;
+  abortedOnErrors = false;
+  lastError.clear();
   batch.clear();
   pendingHtml.clear();
   batchTextBytes = 0;
@@ -396,7 +477,7 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewrite(const char* inp
   XML_Parser parser = XML_ParserCreate("UTF-8");
   if (!parser) {
     LOG_ERR("HtmlRW", "Failed to create expat parser");
-    return {0, 0, false};
+    return {0, 0, false, false};
   }
 
   XML_SetUserData(parser, this);
@@ -406,7 +487,7 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewrite(const char* inp
 
   size_t offset = 0;
   bool ok = true;
-  while (offset < inputSize && !wasCancelled) {
+  while (offset < inputSize && !wasCancelled && !abortedOnErrors) {
     size_t chunk = (inputSize - offset < PARSE_CHUNK) ? (inputSize - offset) : PARSE_CHUNK;
     bool done = (offset + chunk >= inputSize);
 
@@ -431,6 +512,10 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewrite(const char* inp
   res.paragraphsTranslated = paragraphsTranslated;
   res.paragraphsSkipped = paragraphsSkipped;
   res.cancelled = wasCancelled || (cancelled && *cancelled);
+  res.abortedOnErrors = abortedOnErrors;
+  if (abortedOnErrors && !lastError.empty()) {
+    snprintf(res.errorDetail, sizeof(res.errorDetail), "%s", lastError.c_str());
+  }
   return res;
 }
 
@@ -454,9 +539,15 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewriteFromFile(const s
   insideHead = false;
   blockHtml.clear();
   blockText.clear();
+  blockTagName.clear();
+  blockClass.clear();
+  skipBlockDepth = -1;
   paragraphsTranslated = 0;
   paragraphsSkipped = 0;
   wasCancelled = false;
+  consecutiveFailures = 0;
+  abortedOnErrors = false;
+  lastError.clear();
   batch.clear();
   pendingHtml.clear();
   batchTextBytes = 0;
@@ -464,7 +555,7 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewriteFromFile(const s
   FsFile inputFile;
   if (!Storage.openFileForRead("HtmlRW", inputPath, inputFile)) {
     LOG_ERR("HtmlRW", "Failed to open input file: %s", inputPath.c_str());
-    return {0, 0, false};
+    return {0, 0, false, false};
   }
 
   const size_t fileSize = inputFile.size();
@@ -473,7 +564,7 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewriteFromFile(const s
   if (!parser) {
     LOG_ERR("HtmlRW", "Failed to create expat parser");
     inputFile.close();
-    return {0, 0, false};
+    return {0, 0, false, false};
   }
 
   XML_SetUserData(parser, this);
@@ -484,7 +575,7 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewriteFromFile(const s
   char buf[PARSE_CHUNK];
   size_t totalRead = 0;
   bool ok = true;
-  while (totalRead < fileSize && !wasCancelled) {
+  while (totalRead < fileSize && !wasCancelled && !abortedOnErrors) {
     const size_t toRead = ((fileSize - totalRead) < PARSE_CHUNK) ? (fileSize - totalRead) : PARSE_CHUNK;
     const int bytesRead = inputFile.read(reinterpret_cast<uint8_t*>(buf), toRead);
     if (bytesRead <= 0) {
@@ -516,5 +607,65 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewriteFromFile(const s
   res.paragraphsTranslated = paragraphsTranslated;
   res.paragraphsSkipped = paragraphsSkipped;
   res.cancelled = wasCancelled || (cancelled && *cancelled);
+  res.abortedOnErrors = abortedOnErrors;
+  if (abortedOnErrors && !lastError.empty()) {
+    snprintf(res.errorDetail, sizeof(res.errorDetail), "%s", lastError.c_str());
+  }
   return res;
+}
+
+// ─── Embedded translation detection ──────────────────────────────────────────
+
+void XMLCALL TranslatingHtmlRewriter::onStartDetectEmbedded(void* ud, const XML_Char* name, const XML_Char** atts) {
+  auto* state = static_cast<EmbeddedDetectState*>(ud);
+  if (state->found) return;
+
+  // Skip non-block tags and structural tags like <html>, <body>
+  if (!isBlockTag(name)) return;
+
+  if (atts) {
+    for (int i = 0; atts[i]; i += 2) {
+      if (strcmp(atts[i], "lang") == 0 || strcmp(atts[i], "xml:lang") == 0) {
+        state->found = true;
+        return;
+      }
+    }
+  }
+}
+
+bool TranslatingHtmlRewriter::hasEmbeddedTranslations(const std::string& inputPath) {
+  FsFile inputFile;
+  if (!Storage.openFileForRead("HtmlRW", inputPath, inputFile)) {
+    LOG_ERR("HtmlRW", "hasEmbeddedTranslations: failed to open %s", inputPath.c_str());
+    return false;
+  }
+
+  const size_t fileSize = inputFile.size();
+
+  XML_Parser parser = XML_ParserCreate("UTF-8");
+  if (!parser) {
+    inputFile.close();
+    return false;
+  }
+
+  EmbeddedDetectState state;
+  XML_SetUserData(parser, &state);
+  XML_SetStartElementHandler(parser, onStartDetectEmbedded);
+
+  char buf[PARSE_CHUNK];
+  size_t totalRead = 0;
+  while (totalRead < fileSize && !state.found) {
+    const size_t toRead = ((fileSize - totalRead) < PARSE_CHUNK) ? (fileSize - totalRead) : PARSE_CHUNK;
+    const int bytesRead = inputFile.read(reinterpret_cast<uint8_t*>(buf), toRead);
+    if (bytesRead <= 0) break;
+    totalRead += bytesRead;
+    const bool done = (totalRead >= fileSize);
+    if (XML_Parse(parser, buf, bytesRead, done ? 1 : 0) == XML_STATUS_ERROR) break;
+  }
+
+  XML_ParserFree(parser);
+  inputFile.close();
+
+  LOG_DBG("HtmlRW", "hasEmbeddedTranslations(%s) = %s", inputPath.c_str(), state.found ? "true" : "false");
+  return state.found;
 }

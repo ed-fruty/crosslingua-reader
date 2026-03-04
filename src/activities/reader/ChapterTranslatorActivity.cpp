@@ -153,6 +153,13 @@ void ChapterTranslatorActivity::translationTask(void* param) {
 }
 
 void ChapterTranslatorActivity::runTranslation() {
+  // Configure Google DNS — ESP32's DHCP-provided DNS may not resolve all Google subdomains
+  IPAddress dns1(8, 8, 8, 8);
+  IPAddress dns2(8, 8, 4, 4);
+  WiFi.config(WiFi.localIP(), WiFi.gatewayIP(), WiFi.subnetMask(), dns1, dns2);
+  delay(500);  // Let network stack stabilize after config change
+  LOG_DBG("CHT", "DNS set to 8.8.8.8 / 8.8.4.4");
+
   // Step 1: Extract chapter HTML from EPUB to a temp file
   const auto& spineItem = epub->getSpineItem(spineIndex);
   const auto tmpPath = epub->getCachePath() + "/.tmp_translate_" + std::to_string(spineIndex) + ".html";
@@ -210,6 +217,17 @@ void ChapterTranslatorActivity::runTranslation() {
     return;
   }
 
+  if (lastResult.abortedOnErrors) {
+    Storage.remove(translatedHtmlPath.c_str());
+    if (lastResult.errorDetail[0]) {
+      snprintf(statusMsg, sizeof(statusMsg), "%s", lastResult.errorDetail);
+    } else {
+      snprintf(statusMsg, sizeof(statusMsg), "Translation failed: too many errors");
+    }
+    taskFailed = true;
+    return;
+  }
+
   if (lastResult.paragraphsTranslated == 0) {
     Storage.remove(translatedHtmlPath.c_str());
     snprintf(statusMsg, sizeof(statusMsg), "No paragraphs translated");
@@ -226,12 +244,14 @@ void ChapterTranslatorActivity::runTranslation() {
 
 const char* ChapterTranslatorActivity::getEngineName() const {
   switch (SETTINGS.translationEngine) {
-    case CrossPointSettings::ENGINE_GOOGLE_FREE: return "Google";
+    case CrossPointSettings::ENGINE_GOOGLE_FREE: return "Google (Free) - Old";
     case CrossPointSettings::ENGINE_DEEPL: return "DeepL";
     case CrossPointSettings::ENGINE_DEEPL_PRO: return "DeepL Pro";
     case CrossPointSettings::ENGINE_OPENAI: return "OpenAI";
     case CrossPointSettings::ENGINE_DEEPSEEK: return "DeepSeek";
     case CrossPointSettings::ENGINE_GEMINI: return "Gemini";
+    case CrossPointSettings::ENGINE_GOOGLE_V2: return "Google (Free) - New";
+    case CrossPointSettings::ENGINE_GOOGLE_HTML: return "Google (Free) - HTML";
     default: return "Unknown";
   }
 }
@@ -369,7 +389,8 @@ void ChapterTranslatorActivity::render(RenderLock&&) {
     renderer.drawCenteredText(UI_12_FONT_ID, 150, tr(STR_TRANSLATION_DONE), true, EpdFontFamily::BOLD);
 
     char doneStr[64];
-    snprintf(doneStr, sizeof(doneStr), "%d paragraphs", lastResult.paragraphsTranslated);
+    int total = lastResult.paragraphsTranslated + lastResult.paragraphsSkipped;
+    snprintf(doneStr, sizeof(doneStr), "%d / %d paragraphs", lastResult.paragraphsTranslated, total);
     renderer.drawCenteredText(UI_10_FONT_ID, 200, doneStr);
 
     renderer.drawCenteredText(UI_10_FONT_ID, 380, tr(STR_PRESS_ANY_CONTINUE));

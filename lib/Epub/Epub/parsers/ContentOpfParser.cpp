@@ -116,6 +116,11 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
     return;
   }
 
+  if (self->state == IN_METADATA && strcmp(name, "dc:subject") == 0) {
+    self->state = IN_BOOK_SUBJECT;
+    return;
+  }
+
   if (self->state == IN_PACKAGE && (strcmp(name, "manifest") == 0 || strcmp(name, "opf:manifest") == 0)) {
     self->state = IN_MANIFEST;
     if (!Storage.openFileForWrite("COF", self->cachePath + itemCacheFile, self->tempItemStore)) {
@@ -337,6 +342,16 @@ void XMLCALL ContentOpfParser::characterData(void* userData, const XML_Char* s, 
     self->language.append(s, len);
     return;
   }
+
+  if (self->state == IN_BOOK_SUBJECT) {
+    // Detect Calibre Ebook Translator plugin: subject contains "Ebook Translator" or "bookfere"
+    const std::string text(s, len);
+    if (text.find("Ebook Translator") != std::string::npos || text.find("bookfere") != std::string::npos) {
+      self->hasCalibreTranslation = true;
+      LOG_DBG("COF", "Detected Calibre Ebook Translator via dc:subject");
+    }
+    return;
+  }
 }
 
 void XMLCALL ContentOpfParser::endElement(void* userData, const XML_Char* name) {
@@ -372,6 +387,11 @@ void XMLCALL ContentOpfParser::endElement(void* userData, const XML_Char* name) 
   }
 
   if (self->state == IN_BOOK_LANGUAGE && strcmp(name, "dc:language") == 0) {
+    self->state = IN_METADATA;
+    return;
+  }
+
+  if (self->state == IN_BOOK_SUBJECT && strcmp(name, "dc:subject") == 0) {
     self->state = IN_METADATA;
     return;
   }
