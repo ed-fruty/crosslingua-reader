@@ -677,6 +677,7 @@ bool Epub::generateThumbBmp(int height) const {
   const auto coverImageHref = bookMetadataCache->coreMetadata.coverItemHref;
   if (coverImageHref.empty()) {
     LOG_DBG("EBP", "No known cover image for thumbnail");
+    return false;
   } else if (coverImageHref.substr(coverImageHref.length() - 4) == ".jpg" ||
              coverImageHref.substr(coverImageHref.length() - 5) == ".jpeg") {
     LOG_DBG("EBP", "Generating thumb BMP from JPG cover image");

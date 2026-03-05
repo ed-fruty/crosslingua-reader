@@ -4,6 +4,7 @@
 #include <Epub.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
+#include <Logging.h>
 #include <I18n.h>
 #include <Utf8.h>
 #include <Xtc.h>
@@ -65,7 +66,7 @@ void HomeActivity::loadRecentCovers(int coverHeight) {
         if (StringUtils::checkFileExtension(book.path, ".epub")) {
           Epub epub(book.path, "/.crosspoint");
           // Skip loading css since we only need metadata here
-          epub.load(false, true);
+          bool loaded = epub.load(false, true);
 
           // Try to generate thumbnail image for Continue Reading card
           if (!showingLoading) {
@@ -73,7 +74,7 @@ void HomeActivity::loadRecentCovers(int coverHeight) {
             popupRect = GUI.drawPopup(renderer, tr(STR_LOADING));
           }
           GUI.fillPopupProgress(renderer, popupRect, 10 + progress * (90 / recentBooks.size()));
-          bool success = epub.generateThumbBmp(coverHeight);
+          bool success = loaded && epub.generateThumbBmp(coverHeight);
           if (!success) {
             RECENT_BOOKS.updateBook(book.path, book.title, book.author, "");
             book.coverBmpPath = "";
@@ -143,6 +144,7 @@ bool HomeActivity::storeCoverBuffer() {
   const size_t bufferSize = GfxRenderer::getBufferSize();
   coverBuffer = static_cast<uint8_t*>(malloc(bufferSize));
   if (!coverBuffer) {
+    LOG_ERR("HOME", "Failed to malloc cover buffer (%u bytes)", bufferSize);
     return false;
   }
 
