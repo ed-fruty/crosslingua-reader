@@ -37,6 +37,7 @@ class HalStorage {
   bool openFileForWrite(const char* moduleName, const std::string& path, FsFile& file);
   bool openFileForWrite(const char* moduleName, const String& path, FsFile& file);
   bool removeDir(const char* path);
+  bool forceRemoveDir(const char* path);
 
   static HalStorage& getInstance() { return instance; }
 

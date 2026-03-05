@@ -22,14 +22,16 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
     CYCLE_LINE_SPACING,
     GO_HOME,
     SYNC,
-    DELETE_CACHE
+    DELETE_CACHE,
+    TRANSLATE_CHAPTER,
+    TRANSLATE_PAGE
   };
 
   explicit EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title,
                                   const int currentPage, const int totalPages, const int bookProgressPercent,
                                   const uint8_t currentOrientation, const uint8_t currentTranslationMode,
                                   const uint8_t currentFontFamily, const uint8_t currentFontSize,
-                                  const uint8_t currentLineSpacing,
+                                  const uint8_t currentLineSpacing, const bool chapterIsTranslated,
                                   const std::function<void(uint8_t, uint8_t, uint8_t, uint8_t, uint8_t)>& onBack,
                                   const std::function<void(MenuAction)>& onAction)
       : ActivityWithSubactivity("EpubReaderMenu", renderer, mappedInput),
@@ -43,7 +45,22 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
         totalPages(totalPages),
         bookProgressPercent(bookProgressPercent),
         onBack(onBack),
-        onAction(onAction) {}
+        onAction(onAction) {
+    // Build menu items with dynamic translate label based on chapter translation state
+    menuItems = {{MenuAction::SELECT_CHAPTER, StrId::STR_SELECT_CHAPTER},
+                 {MenuAction::ROTATE_SCREEN, StrId::STR_ORIENTATION},
+                 {MenuAction::CYCLE_FONT_FAMILY, StrId::STR_FONT_FAMILY},
+                 {MenuAction::CYCLE_FONT_SIZE, StrId::STR_FONT_SIZE},
+                 {MenuAction::CYCLE_LINE_SPACING, StrId::STR_LINE_SPACING},
+                 {MenuAction::GO_TO_PERCENT, StrId::STR_GO_TO_PERCENT},
+                 {MenuAction::GO_HOME, StrId::STR_GO_HOME_BUTTON},
+                 {MenuAction::SYNC, StrId::STR_SYNC_PROGRESS},
+                 {MenuAction::DELETE_CACHE, StrId::STR_DELETE_CACHE},
+                 {MenuAction::TRANSLATE_CHAPTER,
+                  chapterIsTranslated ? StrId::STR_RETRANSLATE_CHAPTER : StrId::STR_TRANSLATE_CHAPTER},
+                 {MenuAction::TRANSLATE_PAGE, StrId::STR_TRANSLATE_PAGE},
+                 {MenuAction::CYCLE_TRANSLATION_MODE, StrId::STR_TRANSLATION_MODE}};
+  }
 
   void onEnter() override;
   void onExit() override;
@@ -56,17 +73,8 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
     StrId labelId;
   };
 
-  // Fixed menu layout (order matters for up/down navigation).
-  const std::vector<MenuItem> menuItems = {{MenuAction::SELECT_CHAPTER, StrId::STR_SELECT_CHAPTER},
-                                           {MenuAction::ROTATE_SCREEN, StrId::STR_ORIENTATION},
-                                           {MenuAction::CYCLE_TRANSLATION_MODE, StrId::STR_TRANSLATION_MODE},
-                                           {MenuAction::CYCLE_FONT_FAMILY, StrId::STR_FONT_FAMILY},
-                                           {MenuAction::CYCLE_FONT_SIZE, StrId::STR_FONT_SIZE},
-                                           {MenuAction::CYCLE_LINE_SPACING, StrId::STR_LINE_SPACING},
-                                           {MenuAction::GO_TO_PERCENT, StrId::STR_GO_TO_PERCENT},
-                                           {MenuAction::GO_HOME, StrId::STR_GO_HOME_BUTTON},
-                                           {MenuAction::SYNC, StrId::STR_SYNC_PROGRESS},
-                                           {MenuAction::DELETE_CACHE, StrId::STR_DELETE_CACHE}};
+  // Menu layout (order matters for up/down navigation). Built in constructor.
+  std::vector<MenuItem> menuItems;
 
   int selectedIndex = 0;
 
@@ -76,9 +84,9 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   const std::vector<StrId> orientationLabels = {StrId::STR_PORTRAIT, StrId::STR_LANDSCAPE_CW, StrId::STR_INVERTED,
                                                 StrId::STR_LANDSCAPE_CCW};
   uint8_t pendingTranslationMode = 0;
-  const std::vector<StrId> translationModeLabels = {StrId::STR_NORMAL, StrId::STR_DARK, StrId::STR_LIGHT,
-                                                    StrId::STR_NO_RENDER, StrId::STR_INVERT_TRANSLATION,
-                                                    StrId::STR_SIDE_BY_SIDE};
+  const std::vector<StrId> translationModeLabels = {StrId::STR_NORMAL, StrId::STR_TRANSLATION_GREY,
+                                                    StrId::STR_TRANSLATION_LIGHT_GREY, StrId::STR_NO_RENDER,
+                                                    StrId::STR_INVERT_TRANSLATION, StrId::STR_SIDE_BY_SIDE};
   uint8_t pendingFontFamily = 0;
   const std::vector<StrId> fontFamilyLabels = {StrId::STR_BOOKERLY, StrId::STR_EDSLAB, StrId::STR_ALEGREYA,
                                                 StrId::STR_GPRO};

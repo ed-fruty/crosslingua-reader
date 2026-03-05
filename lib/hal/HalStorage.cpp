@@ -1,5 +1,6 @@
 #include "HalStorage.h"
 
+#include <Logging.h>
 #include <SDCardManager.h>
 
 #define SDCard SDCardManager::getInstance()
@@ -63,3 +64,39 @@ bool HalStorage::openFileForWrite(const char* moduleName, const String& path, Fs
 }
 
 bool HalStorage::removeDir(const char* path) { return SDCard.removeDir(path); }
+
+bool HalStorage::forceRemoveDir(const char* path) {
+  auto dir = open(path);
+  if (!dir || !dir.isDirectory()) {
+    if (dir) dir.close();
+    return false;
+  }
+  bool allDeleted = true;
+  char name[128];
+  for (auto f = dir.openNextFile(); f; f = dir.openNextFile()) {
+    f.getName(name, sizeof(name));
+    std::string childPath = std::string(path) + "/" + name;
+    bool isDir = f.isDirectory();
+    f.close();
+    if (isDir) {
+      if (!forceRemoveDir(childPath.c_str())) allDeleted = false;
+    } else {
+      if (!remove(childPath.c_str())) {
+        // Try to truncate to repair a broken FAT chain, then retry remove
+        FsFile tmp = open(childPath.c_str(), O_RDWR | O_TRUNC);
+        if (tmp) {
+          tmp.close();
+          if (!remove(childPath.c_str())) {
+            LOG_ERR("HAL", "forceRemoveDir: failed to remove %s", childPath.c_str());
+            allDeleted = false;
+          }
+        } else {
+          LOG_ERR("HAL", "forceRemoveDir: failed to truncate %s", childPath.c_str());
+          allDeleted = false;
+        }
+      }
+    }
+  }
+  dir.close();
+  return allDeleted && rmdir(path);
+}

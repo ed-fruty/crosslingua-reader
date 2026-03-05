@@ -30,6 +30,8 @@ class Epub {
   // CSS files
   std::vector<std::string> cssFiles;
 
+  bool hasCalibreTranslation_ = false;
+
   bool findContentOpfFile(std::string* contentOpfFile) const;
   bool parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, bool metadataOnly = false);
   bool parseTocNcxFile() const;
@@ -76,4 +78,5 @@ class Epub {
   size_t getBookSize() const;
   float calculateProgress(int currentSpineIndex, float currentSpineRead) const;
   CssParser* getCssParser() const { return cssParser.get(); }
+  bool hasCalibreTranslation() const { return hasCalibreTranslation_; }
 };

@@ -159,15 +159,18 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     return;
   }
 
-  // Extract class and style attributes for CSS processing
+  // Extract class, style, and lang attributes for CSS and translation processing
   std::string classAttr;
   std::string styleAttr;
+  std::string langAttr;
   if (atts != nullptr) {
     for (int i = 0; atts[i]; i += 2) {
       if (strcmp(atts[i], "class") == 0) {
         classAttr = atts[i + 1];
       } else if (strcmp(atts[i], "style") == 0) {
         styleAttr = atts[i + 1];
+      } else if (strcmp(atts[i], "lang") == 0) {
+        langAttr = atts[i + 1];
       }
     }
   }
@@ -478,6 +481,31 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
         entry.hasColor = true;
         entry.color = cssStyle.textGrayLevel;
       }
+      self->inlineStyleStack.push_back(entry);
+      self->updateEffectiveInlineStyle();
+    }
+  }
+
+  // Detect translation via lang attribute (CrossPoint and Calibre translations)
+  // Skip html/body to avoid false-positives from document-level lang (e.g. <html lang="en">)
+  if (!langAttr.empty() && strcmp(name, "html") != 0 && strcmp(name, "body") != 0) {
+    if (!self->inlineStyleStack.empty() && self->inlineStyleStack.back().depth == self->depth) {
+      // Style entry already exists (from CSS) — add translated marker if not set
+      if (!self->inlineStyleStack.back().hasColor) {
+        self->inlineStyleStack.back().hasColor = true;
+        self->inlineStyleStack.back().color = 1;
+        self->updateEffectiveInlineStyle();
+      }
+    } else {
+      // No entry — push new translated marker
+      if (self->partWordBufferIndex > 0) {
+        self->flushPartWordBuffer();
+        self->nextWordContinues = true;
+      }
+      StyleStackEntry entry;
+      entry.depth = self->depth;
+      entry.hasColor = true;
+      entry.color = 1;
       self->inlineStyleStack.push_back(entry);
       self->updateEffectiveInlineStyle();
     }

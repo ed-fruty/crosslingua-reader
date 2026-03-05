@@ -113,6 +113,12 @@ class CrossPointSettings {
     REFRESH_FREQUENCY_COUNT
   };
 
+  // Long-press side button behavior
+  enum LONG_PRESS_SIDE { LP_NONE = 0, LP_CHAPTER_SKIP = 1, LP_TRANSLATION_MODES = 2, LONG_PRESS_SIDE_COUNT };
+
+  // Long-press OK button behavior
+  enum LONG_PRESS_OK { LP_OK_TOGGLE_TRANSLATION = 0, LP_OK_TRANSLATE_PAGE = 1, LONG_PRESS_OK_COUNT };
+
   // Short power button press actions
   enum SHORT_PWRBTN { IGNORE = 0, SLEEP = 1, PAGE_TURN = 2, SHORT_PWRBTN_COUNT };
 
@@ -166,8 +172,10 @@ class CrossPointSettings {
   char opdsPassword[64] = "";
   // Hide battery percentage
   uint8_t hideBatteryPercentage = HIDE_NEVER;
-  // Long-press chapter skip on side buttons
-  uint8_t longPressChapterSkip = 1;
+  // Long-press side button behavior (LP_NONE, LP_CHAPTER_SKIP, LP_TRANSLATION_MODES)
+  uint8_t longPressChapterSkip = LP_CHAPTER_SKIP;
+  // Long-press OK button behavior (LP_OK_TOGGLE_TRANSLATION, LP_OK_TRANSLATE_PAGE)
+  uint8_t longPressOk = LP_OK_TOGGLE_TRANSLATION;
   // UI Theme
   uint8_t uiTheme = LYRA;
   // Sunlight fading compensation
@@ -177,6 +185,25 @@ class CrossPointSettings {
   // How CSS-colored text renders on e-ink: 0=Normal, 1=Dark, 2=Light, 3=No Render, 4=Invert
   enum COLOR_TEXT_STYLE { CT_NORMAL = 0, CT_DARK = 1, CT_LIGHT = 2, CT_NO_RENDER = 3, CT_INVERT = 4, CT_SIDE_BY_SIDE = 5, COLOR_TEXT_STYLE_COUNT };
   uint8_t colorTextStyle = CT_DARK;
+  // Last-used translation language (index into LanguagePickerActivity::LANGUAGES[], 0xFF = unset)
+  uint8_t translationLanguage = 0xFF;
+
+  // Translation engine selection
+  enum TRANSLATION_ENGINE : uint8_t {
+    ENGINE_GOOGLE_FREE = 0,
+    ENGINE_DEEPL = 1,
+    ENGINE_DEEPL_PRO = 2,
+    ENGINE_OPENAI = 3,
+    ENGINE_DEEPSEEK = 4,
+    ENGINE_GEMINI = 5,
+    ENGINE_GOOGLE_V2 = 6,
+    ENGINE_GOOGLE_HTML = 7,
+    TRANSLATION_ENGINE_COUNT
+  };
+  uint8_t translationEngine = ENGINE_GOOGLE_V2;
+  char translateApiKey[128] = "";
+  // Source language for translation (0xFF = auto-detect, otherwise index into LANGUAGES[])
+  uint8_t sourceLanguage = 0xFF;
 
   ~CrossPointSettings() = default;
 

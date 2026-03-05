@@ -128,6 +128,7 @@ bool Epub::parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, bool m
     }
   }
 
+  hasCalibreTranslation_ = opfParser.hasCalibreTranslation;
   bookMetadata.textReferenceHref = opfParser.textReferenceHref;
 
   if (!opfParser.tocNcxPath.empty()) {
@@ -438,7 +439,7 @@ bool Epub::clearCache() const {
     return true;
   }
 
-  if (!Storage.removeDir(cachePath.c_str())) {
+  if (!Storage.forceRemoveDir(cachePath.c_str())) {
     LOG_ERR("EPB", "Failed to clear cache");
     return false;
   }

@@ -198,8 +198,8 @@ void onGoToMyLibraryWithPath(const std::string& path);
 void onGoToRecentBooks();
 void onGoToReader(const std::string& initialEpubPath) {
   exitActivity();
-  enterNewActivity(
-      new ReaderActivity(renderer, mappedInputManager, initialEpubPath, onGoHome, onGoToMyLibraryWithPath));
+  enterNewActivity(new ReaderActivity(renderer, mappedInputManager, initialEpubPath, onGoHome,
+                                      onGoToMyLibraryWithPath));
 }
 
 void onGoToFileTransfer() {

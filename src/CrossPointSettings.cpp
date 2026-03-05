@@ -135,6 +135,10 @@ uint8_t CrossPointSettings::writeSettings(FsFile& file, bool count_only) const {
   writer.writeItem(file, fadingFix);
   writer.writeItem(file, embeddedStyle);
   writer.writeItem(file, colorTextStyle);
+  writer.writeItem(file, translationLanguage);
+  writer.writeItem(file, translationEngine);
+  writer.writeItemString(file, translateApiKey);
+  writer.writeItem(file, sourceLanguage);
   // New fields need to be added at end for backward compatibility
 
   return writer.item_count;
@@ -263,6 +267,19 @@ bool CrossPointSettings::loadFromFile() {
     serialization::readPod(inputFile, embeddedStyle);
     if (++settingsRead >= fileSettingsCount) break;
     readAndValidate(inputFile, colorTextStyle, COLOR_TEXT_STYLE_COUNT);
+    if (++settingsRead >= fileSettingsCount) break;
+    serialization::readPod(inputFile, translationLanguage);
+    if (++settingsRead >= fileSettingsCount) break;
+    readAndValidate(inputFile, translationEngine, TRANSLATION_ENGINE_COUNT);
+    if (++settingsRead >= fileSettingsCount) break;
+    {
+      std::string apiKeyStr;
+      serialization::readString(inputFile, apiKeyStr);
+      strncpy(translateApiKey, apiKeyStr.c_str(), sizeof(translateApiKey) - 1);
+      translateApiKey[sizeof(translateApiKey) - 1] = '\0';
+    }
+    if (++settingsRead >= fileSettingsCount) break;
+    serialization::readPod(inputFile, sourceLanguage);
     if (++settingsRead >= fileSettingsCount) break;
     // New fields added at end for backward compatibility
   } while (false);

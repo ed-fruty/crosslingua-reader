@@ -19,6 +19,28 @@
 #include "fontIds.h"
 
 namespace {
+// Check if a chapter's EPUB HTML contains embedded translations (Calibre plugin or previous CrossPoint).
+// Extracts chapter to temp file, runs SAX scan, cleans up.
+bool chapterHasEmbeddedTranslations(const std::shared_ptr<Epub>& epub, int spineIndex) {
+  if (!epub) return false;
+  const auto href = epub->getSpineItem(spineIndex).href;
+  if (href.empty()) return false;
+
+  const auto tmpPath = epub->getCachePath() + "/.tmp_detect_" + std::to_string(spineIndex) + ".html";
+  FsFile tmpFile;
+  if (!Storage.openFileForWrite("ERA", tmpPath, tmpFile)) return false;
+  bool ok = epub->readItemContentsToStream(href, tmpFile, 1024);
+  tmpFile.close();
+  if (!ok) {
+    Storage.remove(tmpPath.c_str());
+    return false;
+  }
+
+  bool result = TranslatingHtmlRewriter::hasEmbeddedTranslations(tmpPath);
+  Storage.remove(tmpPath.c_str());
+  return result;
+}
+
 // pagesPerRefresh now comes from SETTINGS.getRefreshFrequency()
 constexpr unsigned long skipChapterMs = 700;
 constexpr unsigned long goHomeMs = 1000;
@@ -113,6 +135,9 @@ void EpubReaderActivity::onExit() {
 
   APP_STATE.readerActivityLoadCount = 0;
   APP_STATE.saveToFile();
+  if (section && epub) {
+    saveProgress(currentSpineIndex, section->currentPage, section->pageCount);
+  }
   section.reset();
   epub.reset();
 }
@@ -137,6 +162,78 @@ void EpubReaderActivity::loop() {
       }
       return;  // Don't access 'this' after callback
     }
+    // Deferred translate: launch ChapterTranslatorActivity after menu subactivity is gone
+    if (pendingTranslateChapter) {
+      pendingTranslateChapter = false;
+      if (epub && section) {
+        const bool alreadyTranslated = section->hasTranslatedHtml() || epub->hasCalibreTranslation() ||
+                                       chapterHasEmbeddedTranslations(epub, currentSpineIndex);
+        const auto translatedPath = section->getTranslatedHtmlPath();
+        const int si = currentSpineIndex;
+        enterNewActivity(new ChapterTranslatorActivity(
+            renderer, mappedInput, epub, si, translatedPath, alreadyTranslated,
+            [this] {
+              // Cancel: just return to reader
+              exitActivity();
+              requestUpdate();
+              skipNextButtonCheck = true;
+            },
+            [this] {
+              // Complete: clear binary section cache so it rebuilds from translated HTML
+              exitActivity();
+              {
+                RenderLock lock(*this);
+                if (section) {
+                  cachedSpineIndex = currentSpineIndex;
+                  cachedChapterTotalPageCount = section->pageCount;
+                  nextPageNumber = section->currentPage;
+                  section->clearCache();  // Delete .bin so loadSectionFile() fails → createSectionFile() runs
+                }
+                section.reset();
+              }
+              requestUpdate();
+              skipNextButtonCheck = true;
+            }));
+      }
+      return;
+    }
+    // Deferred page translate: extract text from current page and launch PageTranslatorActivity
+    if (pendingTranslatePage) {
+      pendingTranslatePage = false;
+      if (epub && section) {
+        auto page = section->loadPageFromSectionFile();
+        std::string text;
+        if (page) {
+          text = page->extractText();
+          page.reset();
+        }
+        enterNewActivity(new PageTranslatorActivity(renderer, mappedInput, std::move(text), [this] {
+          exitActivity();
+          requestUpdate();
+          skipNextButtonCheck = true;
+        }));
+      }
+      return;
+    }
+    return;
+  }
+
+  // Handle pending page translate when no subactivity (e.g., from long press OK)
+  if (pendingTranslatePage) {
+    pendingTranslatePage = false;
+    if (epub && section) {
+      auto page = section->loadPageFromSectionFile();
+      std::string text;
+      if (page) {
+        text = page->extractText();
+        page.reset();
+      }
+      enterNewActivity(new PageTranslatorActivity(renderer, mappedInput, std::move(text), [this] {
+        exitActivity();
+        requestUpdate();
+        skipNextButtonCheck = true;
+      }));
+    }
     return;
   }
 
@@ -157,14 +254,25 @@ void EpubReaderActivity::loop() {
                                 !mappedInput.wasReleased(MappedInputManager::Button::Confirm);
     const bool backCleared = !mappedInput.isPressed(MappedInputManager::Button::Back) &&
                              !mappedInput.wasReleased(MappedInputManager::Button::Back);
-    if (confirmCleared && backCleared) {
+    const bool pageCleared = !mappedInput.isPressed(MappedInputManager::Button::PageForward) &&
+                             !mappedInput.wasReleased(MappedInputManager::Button::PageForward) &&
+                             !mappedInput.isPressed(MappedInputManager::Button::PageBack) &&
+                             !mappedInput.wasReleased(MappedInputManager::Button::PageBack);
+    if (confirmCleared && backCleared && pageCleared) {
       skipNextButtonCheck = false;
     }
     return;
   }
 
-  // Enter reader menu activity.
+  // Confirm button: short press opens menu, long press (>=700ms) triggers mode shortcuts
+  constexpr unsigned long longPressMs = 700;
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    const auto heldTime = mappedInput.getHeldTime();
+    LOG_DBG("ERS", "Confirm released, heldTime=%lu, longPressMs=%lu", heldTime, longPressMs);
+    if (heldTime >= longPressMs && handleLongPressConfirm()) {
+      return;
+    }
+    // Short press: open reader menu
     const int currentPage = section ? section->currentPage + 1 : 0;
     const int totalPages = section ? section->pageCount : 0;
     float bookProgress = 0.0f;
@@ -173,10 +281,14 @@ void EpubReaderActivity::loop() {
       bookProgress = epub->calculateProgress(currentSpineIndex, chapterProgress) * 100.0f;
     }
     const int bookProgressPercent = clampPercent(static_cast<int>(bookProgress + 0.5f));
+    const bool chapterIsTranslated =
+        section && (section->hasTranslatedHtml() || epub->hasCalibreTranslation() ||
+                    chapterHasEmbeddedTranslations(epub, currentSpineIndex));
     exitActivity();
     enterNewActivity(new EpubReaderMenuActivity(
         this->renderer, this->mappedInput, epub->getTitle(), currentPage, totalPages, bookProgressPercent,
         SETTINGS.orientation, SETTINGS.colorTextStyle, SETTINGS.fontFamily, SETTINGS.fontSize, SETTINGS.lineSpacing,
+        chapterIsTranslated,
         [this](const uint8_t orientation, const uint8_t translationMode, const uint8_t fontFamily,
                const uint8_t fontSize, const uint8_t lineSpacing) {
           onReaderMenuBack(orientation, translationMode, fontFamily, fontSize, lineSpacing);
@@ -196,8 +308,8 @@ void EpubReaderActivity::loop() {
     return;
   }
 
-  // When long-press chapter skip is disabled, turn pages on press instead of release.
-  const bool usePressForPageTurn = !SETTINGS.longPressChapterSkip;
+  // When long-press behavior is None, turn pages on press instead of release.
+  const bool usePressForPageTurn = SETTINGS.longPressChapterSkip == CrossPointSettings::LP_NONE;
   const bool prevTriggered = usePressForPageTurn ? (mappedInput.wasPressed(MappedInputManager::Button::PageBack) ||
                                                     mappedInput.wasPressed(MappedInputManager::Button::Left))
                                                  : (mappedInput.wasReleased(MappedInputManager::Button::PageBack) ||
@@ -222,7 +334,8 @@ void EpubReaderActivity::loop() {
     return;
   }
 
-  const bool skipChapter = SETTINGS.longPressChapterSkip && mappedInput.getHeldTime() > skipChapterMs;
+  const bool skipChapter =
+      SETTINGS.longPressChapterSkip == CrossPointSettings::LP_CHAPTER_SKIP && mappedInput.getHeldTime() > skipChapterMs;
 
   if (skipChapter) {
     // We don't want to delete the section mid-render, so grab the semaphore
@@ -231,6 +344,22 @@ void EpubReaderActivity::loop() {
       nextPageNumber = 0;
       currentSpineIndex = nextTriggered ? currentSpineIndex + 1 : currentSpineIndex - 1;
       section.reset();
+    }
+    requestUpdate();
+    return;
+  }
+
+  // In Translation Modes, long-press side buttons switch orientation + translation mode
+  if (SETTINGS.longPressChapterSkip == CrossPointSettings::LP_TRANSLATION_MODES &&
+      mappedInput.getHeldTime() > skipChapterMs) {
+    if (nextTriggered) {
+      // Long-press PageForward: Landscape CCW + Side by Side
+      applyOrientation(CrossPointSettings::ORIENTATION::LANDSCAPE_CCW);
+      applyTranslationMode(CrossPointSettings::CT_SIDE_BY_SIDE);
+    } else {
+      // Long-press PageBack: Portrait + Original Only
+      applyOrientation(CrossPointSettings::ORIENTATION::PORTRAIT);
+      applyTranslationMode(CrossPointSettings::CT_NO_RENDER);
     }
     requestUpdate();
     return;
@@ -429,7 +558,9 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
 
           section.reset();
           // 3. WIPE: Clear the cache directory
-          epub->clearCache();
+          if (!epub->clearCache()) {
+            LOG_ERR("ERS", "clearCache failed - partial cleanup only");
+          }
 
           // 4. RESTORE: Re-setup the directory and rewrite the progress file
           epub->setupCacheDir();
@@ -439,6 +570,20 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       }
       // Defer go home to avoid race condition with display task
       pendingGoHome = true;
+      break;
+    }
+    case EpubReaderMenuActivity::MenuAction::TRANSLATE_CHAPTER: {
+      if (epub && section) {
+        pendingTranslateChapter = true;
+        exitActivity();  // close the menu subactivity; loop() will launch ChapterTranslatorActivity
+      }
+      break;
+    }
+    case EpubReaderMenuActivity::MenuAction::TRANSLATE_PAGE: {
+      if (epub && section) {
+        pendingTranslatePage = true;
+        exitActivity();  // close the menu; loop() will launch PageTranslatorActivity
+      }
       break;
     }
     case EpubReaderMenuActivity::MenuAction::SYNC: {
@@ -627,10 +772,17 @@ void EpubReaderActivity::render(Activity::RenderLock&& lock) {
     const uint16_t viewportWidth = renderer.getScreenWidth() - orientedMarginLeft - orientedMarginRight;
     const uint16_t viewportHeight = renderer.getScreenHeight() - orientedMarginTop - orientedMarginBottom;
 
+    // Fall back to Normal mode when this chapter has no translations, to avoid blank pages
+    // when "Translation Only" or similar modes strip all untranslated text.
+    const bool hasTranslation = section->hasTranslatedHtml() || epub->hasCalibreTranslation() ||
+                                chapterHasEmbeddedTranslations(epub, currentSpineIndex);
+    const uint8_t effectiveColorTextStyle =
+        hasTranslation ? SETTINGS.colorTextStyle : CrossPointSettings::CT_NORMAL;
+
     if (!section->loadSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
                                   SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
                                   viewportHeight, SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle,
-                                  SETTINGS.colorTextStyle)) {
+                                  effectiveColorTextStyle)) {
       LOG_DBG("ERS", "Cache not found, building...");
 
       const auto popupFn = [this]() { GUI.drawPopup(renderer, tr(STR_INDEXING)); };
@@ -638,7 +790,7 @@ void EpubReaderActivity::render(Activity::RenderLock&& lock) {
       if (!section->createSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
                                       SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
                                       viewportHeight, SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle,
-                                      SETTINGS.colorTextStyle, popupFn)) {
+                                      effectiveColorTextStyle, popupFn)) {
         LOG_ERR("ERS", "Failed to persist page data to SD");
         section.reset();
         return;
@@ -714,8 +866,8 @@ void EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageC
   FsFile f;
   if (Storage.openFileForWrite("ERS", epub->getCachePath() + "/progress.bin", f)) {
     uint8_t data[6];
-    data[0] = currentSpineIndex & 0xFF;
-    data[1] = (currentSpineIndex >> 8) & 0xFF;
+    data[0] = spineIndex & 0xFF;
+    data[1] = (spineIndex >> 8) & 0xFF;
     data[2] = currentPage & 0xFF;
     data[3] = (currentPage >> 8) & 0xFF;
     data[4] = pageCount & 0xFF;
@@ -727,6 +879,49 @@ void EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageC
     LOG_ERR("ERS", "Could not save progress!");
   }
 }
+bool EpubReaderActivity::handleLongPressConfirm() {
+  if (SETTINGS.longPressChapterSkip == CrossPointSettings::LP_TRANSLATION_MODES &&
+      mappedInput.isPressed(MappedInputManager::Button::PageForward)) {
+    // OK + PageForward: switch to Landscape CCW + Side by Side
+    applyOrientation(CrossPointSettings::ORIENTATION::LANDSCAPE_CCW);
+    applyTranslationMode(CrossPointSettings::CT_SIDE_BY_SIDE);
+    skipNextButtonCheck = true;
+    requestUpdate();
+    return true;
+  }
+  if (SETTINGS.longPressChapterSkip == CrossPointSettings::LP_TRANSLATION_MODES &&
+      mappedInput.isPressed(MappedInputManager::Button::PageBack)) {
+    // OK + PageBack: switch to Portrait + Original Only
+    applyOrientation(CrossPointSettings::ORIENTATION::PORTRAIT);
+    applyTranslationMode(CrossPointSettings::CT_NO_RENDER);
+    skipNextButtonCheck = true;
+    requestUpdate();
+    return true;
+  }
+  if (SETTINGS.longPressOk == CrossPointSettings::LP_OK_TRANSLATE_PAGE) {
+    // Translate Page mode: launch page translator in Normal or Original Only
+    if (SETTINGS.colorTextStyle == CrossPointSettings::CT_NORMAL ||
+        SETTINGS.colorTextStyle == CrossPointSettings::CT_NO_RENDER) {
+      pendingTranslatePage = true;
+      return true;
+    }
+    return false;
+  }
+
+  // Default: Toggle Translation — switch Original ↔ Translation
+  if (SETTINGS.colorTextStyle == CrossPointSettings::CT_NO_RENDER) {
+    applyTranslationMode(CrossPointSettings::CT_INVERT);
+    requestUpdate();
+    return true;
+  }
+  if (SETTINGS.colorTextStyle == CrossPointSettings::CT_INVERT) {
+    applyTranslationMode(CrossPointSettings::CT_NO_RENDER);
+    requestUpdate();
+    return true;
+  }
+  return false;
+}
+
 void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int orientedMarginTop,
                                         const int orientedMarginRight, const int orientedMarginBottom,
                                         const int orientedMarginLeft) {
