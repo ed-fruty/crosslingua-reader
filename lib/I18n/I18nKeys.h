@@ -387,6 +387,8 @@ enum class StrId : uint16_t {
   STR_TRANSLATION_LIGHT_GREY,
   STR_TRANSLATE_PAGE,
   STR_TRANSLATING_PAGE,
+  STR_LONG_PRESS_OK,
+  STR_TOGGLE_TRANSLATION,
   // Sentinel - must be last
   _COUNT
 };

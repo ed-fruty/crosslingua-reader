@@ -116,6 +116,9 @@ class CrossPointSettings {
   // Long-press side button behavior
   enum LONG_PRESS_SIDE { LP_NONE = 0, LP_CHAPTER_SKIP = 1, LP_TRANSLATION_MODES = 2, LONG_PRESS_SIDE_COUNT };
 
+  // Long-press OK button behavior
+  enum LONG_PRESS_OK { LP_OK_TOGGLE_TRANSLATION = 0, LP_OK_TRANSLATE_PAGE = 1, LONG_PRESS_OK_COUNT };
+
   // Short power button press actions
   enum SHORT_PWRBTN { IGNORE = 0, SLEEP = 1, PAGE_TURN = 2, SHORT_PWRBTN_COUNT };
 
@@ -171,6 +174,8 @@ class CrossPointSettings {
   uint8_t hideBatteryPercentage = HIDE_NEVER;
   // Long-press side button behavior (LP_NONE, LP_CHAPTER_SKIP, LP_TRANSLATION_MODES)
   uint8_t longPressChapterSkip = LP_CHAPTER_SKIP;
+  // Long-press OK button behavior (LP_OK_TOGGLE_TRANSLATION, LP_OK_TRANSLATE_PAGE)
+  uint8_t longPressOk = LP_OK_TOGGLE_TRANSLATION;
   // UI Theme
   uint8_t uiTheme = LYRA;
   // Sunlight fading compensation

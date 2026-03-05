@@ -218,6 +218,25 @@ void EpubReaderActivity::loop() {
     return;
   }
 
+  // Handle pending page translate when no subactivity (e.g., from long press OK)
+  if (pendingTranslatePage) {
+    pendingTranslatePage = false;
+    if (epub && section) {
+      auto page = section->loadPageFromSectionFile();
+      std::string text;
+      if (page) {
+        text = page->extractText();
+        page.reset();
+      }
+      enterNewActivity(new PageTranslatorActivity(renderer, mappedInput, std::move(text), [this] {
+        exitActivity();
+        requestUpdate();
+        skipNextButtonCheck = true;
+      }));
+    }
+    return;
+  }
+
   // Handle pending go home when no subactivity (e.g., from long press back)
   if (pendingGoHome) {
     pendingGoHome = false;
@@ -879,14 +898,23 @@ bool EpubReaderActivity::handleLongPressConfirm() {
     requestUpdate();
     return true;
   }
+  if (SETTINGS.longPressOk == CrossPointSettings::LP_OK_TRANSLATE_PAGE) {
+    // Translate Page mode: launch page translator in Normal or Original Only
+    if (SETTINGS.colorTextStyle == CrossPointSettings::CT_NORMAL ||
+        SETTINGS.colorTextStyle == CrossPointSettings::CT_NO_RENDER) {
+      pendingTranslatePage = true;
+      return true;
+    }
+    return false;
+  }
+
+  // Default: Toggle Translation — switch Original ↔ Translation
   if (SETTINGS.colorTextStyle == CrossPointSettings::CT_NO_RENDER) {
-    // OK alone in Original Only: switch to Translation Only
     applyTranslationMode(CrossPointSettings::CT_INVERT);
     requestUpdate();
     return true;
   }
   if (SETTINGS.colorTextStyle == CrossPointSettings::CT_INVERT) {
-    // OK alone in Translation Only: switch to Original Only
     applyTranslationMode(CrossPointSettings::CT_NO_RENDER);
     requestUpdate();
     return true;
