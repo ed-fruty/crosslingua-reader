@@ -20,6 +20,8 @@ bool TooltipOverlay::handleInput(MappedInputManager& input) {
       useFrontButtons ? MappedInputManager::Button::Left : MappedInputManager::Button::PageBack;
 
   if (input.wasReleased(nextBtn)) {
+    LOG_DBG("TIP", "Next btn, sentence=%d, splits=%d, path=%s",
+            currentSentenceIndex, splits.count, translatedHtmlPath.c_str());
     if (currentSentenceIndex < 0) {
       currentSentenceIndex = 0;
       wrapAround = false;
@@ -94,11 +96,15 @@ static std::string firstWords(const char* text, int n) {
 }
 
 // Compare first N words of two texts. More robust than character-prefix comparison.
-static bool wordsMatch(const std::string& pageText, const std::string& htmlText, int n = 3) {
-  auto a = firstWords(pageText.c_str(), n);
-  auto b = firstWords(htmlText.c_str(), n);
+// Prefix-based matching: the shorter word sequence must be a prefix of the longer one.
+// Handles short paragraphs like "Plink" matching against "Plink . Sure enough, the...".
+static bool wordsMatch(const std::string& pageText, const std::string& htmlText) {
+  auto a = firstWords(pageText.c_str(), 5);
+  auto b = firstWords(htmlText.c_str(), 5);
   if (a.empty() || b.empty()) return false;
-  return a == b;
+  // The shorter must be a prefix of the longer (or exact match)
+  if (a.size() <= b.size()) return b.compare(0, a.size(), a) == 0;
+  return a.compare(0, b.size(), b) == 0;
 }
 
 // ── Expat-based extraction: single pass, matching page paragraphs ─────────────
@@ -224,11 +230,13 @@ static std::string extractMatchedTranslations(const std::string& path,
   f.close();
 
   LOG_DBG("TIP", "Matched %d/%d page paras", (int)state.pageIdx, (int)pageParas.size());
-  if (state.pageIdx == 0 && !pageParas.empty()) {
-    auto pw = firstWords(pageParas[0].c_str(), 3);
-    auto hw = firstWords(state.lastOrigText.c_str(), 3);
-    LOG_DBG("TIP", "Page[0] words: '%s'", pw.c_str());
-    LOG_DBG("TIP", "HTML  orig:    '%s'", hw.c_str());
+  if (state.pageIdx < pageParas.size()) {
+    auto pw = firstWords(pageParas[state.pageIdx].c_str(), 5);
+    LOG_DBG("TIP", "Unmatched page[%d] words: '%s'", (int)state.pageIdx, pw.c_str());
+  }
+  if (!state.lastOrigText.empty()) {
+    auto hw = firstWords(state.lastOrigText.c_str(), 5);
+    LOG_DBG("TIP", "Last HTML orig words:    '%s'", hw.c_str());
   }
   return state.result;
 }
@@ -260,13 +268,14 @@ void TooltipOverlay::preparePage(const Page& page) {
     lineYs.push_back(el->yPos);
   }
 
-  int avgGap = 25;  // fallback
-  if (lineYs.size() > 1) {
-    int totalGap = 0;
-    for (size_t i = 1; i < lineYs.size(); i++) totalGap += (lineYs[i] - lineYs[i - 1]);
-    avgGap = totalGap / (int)(lineYs.size() - 1);
+  // Use minimum line gap as baseline. Paragraph breaks have extra spacing above the min.
+  int minGap = 9999;
+  for (size_t i = 1; i < lineYs.size(); i++) {
+    int gap = lineYs[i] - lineYs[i - 1];
+    if (gap > 0 && gap < minGap) minGap = gap;
   }
-  const int paraThreshold = avgGap * 3 / 2;  // 1.5x average gap
+  if (minGap == 9999) minGap = 25;
+  const int paraThreshold = minGap + minGap / 3;  // ~1.33x minimum gap
 
   std::vector<std::string> pageParas;
   int16_t prevY = -1;
@@ -291,8 +300,8 @@ void TooltipOverlay::preparePage(const Page& page) {
   }
   if (!curPara.empty()) pageParas.push_back(std::move(curPara));
 
-  LOG_DBG("TIP", "Page: %d words, %d sentences, %d paras (avgGap=%d, threshold=%d)",
-          origWordCount, splits.count, (int)pageParas.size(), avgGap, paraThreshold);
+  LOG_DBG("TIP", "Page: %d words, %d sentences, %d paras (minGap=%d, threshold=%d)",
+          origWordCount, splits.count, (int)pageParas.size(), minGap, paraThreshold);
 
   // 3. Match page paragraphs to HTML and extract translations.
   std::string matched = extractMatchedTranslations(translatedHtmlPath, pageParas);
@@ -402,7 +411,12 @@ void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId,
                                                         splits, translationBuffer, sizeof(translationBuffer));
 
   const char* text = (currentSentenceIndex < mapped.count) ? mapped.sentences[currentSentenceIndex].translatedText : "";
-  if (!text || text[0] == '\0') return;
+  if (!text || text[0] == '\0') {
+    LOG_DBG("TIP", "No translation for sentence %d (mapped=%d, orig=%d, trans=%d)",
+            currentSentenceIndex, mapped.count, origWordCount, transWordCount);
+    return;
+  }
+  LOG_DBG("TIP", "Drawing: '%.50s'", text);
 
   const int lh = renderer.getLineHeight(fontId);
   auto bounds = findSentenceBounds(page, span, fontId, xOffset, yOffset);
