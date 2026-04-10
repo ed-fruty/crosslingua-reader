@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cstring>
 
+#include "fontIds.h"
+
 bool TooltipOverlay::handleInput(MappedInputManager& input) {
   const bool useFrontButtons = (SETTINGS.tooltipButtons == 0);
   const auto nextBtn =
@@ -298,4 +300,42 @@ void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId,
   }
 
   drawSentenceUnderline(renderer, page, span, fontId, xOffset, yOffset);
+}
+
+int getTooltipFontId() {
+  if (SETTINGS.fontSize <= CrossPointSettings::SMALL) {
+    return SETTINGS.getReaderFontId();
+  }
+  const uint8_t smallerSize = SETTINGS.fontSize - 1;
+  switch (SETTINGS.fontFamily) {
+    case CrossPointSettings::BOOKERLY:
+    default:
+      switch (smallerSize) {
+        case CrossPointSettings::SMALL: return BOOKERLY_12_FONT_ID;
+        case CrossPointSettings::MEDIUM: default: return BOOKERLY_14_FONT_ID;
+        case CrossPointSettings::LARGE: return BOOKERLY_16_FONT_ID;
+        case CrossPointSettings::EXTRA_LARGE: return BOOKERLY_18_FONT_ID;
+      }
+    case CrossPointSettings::EDSLAB:
+      switch (smallerSize) {
+        case CrossPointSettings::SMALL: return EDSLAB_12_FONT_ID;
+        case CrossPointSettings::MEDIUM: default: return EDSLAB_14_FONT_ID;
+        case CrossPointSettings::LARGE: return EDSLAB_16_FONT_ID;
+        case CrossPointSettings::EXTRA_LARGE: return EDSLAB_18_FONT_ID;
+      }
+    case CrossPointSettings::ALEGREYA:
+      switch (smallerSize) {
+        case CrossPointSettings::SMALL: return ALEGREYA_12_FONT_ID;
+        case CrossPointSettings::MEDIUM: default: return ALEGREYA_14_FONT_ID;
+        case CrossPointSettings::LARGE: return ALEGREYA_16_FONT_ID;
+        case CrossPointSettings::EXTRA_LARGE: return ALEGREYA_18_FONT_ID;
+      }
+    case CrossPointSettings::GPRO:
+      switch (smallerSize) {
+        case CrossPointSettings::SMALL: return GPRO_12_FONT_ID;
+        case CrossPointSettings::MEDIUM: default: return GPRO_14_FONT_ID;
+        case CrossPointSettings::LARGE: return GPRO_16_FONT_ID;
+        case CrossPointSettings::EXTRA_LARGE: return GPRO_18_FONT_ID;
+      }
+  }
 }

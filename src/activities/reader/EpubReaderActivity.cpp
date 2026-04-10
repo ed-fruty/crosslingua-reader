@@ -123,6 +123,10 @@ void EpubReaderActivity::onEnter() {
   APP_STATE.saveToFile();
   RECENT_BOOKS.addBook(epub->getPath(), epub->getTitle(), epub->getAuthor(), epub->getThumbBmpPath());
 
+  if (SETTINGS.colorTextStyle == CrossPointSettings::CT_TOOLTIP) {
+    tooltipOverlay = std::make_unique<TooltipOverlay>();
+  }
+
   // Trigger first update
   requestUpdate();
 }
@@ -264,6 +268,12 @@ void EpubReaderActivity::loop() {
     return;
   }
 
+  // Tooltip mode: let overlay consume front/side button presses for sentence stepping
+  if (tooltipOverlay && tooltipOverlay->handleInput(mappedInput)) {
+    requestUpdate();
+    return;
+  }
+
   // Confirm button: short press opens menu, long press (>=700ms) triggers mode shortcuts
   constexpr unsigned long longPressMs = 700;
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
@@ -310,17 +320,25 @@ void EpubReaderActivity::loop() {
 
   // When long-press behavior is None, turn pages on press instead of release.
   const bool usePressForPageTurn = SETTINGS.longPressChapterSkip == CrossPointSettings::LP_NONE;
-  const bool prevTriggered = usePressForPageTurn ? (mappedInput.wasPressed(MappedInputManager::Button::PageBack) ||
-                                                    mappedInput.wasPressed(MappedInputManager::Button::Left))
-                                                 : (mappedInput.wasReleased(MappedInputManager::Button::PageBack) ||
-                                                    mappedInput.wasReleased(MappedInputManager::Button::Left));
+  const bool isTooltipMode = SETTINGS.colorTextStyle == CrossPointSettings::CT_TOOLTIP && tooltipOverlay;
+  const bool tooltipUsesFront = isTooltipMode && SETTINGS.tooltipButtons == 0;
+  const bool tooltipUsesSide = isTooltipMode && SETTINGS.tooltipButtons == 1;
+
+  // Side buttons for page turn (skip if tooltip hijacks them)
+  const bool sidePrev = !tooltipUsesSide && (usePressForPageTurn ? mappedInput.wasPressed(MappedInputManager::Button::PageBack)
+                                                                  : mappedInput.wasReleased(MappedInputManager::Button::PageBack));
+  const bool sideNext = !tooltipUsesSide && (usePressForPageTurn ? mappedInput.wasPressed(MappedInputManager::Button::PageForward)
+                                                                  : mappedInput.wasReleased(MappedInputManager::Button::PageForward));
+  // Front buttons for page turn (skip if tooltip hijacks them)
+  const bool frontPrev = !tooltipUsesFront && (usePressForPageTurn ? mappedInput.wasPressed(MappedInputManager::Button::Left)
+                                                                    : mappedInput.wasReleased(MappedInputManager::Button::Left));
+  const bool frontNext = !tooltipUsesFront && (usePressForPageTurn ? mappedInput.wasPressed(MappedInputManager::Button::Right)
+                                                                    : mappedInput.wasReleased(MappedInputManager::Button::Right));
+
   const bool powerPageTurn = SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PAGE_TURN &&
                              mappedInput.wasReleased(MappedInputManager::Button::Power);
-  const bool nextTriggered = usePressForPageTurn
-                                 ? (mappedInput.wasPressed(MappedInputManager::Button::PageForward) || powerPageTurn ||
-                                    mappedInput.wasPressed(MappedInputManager::Button::Right))
-                                 : (mappedInput.wasReleased(MappedInputManager::Button::PageForward) || powerPageTurn ||
-                                    mappedInput.wasReleased(MappedInputManager::Button::Right));
+  const bool prevTriggered = sidePrev || frontPrev;
+  const bool nextTriggered = sideNext || frontNext || powerPageTurn;
 
   if (!prevTriggered && !nextTriggered) {
     return;
@@ -369,6 +387,11 @@ void EpubReaderActivity::loop() {
   if (!section) {
     requestUpdate();
     return;
+  }
+
+  // Reset tooltip when changing pages
+  if (tooltipOverlay && (prevTriggered || nextTriggered)) {
+    tooltipOverlay->onPageChanged();
   }
 
   if (prevTriggered) {
@@ -655,6 +678,13 @@ void EpubReaderActivity::applyTranslationMode(const uint8_t translationMode) {
     SETTINGS.colorTextStyle = translationMode;
     SETTINGS.saveToFile();
 
+    // Create or destroy tooltip overlay based on mode
+    if (translationMode == CrossPointSettings::CT_TOOLTIP) {
+      tooltipOverlay = std::make_unique<TooltipOverlay>();
+    } else {
+      tooltipOverlay.reset();
+    }
+
     // Reset section to force re-layout with the new translation mode.
     section.reset();
   }
@@ -930,6 +960,14 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   bool forceFullRefresh = page->hasImages() && SETTINGS.textAntiAliasing;
 
   page->render(renderer, SETTINGS.getReaderFontId(), orientedMarginLeft, orientedMarginTop);
+  // Render tooltip overlay if active
+  if (tooltipOverlay && tooltipOverlay->isActive()) {
+    const int tooltipFontId = getTooltipFontId();
+    const int vpWidth = renderer.getScreenWidth() - orientedMarginLeft - orientedMarginRight;
+    const int vpHeight = renderer.getScreenHeight() - orientedMarginTop - orientedMarginBottom;
+    tooltipOverlay->render(renderer, *page, SETTINGS.getReaderFontId(), tooltipFontId, orientedMarginLeft,
+                           orientedMarginTop, vpWidth, vpHeight);
+  }
   renderStatusBar(orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
   if (forceFullRefresh || pagesUntilFullRefresh <= 1) {
     renderer.displayBuffer(HalDisplay::HALF_REFRESH);

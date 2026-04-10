@@ -52,3 +52,6 @@ class TooltipOverlay {
   void drawSentenceUnderline(GfxRenderer& renderer, const Page& page, const SentenceSpan& span, int fontId,
                              int xOffset, int yOffset) const;
 };
+
+// Get the font ID one size smaller than the current reader font.
+int getTooltipFontId();
