@@ -87,7 +87,7 @@ void TooltipOverlay::preparePage(const Page& page) {
 
 TooltipOverlay::SentenceBounds TooltipOverlay::findSentenceBounds(const Page& page, const SentenceSpan& span,
                                                                    int fontId, int xOffset, int yOffset) const {
-  SentenceBounds bounds = {0, 0, 0, 0};
+  SentenceBounds bounds = {0, 0, 0};
   int origWordIdx = 0;
   bool foundFirst = false;
 

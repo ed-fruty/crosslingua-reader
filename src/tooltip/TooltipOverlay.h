@@ -42,7 +42,6 @@ class TooltipOverlay {
   // Find the screen Y coordinate and X bounds for a sentence span.
   struct SentenceBounds {
     int firstLineY;
-    int lineHeight;
     int startX;
     int endX;
   };
