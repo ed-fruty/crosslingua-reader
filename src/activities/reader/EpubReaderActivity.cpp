@@ -806,8 +806,12 @@ void EpubReaderActivity::render(Activity::RenderLock&& lock) {
     // when "Translation Only" or similar modes strip all untranslated text.
     const bool hasTranslation = section->hasTranslatedHtml() || epub->hasCalibreTranslation() ||
                                 chapterHasEmbeddedTranslations(epub, currentSpineIndex);
+    // CT_TOOLTIP uses CT_NO_RENDER layout (original-only, no gaps for translated paragraphs).
+    // Tooltip reads translations separately from the .translated.html file.
     const uint8_t effectiveColorTextStyle =
-        hasTranslation ? SETTINGS.colorTextStyle : CrossPointSettings::CT_NORMAL;
+        !hasTranslation              ? CrossPointSettings::CT_NORMAL
+        : SETTINGS.colorTextStyle == CrossPointSettings::CT_TOOLTIP ? CrossPointSettings::CT_NO_RENDER
+                                     : SETTINGS.colorTextStyle;
 
     if (!section->loadSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
                                   SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
@@ -854,6 +858,11 @@ void EpubReaderActivity::render(Activity::RenderLock&& lock) {
       }
       section->currentPage = newPage;
       pendingPercentJump = false;
+    }
+
+    // Set translated HTML path for tooltip overlay when section is loaded
+    if (tooltipOverlay && section) {
+      tooltipOverlay->setTranslatedHtmlPath(section->getTranslatedHtmlPath());
     }
   }
 
