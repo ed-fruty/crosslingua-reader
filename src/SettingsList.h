@@ -75,8 +75,12 @@ inline std::vector<SettingInfo> getSettingsList() {
                           StrId::STR_CAT_READER),
       SettingInfo::Enum(StrId::STR_TRANSLATION_MODE, &CrossPointSettings::colorTextStyle,
                         {StrId::STR_NORMAL, StrId::STR_TRANSLATION_GREY, StrId::STR_TRANSLATION_LIGHT_GREY,
-                         StrId::STR_NO_RENDER, StrId::STR_INVERT_TRANSLATION, StrId::STR_SIDE_BY_SIDE},
+                         StrId::STR_NO_RENDER, StrId::STR_INVERT_TRANSLATION, StrId::STR_SIDE_BY_SIDE,
+                         StrId::STR_TOOLTIP},
                         "colorTextStyle", StrId::STR_CAT_READER),
+      SettingInfo::Enum(StrId::STR_TOOLTIP_BUTTONS, &CrossPointSettings::tooltipButtons,
+                        {StrId::STR_FRONT_BUTTONS, StrId::STR_SIDE_BUTTONS},
+                        "tooltipButtons", StrId::STR_CAT_READER),
 
       // --- Controls ---
       SettingInfo::Enum(StrId::STR_SIDE_BTN_LAYOUT, &CrossPointSettings::sideButtonLayout,
