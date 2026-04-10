@@ -128,13 +128,18 @@ static bool isBlockTag(const char* name) {
 }
 
 struct ExpatExtractState {
-  // Collects ALL translated paragraph texts from the chapter, in order.
-  std::vector<std::string> allTranslations;
-
   int blockDepth = 0;
   bool inBlock = false;
   bool isTranslation = false;
   std::string currentText;
+
+  // Pass 1 (counting): just count translated paragraphs.
+  // Pass 2 (extracting): collect only paragraphs in [startPara, endPara).
+  bool countOnly = true;
+  int totalTransParas = 0;
+  int startPara = 0;
+  int endPara = 0;
+  std::string collectedText;  // concatenated translations for the page slice
 };
 
 static void XMLCALL expatStartEl(void* ud, const XML_Char* name, const XML_Char** atts) {
@@ -174,7 +179,15 @@ static void XMLCALL expatEndEl(void* ud, const XML_Char* name) {
       while (!t.empty() && (t.back() == ' ' || t.back() == '\n' || t.back() == '\r')) t.pop_back();
 
       if (!t.empty() && s->isTranslation) {
-        s->allTranslations.push_back(t);
+        if (s->countOnly) {
+          s->totalTransParas++;
+        } else {
+          if (s->totalTransParas >= s->startPara && s->totalTransParas < s->endPara) {
+            if (!s->collectedText.empty()) s->collectedText += ' ';
+            s->collectedText += t;
+          }
+          s->totalTransParas++;
+        }
       }
       s->currentText.clear();
     }
@@ -194,24 +207,14 @@ static void XMLCALL expatCharData(void* ud, const XML_Char* data, int len) {
   }
 }
 
-// Extract ALL translated paragraphs from the HTML using expat.
-static std::vector<std::string> extractAllTranslations(const std::string& path) {
-  std::vector<std::string> empty;
-  if (path.empty()) return empty;
-
+// Run a single expat pass over the HTML file with the given state.
+static bool runExpatPass(const std::string& path, ExpatExtractState& state) {
   FsFile f = Storage.open(path.c_str(), O_RDONLY);
-  if (!f) {
-    LOG_ERR("TIP", "Cannot open HTML: %s", path.c_str());
-    return empty;
-  }
+  if (!f) return false;
 
   XML_Parser parser = XML_ParserCreate("UTF-8");
-  if (!parser) {
-    f.close();
-    return empty;
-  }
+  if (!parser) { f.close(); return false; }
 
-  ExpatExtractState state;
   XML_SetUserData(parser, &state);
   XML_SetElementHandler(parser, expatStartEl, expatEndEl);
   XML_SetCharacterDataHandler(parser, expatCharData);
@@ -226,19 +229,47 @@ static std::vector<std::string> extractAllTranslations(const std::string& path) 
     const int bytesRead = f.read(reinterpret_cast<uint8_t*>(buf), toRead);
     if (bytesRead <= 0) break;
     totalRead += bytesRead;
-    const bool done = (totalRead >= fileSize);
-    if (XML_Parse(parser, buf, bytesRead, done ? 1 : 0) == XML_STATUS_ERROR) {
-      LOG_ERR("TIP", "XML parse error at line %lu: %s", XML_GetCurrentLineNumber(parser),
-              XML_ErrorString(XML_GetErrorCode(parser)));
+    if (XML_Parse(parser, buf, bytesRead, (totalRead >= fileSize) ? 1 : 0) == XML_STATUS_ERROR) {
+      LOG_ERR("TIP", "XML parse error: %s", XML_ErrorString(XML_GetErrorCode(parser)));
       break;
     }
   }
 
   XML_ParserFree(parser);
   f.close();
+  return true;
+}
 
-  LOG_DBG("TIP", "Extracted %d translated paragraphs from HTML", (int)state.allTranslations.size());
-  return std::move(state.allTranslations);
+// Extract translated text for a specific page slice using two expat passes.
+// Pass 1: count total translated paragraphs (no string storage).
+// Pass 2: extract only the paragraphs for [startPara, endPara).
+static std::string extractPageTranslations(const std::string& path, int pageIndex, int pageCount) {
+  if (path.empty() || pageCount <= 0) return "";
+
+  // Pass 1: count
+  ExpatExtractState countState;
+  countState.countOnly = true;
+  if (!runExpatPass(path, countState)) return "";
+
+  const int totalParas = countState.totalTransParas;
+  if (totalParas == 0) return "";
+
+  // Calculate paragraph range for this page
+  const int startPara = totalParas * pageIndex / pageCount;
+  const int endPara = totalParas * (pageIndex + 1) / pageCount;
+  if (startPara >= endPara) return "";
+
+  LOG_DBG("TIP", "Chapter has %d trans paras, page %d/%d → paras [%d, %d)",
+          totalParas, pageIndex, pageCount, startPara, endPara);
+
+  // Pass 2: extract only the slice
+  ExpatExtractState extractState;
+  extractState.countOnly = false;
+  extractState.startPara = startPara;
+  extractState.endPara = endPara;
+  if (!runExpatPass(path, extractState)) return "";
+
+  return std::move(extractState.collectedText);
 }
 
 // ── Page preparation ──────────────────────────────────────────────────────────
@@ -264,48 +295,27 @@ void TooltipOverlay::preparePage(const Page& page, int pageIndex, int pageCount)
 
   splits = splitSentences(origWordPtrs, origWordCount);
 
-  // 2. Extract ALL translated paragraphs from the HTML.
-  auto allTrans = extractAllTranslations(translatedHtmlPath);
-  if (allTrans.empty()) {
-    LOG_DBG("TIP", "No translated paragraphs found in HTML");
+  // 2. Extract translated text for this page's slice (two-pass: count then extract).
+  std::string pageTranslation = extractPageTranslations(translatedHtmlPath, pageIndex, pageCount);
+  if (pageTranslation.empty()) {
+    LOG_DBG("TIP", "No translations for this page");
     return;
   }
 
-  // 3. Estimate which portion of translations belongs to this page.
-  // Split all translations into words first, then take the page's proportional slice.
-  std::vector<std::string> allTransWords;
-  for (const auto& para : allTrans) {
-    const char* p = para.c_str();
-    while (*p) {
-      while (*p == ' ') p++;
-      if (!*p) break;
-      const char* ws = p;
-      while (*p && *p != ' ') p++;
-      allTransWords.emplace_back(ws, p - ws);
-    }
-  }
-  allTrans.clear();  // free paragraph strings
-
-  if (allTransWords.empty() || pageCount <= 0) {
-    LOG_DBG("TIP", "No translated words or invalid pageCount");
-    return;
-  }
-
-  // Calculate the slice of translated words for this page.
-  const int totalTransWords = static_cast<int>(allTransWords.size());
-  const int startWord = totalTransWords * pageIndex / pageCount;
-  const int endWord = totalTransWords * (pageIndex + 1) / pageCount;
-
-  // Copy the slice into transWordStorage.
-  for (int i = startWord; i < endWord && transWordCount < MAX_WORDS; i++) {
-    transWordStorage.push_back(std::move(allTransWords[i]));
+  // 3. Split the translation text into words.
+  const char* p = pageTranslation.c_str();
+  while (*p && transWordCount < MAX_WORDS) {
+    while (*p == ' ') p++;
+    if (!*p) break;
+    const char* ws = p;
+    while (*p && *p != ' ') p++;
+    transWordStorage.emplace_back(ws, p - ws);
     transWordPtrs[transWordCount] = transWordStorage.back().c_str();
     transWordCount++;
   }
 
-  LOG_DBG("TIP", "Page %d/%d: %d orig words, %d trans words (slice %d-%d of %d), %d sentences",
-          pageIndex, pageCount, origWordCount, transWordCount, startWord, endWord, totalTransWords, splits.count);
-
+  LOG_DBG("TIP", "Page %d/%d: %d orig words, %d trans words, %d sentences",
+          pageIndex, pageCount, origWordCount, transWordCount, splits.count);
 }
 
 // ── Sentence bounds and underline ─────────────────────────────────────────────
