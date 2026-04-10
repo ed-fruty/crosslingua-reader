@@ -1,6 +1,7 @@
 #include "TooltipOverlay.h"
 
 #include <CrossPointSettings.h>
+#include <HalStorage.h>
 #include <Logging.h>
 
 #include <algorithm>
@@ -52,46 +53,246 @@ void TooltipOverlay::onPageChanged() {
   pagePrepared = false;
   origWordCount = 0;
   transWordCount = 0;
+  transWordStorage.clear();
   splits.count = 0;
 }
+
+// ── HTML parsing helpers ──────────────────────────────────────────────────────
+
+// Strip HTML tags and decode basic entities. Returns plain text.
+static std::string stripTags(const std::string& html) {
+  std::string out;
+  out.reserve(html.size());
+  bool inTag = false;
+  for (size_t i = 0; i < html.size(); i++) {
+    char c = html[i];
+    if (c == '<') {
+      inTag = true;
+    } else if (c == '>') {
+      inTag = false;
+    } else if (!inTag) {
+      if (c == '&') {
+        if (html.compare(i, 5, "&amp;") == 0) { out += '&'; i += 4; continue; }
+        if (html.compare(i, 4, "&lt;") == 0) { out += '<'; i += 3; continue; }
+        if (html.compare(i, 4, "&gt;") == 0) { out += '>'; i += 3; continue; }
+        if (html.compare(i, 6, "&quot;") == 0) { out += '"'; i += 5; continue; }
+        if (html.compare(i, 6, "&apos;") == 0) { out += '\''; i += 5; continue; }
+        if (html.compare(i, 5, "&#39;") == 0) { out += '\''; i += 4; continue; }
+      }
+      out += c;
+    }
+  }
+  return out;
+}
+
+// Parse the translated HTML file and extract (original_paragraph, translated_paragraph) pairs.
+// Original paragraphs are block elements WITHOUT data-translation; translated have it.
+// They alternate: original, then its translation.
+struct ParagraphPair {
+  std::string original;
+  std::string translated;
+};
+
+static std::vector<ParagraphPair> extractParagraphPairs(const std::string& path) {
+  std::vector<ParagraphPair> pairs;
+
+  FsFile f = Storage.open(path.c_str(), O_RDONLY);
+  if (!f) return pairs;
+
+  // Read entire file (chapter HTML is typically <50KB, fits in RAM briefly)
+  const size_t fileSize = f.size();
+  if (fileSize == 0 || fileSize > 200000) {
+    f.close();
+    return pairs;
+  }
+  std::string html;
+  html.resize(fileSize);
+  f.read(reinterpret_cast<uint8_t*>(&html[0]), fileSize);
+  f.close();
+
+  // Walk through the HTML collecting translated paragraph texts.
+  // Format: <p ... data-translation="true" ...>text</p>
+  // The PRECEDING block element (without data-translation) is the original.
+  std::string lastOriginalText;
+  size_t pos = 0;
+
+  while (pos < html.size()) {
+    // Find next opening tag
+    size_t tagStart = html.find('<', pos);
+    if (tagStart == std::string::npos) break;
+
+    // Skip closing tags, comments, doctype
+    if (tagStart + 1 < html.size() && (html[tagStart + 1] == '/' || html[tagStart + 1] == '!')) {
+      pos = html.find('>', tagStart);
+      if (pos == std::string::npos) break;
+      pos++;
+      continue;
+    }
+
+    // Find end of opening tag
+    size_t tagEnd = html.find('>', tagStart);
+    if (tagEnd == std::string::npos) break;
+
+    std::string tag = html.substr(tagStart, tagEnd - tagStart + 1);
+
+    // Check if this is a block element (p, h1-h6, li, blockquote, div)
+    bool isBlock = false;
+    if (tag.size() > 2) {
+      char t = tag[1];
+      if (t == 'p' && (tag[2] == ' ' || tag[2] == '>')) isBlock = true;
+      if (t == 'h' && tag[2] >= '1' && tag[2] <= '6') isBlock = true;
+      if (tag.compare(1, 2, "li") == 0) isBlock = true;
+      if (tag.compare(1, 10, "blockquote") == 0) isBlock = true;
+      if (tag.compare(1, 3, "div") == 0) isBlock = true;
+    }
+
+    if (!isBlock) {
+      pos = tagEnd + 1;
+      continue;
+    }
+
+    // Find the matching closing tag
+    // Determine tag name
+    size_t nameEnd = tag.find_first_of(" >", 1);
+    std::string tagName = tag.substr(1, nameEnd - 1);
+    std::string closeTag = "</" + tagName;
+
+    size_t contentStart = tagEnd + 1;
+    size_t closePos = html.find(closeTag, contentStart);
+    if (closePos == std::string::npos) {
+      pos = tagEnd + 1;
+      continue;
+    }
+
+    std::string content = html.substr(contentStart, closePos - contentStart);
+    std::string plainText = stripTags(content);
+
+    // Trim whitespace
+    while (!plainText.empty() && (plainText.front() == ' ' || plainText.front() == '\n')) plainText.erase(0, 1);
+    while (!plainText.empty() && (plainText.back() == ' ' || plainText.back() == '\n')) plainText.pop_back();
+
+    bool isTranslation = tag.find("data-translation") != std::string::npos;
+
+    if (isTranslation) {
+      if (!plainText.empty() && !lastOriginalText.empty()) {
+        pairs.push_back({lastOriginalText, plainText});
+      }
+      lastOriginalText.clear();
+    } else {
+      if (!plainText.empty()) {
+        lastOriginalText = plainText;
+      }
+    }
+
+    // Move past closing tag
+    pos = html.find('>', closePos);
+    if (pos == std::string::npos) break;
+    pos++;
+  }
+
+  LOG_DBG("TIP", "Extracted %d paragraph pairs from HTML", (int)pairs.size());
+  return pairs;
+}
+
+// ── Page preparation ──────────────────────────────────────────────────────────
 
 void TooltipOverlay::preparePage(const Page& page) {
   if (pagePrepared) return;
   pagePrepared = true;
   origWordCount = 0;
   transWordCount = 0;
+  transWordStorage.clear();
 
-  // Walk all PageLine elements and collect original/translated word pointers.
-  // Original words have grayLevel == 0, translated words have grayLevel > 0.
-  // This works for both .translated.html and embedded (Calibre) translations —
-  // the parser marks translated text with grayLevel during section creation.
+  // 1. Collect original words from page TextBlocks (all words — CT_NO_RENDER has only originals).
   for (const auto& el : page.elements) {
     if (el->getTag() != TAG_PageLine) continue;
     const auto* line = static_cast<const PageLine*>(el.get());
-    const auto& block = line->getTextBlock();
-    const auto& words = block->getWords();
-    const auto& styles = block->getWordStyles();
-
-    auto wIt = words.begin();
-    auto sIt = styles.begin();
-    for (; wIt != words.end() && sIt != styles.end(); ++wIt, ++sIt) {
-      const uint8_t grayLevel = (static_cast<uint8_t>(*sIt) >> 5) & 0x3;
-      if (grayLevel == 0) {
-        if (origWordCount < MAX_WORDS) {
-          origWordPtrs[origWordCount++] = wIt->c_str();
-        }
-      } else {
-        if (transWordCount < MAX_WORDS) {
-          transWordPtrs[transWordCount++] = wIt->c_str();
-        }
+    const auto& words = line->getTextBlock()->getWords();
+    for (auto wIt = words.begin(); wIt != words.end(); ++wIt) {
+      if (origWordCount < MAX_WORDS) {
+        origWordPtrs[origWordCount++] = wIt->c_str();
       }
     }
   }
 
   splits = splitSentences(origWordPtrs, origWordCount);
-  LOG_DBG("TIP", "Page prepared: %d orig words, %d trans words, %d sentences", origWordCount, transWordCount,
-          splits.count);
+
+  // 2. Extract page paragraph texts (group words by Y-gap > 30px).
+  std::vector<std::string> pageParas;
+  int16_t prevY = -1;
+  std::string curPara;
+  for (const auto& el : page.elements) {
+    if (el->getTag() != TAG_PageLine) continue;
+    const auto* line = static_cast<const PageLine*>(el.get());
+    const auto& words = line->getTextBlock()->getWords();
+    if (words.empty()) continue;
+
+    int16_t gap = (prevY >= 0) ? (el->yPos - prevY) : 0;
+    if (prevY >= 0 && gap > 30) {
+      if (!curPara.empty()) {
+        pageParas.push_back(std::move(curPara));
+        curPara.clear();
+      }
+    }
+    prevY = el->yPos;
+    for (const auto& w : words) {
+      if (!curPara.empty()) curPara += ' ';
+      curPara += w;
+    }
+  }
+  if (!curPara.empty()) pageParas.push_back(std::move(curPara));
+
+  // 3. Extract (original, translated) paragraph pairs from the HTML file.
+  auto pairs = extractParagraphPairs(translatedHtmlPath);
+  if (pairs.empty() || pageParas.empty()) {
+    LOG_DBG("TIP", "No pairs (%d) or no page paras (%d)", (int)pairs.size(), (int)pageParas.size());
+    return;
+  }
+
+  // 4. Match page paragraphs to chapter paragraph pairs.
+  // Page paragraphs are a contiguous subset of chapter originals. Find the starting match.
+  // Compare first 30 chars of each page paragraph to chapter originals.
+  std::string matchedTranslation;
+  size_t chapterIdx = 0;
+  for (const auto& pagePara : pageParas) {
+    const int cmpLen = std::min((int)pagePara.size(), 30);
+    bool found = false;
+    for (size_t j = chapterIdx; j < pairs.size(); j++) {
+      const int pairCmpLen = std::min((int)pairs[j].original.size(), cmpLen);
+      if (pairCmpLen >= 5 && pagePara.compare(0, pairCmpLen, pairs[j].original, 0, pairCmpLen) == 0) {
+        if (!matchedTranslation.empty()) matchedTranslation += ' ';
+        matchedTranslation += pairs[j].translated;
+        chapterIdx = j + 1;  // advance cursor
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      LOG_DBG("TIP", "No match for page para: %.30s...", pagePara.c_str());
+    }
+  }
+
+  // 5. Split matched translation into words.
+  transWordStorage.clear();
+  transWordCount = 0;
+  const char* p = matchedTranslation.c_str();
+  while (*p) {
+    while (*p == ' ') p++;
+    if (!*p) break;
+    const char* wordStart = p;
+    while (*p && *p != ' ') p++;
+    transWordStorage.emplace_back(wordStart, p - wordStart);
+  }
+  for (int i = 0; i < (int)transWordStorage.size() && i < MAX_WORDS; i++) {
+    transWordPtrs[i] = transWordStorage[i].c_str();
+    transWordCount++;
+  }
+
+  LOG_DBG("TIP", "Page: %d orig words, %d trans words, %d sentences, %d page paras matched",
+          origWordCount, transWordCount, splits.count, (int)pageParas.size());
 }
+
+// ── Sentence bounds and underline ─────────────────────────────────────────────
 
 TooltipOverlay::SentenceBounds TooltipOverlay::findSentenceBounds(const Page& page, const SentenceSpan& span,
                                                                    int fontId, int xOffset, int yOffset) const {
@@ -102,29 +303,21 @@ TooltipOverlay::SentenceBounds TooltipOverlay::findSentenceBounds(const Page& pa
   for (const auto& el : page.elements) {
     if (el->getTag() != TAG_PageLine) continue;
     const auto* line = static_cast<const PageLine*>(el.get());
-    const auto& block = line->getTextBlock();
-    const auto& words = block->getWords();
-    const auto& styles = block->getWordStyles();
-    const auto& xpositions = block->getWordXpos();
+    const auto& words = line->getTextBlock()->getWords();
+    const auto& xpositions = line->getTextBlock()->getWordXpos();
 
     auto wIt = words.begin();
-    auto sIt = styles.begin();
     auto xIt = xpositions.begin();
-    for (; wIt != words.end() && sIt != styles.end() && xIt != xpositions.end(); ++wIt, ++sIt, ++xIt) {
-      const uint8_t grayLevel = (static_cast<uint8_t>(*sIt) >> 5) & 0x3;
-      if (grayLevel > 0) continue;  // skip translated words
-
+    for (; wIt != words.end() && xIt != xpositions.end(); ++wIt, ++xIt) {
       if (origWordIdx >= span.startWord && origWordIdx < span.endWord) {
         const int wordX = *xIt + line->xPos + xOffset;
         const int wordY = line->yPos + yOffset;
-
         if (!foundFirst) {
           bounds.firstLineY = wordY;
           bounds.startX = wordX;
           bounds.endX = wordX;
           foundFirst = true;
         }
-
         if (wordY == bounds.firstLineY) {
           if (wordX < bounds.startX) bounds.startX = wordX;
           if (wordX > bounds.endX) bounds.endX = wordX;
@@ -133,7 +326,6 @@ TooltipOverlay::SentenceBounds TooltipOverlay::findSentenceBounds(const Page& pa
       origWordIdx++;
     }
   }
-
   return bounds;
 }
 
@@ -148,18 +340,14 @@ void TooltipOverlay::drawSentenceUnderline(GfxRenderer& renderer, const Page& pa
   for (const auto& el : page.elements) {
     if (el->getTag() != TAG_PageLine) continue;
     const auto* line = static_cast<const PageLine*>(el.get());
-    const auto& block = line->getTextBlock();
-    const auto& words = block->getWords();
-    const auto& styles = block->getWordStyles();
-    const auto& xpositions = block->getWordXpos();
+    const auto& words = line->getTextBlock()->getWords();
+    const auto& styles = line->getTextBlock()->getWordStyles();
+    const auto& xpositions = line->getTextBlock()->getWordXpos();
 
     auto wIt = words.begin();
     auto sIt = styles.begin();
     auto xIt = xpositions.begin();
     for (; wIt != words.end() && sIt != styles.end() && xIt != xpositions.end(); ++wIt, ++sIt, ++xIt) {
-      const uint8_t grayLevel = (static_cast<uint8_t>(*sIt) >> 5) & 0x3;
-      if (grayLevel > 0) continue;
-
       if (origWordIdx >= span.startWord && origWordIdx < span.endWord) {
         const int wordX = *xIt + line->xPos + xOffset;
         const int wordY = line->yPos + yOffset;
@@ -182,29 +370,21 @@ void TooltipOverlay::drawSentenceUnderline(GfxRenderer& renderer, const Page& pa
       origWordIdx++;
     }
   }
-
   if (currentLineY >= 0) {
     renderer.drawLine(lineStartX, currentLineY + underlineY_offset, lineEndX, currentLineY + underlineY_offset, true);
   }
 }
 
-// Find the Y coordinate of the LAST line of a sentence on the page.
+// ── Tooltip rendering ─────────────────────────────────────────────────────────
+
 static int findSentenceLastLineY(const Page& page, const SentenceSpan& span, int yOffset) {
   int origWordIdx = 0;
   int lastLineY = 0;
-
   for (const auto& el : page.elements) {
     if (el->getTag() != TAG_PageLine) continue;
     const auto* line = static_cast<const PageLine*>(el.get());
     const auto& words = line->getTextBlock()->getWords();
-    const auto& styles = line->getTextBlock()->getWordStyles();
-
-    auto wIt = words.begin();
-    auto sIt = styles.begin();
-    for (; wIt != words.end() && sIt != styles.end(); ++wIt, ++sIt) {
-      const uint8_t grayLevel = (static_cast<uint8_t>(*sIt) >> 5) & 0x3;
-      if (grayLevel > 0) continue;  // skip translated words
-
+    for (auto wIt = words.begin(); wIt != words.end(); ++wIt) {
       if (origWordIdx >= span.startWord && origWordIdx < span.endWord) {
         lastLineY = line->yPos + yOffset;
       }
@@ -242,7 +422,6 @@ void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId,
   SentenceBounds bounds = findSentenceBounds(page, span, fontId, xOffset, yOffset);
   if (bounds.firstLineY == 0 && bounds.startX == 0) return;
 
-  // Find the last line Y of this sentence (for positioning tooltip below multi-line sentences)
   const int lastLineY = findSentenceLastLineY(page, span, yOffset);
 
   constexpr int PADDING = 6;
@@ -269,7 +448,6 @@ void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId,
     tooltipHeight = numLines * tooltipLineHeight + 2 * PADDING;
   }
 
-  // Position: above the first line or below the LAST line of the sentence
   const int spaceAbove = bounds.firstLineY - yOffset;
   int tooltipX = xOffset + PADDING;
   int tooltipY;
@@ -339,6 +517,8 @@ void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId,
   drawSentenceUnderline(renderer, page, span, fontId, xOffset, yOffset);
 }
 
+// ── Font helper ───────────────────────────────────────────────────────────────
+
 int getTooltipFontId() {
   if (SETTINGS.fontSize <= CrossPointSettings::SMALL) {
     return SETTINGS.getReaderFontId();
@@ -349,32 +529,28 @@ int getTooltipFontId() {
     default:
       switch (smallerSize) {
         case CrossPointSettings::SMALL: return BOOKERLY_12_FONT_ID;
-        case CrossPointSettings::MEDIUM:
-        default: return BOOKERLY_14_FONT_ID;
+        case CrossPointSettings::MEDIUM: default: return BOOKERLY_14_FONT_ID;
         case CrossPointSettings::LARGE: return BOOKERLY_16_FONT_ID;
         case CrossPointSettings::EXTRA_LARGE: return BOOKERLY_18_FONT_ID;
       }
     case CrossPointSettings::EDSLAB:
       switch (smallerSize) {
         case CrossPointSettings::SMALL: return EDSLAB_12_FONT_ID;
-        case CrossPointSettings::MEDIUM:
-        default: return EDSLAB_14_FONT_ID;
+        case CrossPointSettings::MEDIUM: default: return EDSLAB_14_FONT_ID;
         case CrossPointSettings::LARGE: return EDSLAB_16_FONT_ID;
         case CrossPointSettings::EXTRA_LARGE: return EDSLAB_18_FONT_ID;
       }
     case CrossPointSettings::ALEGREYA:
       switch (smallerSize) {
         case CrossPointSettings::SMALL: return ALEGREYA_12_FONT_ID;
-        case CrossPointSettings::MEDIUM:
-        default: return ALEGREYA_14_FONT_ID;
+        case CrossPointSettings::MEDIUM: default: return ALEGREYA_14_FONT_ID;
         case CrossPointSettings::LARGE: return ALEGREYA_16_FONT_ID;
         case CrossPointSettings::EXTRA_LARGE: return ALEGREYA_18_FONT_ID;
       }
     case CrossPointSettings::GPRO:
       switch (smallerSize) {
         case CrossPointSettings::SMALL: return GPRO_12_FONT_ID;
-        case CrossPointSettings::MEDIUM:
-        default: return GPRO_14_FONT_ID;
+        case CrossPointSettings::MEDIUM: default: return GPRO_14_FONT_ID;
         case CrossPointSettings::LARGE: return GPRO_16_FONT_ID;
         case CrossPointSettings::EXTRA_LARGE: return GPRO_18_FONT_ID;
       }

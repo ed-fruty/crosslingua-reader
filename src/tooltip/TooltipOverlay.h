@@ -4,21 +4,22 @@
 #include <MappedInputManager.h>
 #include <Epub/Page.h>
 
+#include <string>
+#include <vector>
+
 #include "SentenceSplitter.h"
 
 class TooltipOverlay {
  public:
-  // Returns true if input was consumed (caller should skip normal page-turn handling).
+  void setTranslatedHtmlPath(const std::string& path) { translatedHtmlPath = path; }
+
   bool handleInput(MappedInputManager& input);
 
-  // Render the tooltip overlay on top of the already-drawn page.
   void render(GfxRenderer& renderer, const Page& page, int fontId, int tooltipFontId, int xOffset, int yOffset,
               int viewportWidth, int viewportHeight);
 
-  // Reset tooltip state when page changes.
   void onPageChanged();
 
-  // Check if tooltip is currently visible.
   bool isActive() const { return currentSentenceIndex >= 0; }
 
  private:
@@ -26,17 +27,21 @@ class TooltipOverlay {
   bool wrapAround = false;
   bool pagePrepared = false;
 
-  // Cached sentence data for the current page.
+  std::string translatedHtmlPath;
+
+  // Original words from the page (for sentence splitting and position lookup).
   static constexpr int MAX_WORDS = 500;
   const char* origWordPtrs[MAX_WORDS];
   int origWordCount = 0;
+
+  // Translated text matched to this page's content, split into words.
+  // Stored as std::string to own the memory (page TextBlocks don't have translated words in CT_NO_RENDER).
+  std::vector<std::string> transWordStorage;
   const char* transWordPtrs[MAX_WORDS];
   int transWordCount = 0;
 
-  // Sentence split result for the current page.
   SentenceSplitResult splits;
 
-  // Prepare sentence data from the page's TextBlocks (called once per page).
   void preparePage(const Page& page);
 
   struct SentenceBounds {
@@ -51,5 +56,4 @@ class TooltipOverlay {
                              int xOffset, int yOffset) const;
 };
 
-// Get the font ID one size smaller than the current reader font.
 int getTooltipFontId();

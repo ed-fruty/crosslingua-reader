@@ -807,7 +807,9 @@ void EpubReaderActivity::render(Activity::RenderLock&& lock) {
     const bool hasTranslation = section->hasTranslatedHtml() || epub->hasCalibreTranslation() ||
                                 chapterHasEmbeddedTranslations(epub, currentSpineIndex);
     const uint8_t effectiveColorTextStyle =
-        hasTranslation ? SETTINGS.colorTextStyle : CrossPointSettings::CT_NORMAL;
+        !hasTranslation                                                          ? CrossPointSettings::CT_NORMAL
+        : SETTINGS.colorTextStyle == CrossPointSettings::CT_TOOLTIP ? CrossPointSettings::CT_NO_RENDER
+                                                                                 : SETTINGS.colorTextStyle;
 
     if (!section->loadSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
                                   SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
@@ -856,9 +858,25 @@ void EpubReaderActivity::render(Activity::RenderLock&& lock) {
       pendingPercentJump = false;
     }
 
-    // Reset tooltip state for new section
+    // Set up tooltip data source: the HTML file that contains data-translation paragraphs.
     if (tooltipOverlay) {
       tooltipOverlay->onPageChanged();
+      if (section->hasTranslatedHtml()) {
+        tooltipOverlay->setTranslatedHtmlPath(section->getTranslatedHtmlPath());
+      } else if (hasTranslation) {
+        // Embedded/Calibre translations — extract chapter HTML from EPUB once.
+        const auto tipPath =
+            epub->getCachePath() + "/sections/" + std::to_string(currentSpineIndex) + ".tooltip.html";
+        if (!Storage.exists(tipPath.c_str())) {
+          const auto href = epub->getSpineItem(currentSpineIndex).href;
+          FsFile tmpFile;
+          if (Storage.openFileForWrite("TIP", tipPath, tmpFile)) {
+            epub->readItemContentsToStream(href, tmpFile, 1024);
+            tmpFile.close();
+          }
+        }
+        tooltipOverlay->setTranslatedHtmlPath(tipPath);
+      }
     }
   }
 
