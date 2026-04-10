@@ -17,6 +17,7 @@ bool TooltipOverlay::handleInput(MappedInputManager& input) {
       useFrontButtons ? MappedInputManager::Button::Left : MappedInputManager::Button::PageBack;
 
   if (input.wasReleased(nextBtn)) {
+    LOG_DBG("TIP", "Next button released, currentSentence=%d, splits=%d", currentSentenceIndex, splits.count);
     if (currentSentenceIndex < 0) {
       currentSentenceIndex = 0;
       wrapAround = false;
@@ -112,123 +113,157 @@ static bool prefixMatch(const std::string& a, const std::string& b, int minLen =
   return strncmp(pa, pb, cmpLen) == 0;
 }
 
-// Streaming HTML parser that extracts translated paragraph texts matching the given page paragraphs.
-// Reads the file in small chunks to avoid large allocations on ESP32.
-// Returns concatenated translations for matched paragraphs (space-separated).
+// ── Expat-based HTML parser for extracting translated paragraphs ───────────────
+// Uses the same expat library as ChapterHtmlSlimParser for robust HTML handling.
+
+#include <expat.h>
+
+static const char* BLOCK_TAGS[] = {"p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote", "div", nullptr};
+
+static bool isBlockTag(const char* name) {
+  for (int i = 0; BLOCK_TAGS[i]; i++) {
+    if (strcmp(name, BLOCK_TAGS[i]) == 0) return true;
+  }
+  return false;
+}
+
+struct ExpatExtractState {
+  const std::vector<std::string>* pageParas;
+  size_t pageParaIdx = 0;
+  std::string result;           // concatenated matched translations
+
+  int blockDepth = 0;           // nesting depth inside current block element
+  bool inBlock = false;         // inside a block element
+  bool isTranslation = false;   // current block has lang/data-translation
+  std::string currentText;      // accumulated text of current block
+  std::string lastOrigText;     // last non-translation block text
+  bool done = false;            // all page paragraphs matched
+};
+
+static void XMLCALL expatStartEl(void* ud, const XML_Char* name, const XML_Char** atts) {
+  auto* s = static_cast<ExpatExtractState*>(ud);
+  if (s->done) return;
+
+  if (isBlockTag(name)) {
+    s->inBlock = true;
+    s->blockDepth = 1;
+    s->isTranslation = false;
+    s->currentText.clear();
+
+    // Check for lang or data-translation attributes
+    if (atts) {
+      for (int i = 0; atts[i]; i += 2) {
+        if (strcmp(atts[i], "lang") == 0 || strcmp(atts[i], "xml:lang") == 0 ||
+            strcmp(atts[i], "data-translation") == 0) {
+          // Skip lang on html/body (but those aren't block tags so won't reach here)
+          s->isTranslation = true;
+        }
+      }
+    }
+  } else if (s->inBlock) {
+    s->blockDepth++;
+  }
+}
+
+static void XMLCALL expatEndEl(void* ud, const XML_Char* name) {
+  auto* s = static_cast<ExpatExtractState*>(ud);
+  if (s->done) return;
+
+  if (s->inBlock) {
+    s->blockDepth--;
+    if (s->blockDepth <= 0) {
+      s->inBlock = false;
+
+      // Trim the accumulated text
+      auto& t = s->currentText;
+      while (!t.empty() && (t.front() == ' ' || t.front() == '\n' || t.front() == '\r')) t.erase(0, 1);
+      while (!t.empty() && (t.back() == ' ' || t.back() == '\n' || t.back() == '\r')) t.pop_back();
+
+      if (!t.empty()) {
+        if (s->isTranslation) {
+          // Match against current page paragraph
+          if (!s->lastOrigText.empty() && s->pageParaIdx < s->pageParas->size()) {
+            if (prefixMatch((*s->pageParas)[s->pageParaIdx], s->lastOrigText)) {
+              if (!s->result.empty()) s->result += ' ';
+              s->result += t;
+              s->pageParaIdx++;
+              if (s->pageParaIdx >= s->pageParas->size()) {
+                s->done = true;
+              }
+            }
+          }
+          s->lastOrigText.clear();
+        } else {
+          s->lastOrigText = t;
+        }
+      }
+      s->currentText.clear();
+    }
+  }
+}
+
+static void XMLCALL expatCharData(void* ud, const XML_Char* data, int len) {
+  auto* s = static_cast<ExpatExtractState*>(ud);
+  if (s->done || !s->inBlock) return;
+
+  // Append text, collapsing whitespace
+  for (int i = 0; i < len; i++) {
+    char c = data[i];
+    if (c == '\n' || c == '\r' || c == '\t') c = ' ';
+    if (c == ' ' && !s->currentText.empty() && s->currentText.back() == ' ') continue;
+    s->currentText += c;
+  }
+}
+
 static std::string extractMatchedTranslations(const std::string& path, const std::vector<std::string>& pageParas) {
-  std::string result;
-  if (path.empty() || pageParas.empty()) return result;
+  if (path.empty() || pageParas.empty()) return "";
 
   FsFile f = Storage.open(path.c_str(), O_RDONLY);
   if (!f) {
     LOG_ERR("TIP", "Cannot open HTML: %s", path.c_str());
-    return result;
+    return "";
   }
 
-  // Stream the file in chunks, accumulating tag-level fragments.
-  // We track: last original paragraph text (for matching) and whether we're inside a data-translation block.
-  static constexpr int CHUNK = 512;
+  XML_Parser parser = XML_ParserCreate("UTF-8");
+  if (!parser) {
+    f.close();
+    return "";
+  }
+
+  ExpatExtractState state;
+  state.pageParas = &pageParas;
+
+  XML_SetUserData(parser, &state);
+  XML_SetElementHandler(parser, expatStartEl, expatEndEl);
+  XML_SetCharacterDataHandler(parser, expatCharData);
+
+  static constexpr int CHUNK = 1024;
   char buf[CHUNK];
-  std::string accum;       // rolling buffer of HTML being scanned
-  std::string lastOrigPara;  // last non-translation paragraph text
-  size_t pageParaIdx = 0;  // which page paragraph we're trying to match next
+  const size_t fileSize = f.size();
+  size_t totalRead = 0;
 
-  while (f.available() || !accum.empty()) {
-    // Read more data if available
-    if (f.available()) {
-      int n = f.read(reinterpret_cast<uint8_t*>(buf), CHUNK - 1);
-      if (n > 0) {
-        buf[n] = '\0';
-        accum.append(buf, n);
-      }
+  while (totalRead < fileSize && !state.done) {
+    const size_t toRead = ((fileSize - totalRead) < CHUNK) ? (fileSize - totalRead) : CHUNK;
+    const int bytesRead = f.read(reinterpret_cast<uint8_t*>(buf), toRead);
+    if (bytesRead <= 0) break;
+    totalRead += bytesRead;
+    const bool done = (totalRead >= fileSize);
+    if (XML_Parse(parser, buf, bytesRead, done ? 1 : 0) == XML_STATUS_ERROR) {
+      LOG_ERR("TIP", "XML parse error at line %lu: %s", XML_GetCurrentLineNumber(parser),
+              XML_ErrorString(XML_GetErrorCode(parser)));
+      break;
     }
-
-    bool madeProgress = false;
-
-    // Find opening block tags (p, h1-h6) and process them
-    for (size_t i = 0; i < accum.size(); i++) {
-      if (accum[i] != '<') continue;
-      if (i + 2 >= accum.size()) break;
-      char t = accum[i + 1];
-      bool isBlock = false;
-      if (t == 'p' && (accum[i + 2] == ' ' || accum[i + 2] == '>')) isBlock = true;
-      if (t == 'h' && accum[i + 2] >= '1' && accum[i + 2] <= '6') isBlock = true;
-      if (!isBlock) continue;
-
-      // Find end of this opening tag
-      size_t tagEnd = accum.find('>', i);
-      if (tagEnd == std::string::npos) break;
-
-      // Determine tag name for finding closing tag
-      char tagName[4] = {t, 0, 0, 0};
-      if (t == 'h') { tagName[1] = accum[i + 2]; }
-      std::string closeStr = std::string("</") + tagName;
-
-      size_t closePos = accum.find(closeStr, tagEnd);
-      if (closePos == std::string::npos) break;  // incomplete, need more data
-
-      size_t endOfClose = accum.find('>', closePos);
-      if (endOfClose == std::string::npos) break;
-
-      // Extract tag attributes and content
-      std::string openTag = accum.substr(i, tagEnd - i + 1);
-      std::string content = accum.substr(tagEnd + 1, closePos - tagEnd - 1);
-      std::string plainText = stripTags(content);
-
-      // Trim
-      while (!plainText.empty() && (plainText.front() == ' ' || plainText.front() == '\n' || plainText.front() == '\r'))
-        plainText.erase(0, 1);
-      while (!plainText.empty() && (plainText.back() == ' ' || plainText.back() == '\n' || plainText.back() == '\r'))
-        plainText.pop_back();
-
-      // A paragraph is a translation if it has data-translation="true" (our translator)
-      // OR a lang= attribute (Calibre/embedded translations).
-      // Skip lang on <html> and <body> which we already excluded (only p/h1-h6 reach here).
-      bool isTrans = openTag.find("data-translation") != std::string::npos ||
-                     openTag.find("lang=") != std::string::npos ||
-                     openTag.find("xml:lang=") != std::string::npos;
-
-      if (isTrans) {
-        // This is a translated paragraph. Check if lastOrigPara matches the current page paragraph.
-        if (!plainText.empty() && !lastOrigPara.empty() && pageParaIdx < pageParas.size()) {
-          if (prefixMatch(pageParas[pageParaIdx], lastOrigPara)) {
-            if (!result.empty()) result += ' ';
-            result += plainText;
-            pageParaIdx++;
-          }
-        }
-        lastOrigPara.clear();
-      } else {
-        if (!plainText.empty()) {
-          lastOrigPara = std::move(plainText);
-        }
-      }
-
-      // Consume up to end of closing tag
-      accum.erase(0, endOfClose + 1);
-      madeProgress = true;
-      break;  // restart scan from beginning of accum
-    }
-
-    if (!madeProgress) {
-      if (!f.available()) break;  // no more data and no progress
-      // If accum is getting too large without progress, trim old data
-      if (accum.size() > CHUNK * 8) {
-        accum.erase(0, accum.size() - CHUNK * 2);
-      }
-    }
-
-    // Early exit if all page paragraphs matched
-    if (pageParaIdx >= pageParas.size()) break;
   }
 
+  XML_ParserFree(parser);
   f.close();
-  LOG_DBG("TIP", "Matched %d/%d page paras from HTML", (int)pageParaIdx, (int)pageParas.size());
-  if (pageParaIdx == 0 && !pageParas.empty()) {
-    LOG_DBG("TIP", "First page para (%.40s...)", skipLeadingSpace(pageParas[0].c_str()));
-    LOG_DBG("TIP", "Last HTML orig (%.40s...)", lastOrigPara.empty() ? "<empty>" : lastOrigPara.c_str());
+
+  LOG_DBG("TIP", "Matched %d/%d page paras from HTML", (int)state.pageParaIdx, (int)pageParas.size());
+  if (state.pageParaIdx == 0 && !pageParas.empty()) {
+    LOG_DBG("TIP", "First page para: '%.40s'", skipLeadingSpace(pageParas[0].c_str()));
+    LOG_DBG("TIP", "Last HTML orig:  '%.40s'", state.lastOrigText.empty() ? "<none>" : state.lastOrigText.c_str());
   }
-  return result;
+  return state.result;
 }
 
 // ── Page preparation ──────────────────────────────────────────────────────────
@@ -412,9 +447,12 @@ void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId,
                             int yOffset, int viewportWidth, int viewportHeight) {
   if (currentSentenceIndex < 0) return;
 
+  LOG_DBG("TIP", "Rendering tooltip for sentence %d", currentSentenceIndex);
+
   preparePage(page);
 
   if (currentSentenceIndex >= splits.count) {
+    LOG_DBG("TIP", "Sentence %d >= splits.count %d, dismissing", currentSentenceIndex, splits.count);
     currentSentenceIndex = -1;
     return;
   }
@@ -430,7 +468,11 @@ void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId,
     tooltipText = mapped.sentences[currentSentenceIndex].translatedText;
   }
 
-  if (tooltipText[0] == '\0') return;
+  if (tooltipText[0] == '\0') {
+    LOG_DBG("TIP", "No translation text for sentence %d (mapped.count=%d)", currentSentenceIndex, mapped.count);
+    return;
+  }
+  LOG_DBG("TIP", "Drawing tooltip: '%.40s...'", tooltipText);
 
   const int lineHeight = renderer.getLineHeight(fontId);
   SentenceBounds bounds = findSentenceBounds(page, span, fontId, xOffset, yOffset);
