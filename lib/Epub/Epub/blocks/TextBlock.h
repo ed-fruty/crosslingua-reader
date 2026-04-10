@@ -33,6 +33,7 @@ class TextBlock final : public Block {
   void render(const GfxRenderer& renderer, int fontId, int x, int y) const;
   const std::list<std::string>& getWords() const { return words; }
   const std::list<EpdFontFamily::Style>& getWordStyles() const { return wordStyles; }
+  const std::list<uint16_t>& getWordXpos() const { return wordXpos; }
   BlockType getType() override { return TEXT_BLOCK; }
   bool serialize(FsFile& file) const;
   static std::unique_ptr<TextBlock> deserialize(FsFile& file);
