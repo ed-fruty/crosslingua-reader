@@ -806,8 +806,12 @@ void EpubReaderActivity::render(Activity::RenderLock&& lock) {
     // when "Translation Only" or similar modes strip all untranslated text.
     const bool hasTranslation = section->hasTranslatedHtml() || epub->hasCalibreTranslation() ||
                                 chapterHasEmbeddedTranslations(epub, currentSpineIndex);
+    // CT_TOOLTIP renders exactly like Original Only (CT_NO_RENDER).
+    // Translation data comes from the HTML file, not the section cache.
     const uint8_t effectiveColorTextStyle =
-        hasTranslation ? SETTINGS.colorTextStyle : CrossPointSettings::CT_NORMAL;
+        !hasTranslation                                                          ? CrossPointSettings::CT_NORMAL
+        : SETTINGS.colorTextStyle == CrossPointSettings::CT_TOOLTIP ? CrossPointSettings::CT_NO_RENDER
+                                                                                 : SETTINGS.colorTextStyle;
 
     if (!section->loadSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
                                   SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
@@ -859,6 +863,22 @@ void EpubReaderActivity::render(Activity::RenderLock&& lock) {
     // Set up tooltip data source: the HTML file that contains data-translation paragraphs.
     if (tooltipOverlay) {
       tooltipOverlay->onPageChanged();
+      // Set HTML source for tooltip translation extraction.
+      if (section->hasTranslatedHtml()) {
+        tooltipOverlay->setTranslatedHtmlPath(section->getTranslatedHtmlPath());
+      } else if (hasTranslation) {
+        const auto tipPath =
+            epub->getCachePath() + "/sections/" + std::to_string(currentSpineIndex) + ".tooltip.html";
+        if (!Storage.exists(tipPath.c_str())) {
+          const auto href = epub->getSpineItem(currentSpineIndex).href;
+          FsFile tmpFile;
+          if (Storage.openFileForWrite("TIP", tipPath, tmpFile)) {
+            epub->readItemContentsToStream(href, tmpFile, 1024);
+            tmpFile.close();
+          }
+        }
+        tooltipOverlay->setTranslatedHtmlPath(tipPath);
+      }
     }
   }
 
@@ -971,7 +991,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     const int vpWidth = renderer.getScreenWidth() - orientedMarginLeft - orientedMarginRight;
     const int vpHeight = renderer.getScreenHeight() - orientedMarginTop - orientedMarginBottom;
     tooltipOverlay->render(renderer, *page, SETTINGS.getReaderFontId(), tooltipFontId, orientedMarginLeft,
-                           orientedMarginTop, vpWidth, vpHeight);
+                           orientedMarginTop, vpWidth, vpHeight, section->currentPage, section->pageCount);
   }
   renderStatusBar(orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
   if (forceFullRefresh || pagesUntilFullRefresh <= 1) {
