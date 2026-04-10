@@ -159,13 +159,17 @@ static void XMLCALL onEnd(void* ud, const XML_Char* name) {
   if (t.empty()) return;
 
   if (s->isTranslation) {
-    // Check if lastOrigText matches current page paragraph
-    if (!s->lastOrigText.empty() && s->pageIdx < s->pageParas->size()) {
-      if (wordsMatch((*s->pageParas)[s->pageIdx], s->lastOrigText)) {
-        if (!s->result.empty()) s->result += ' ';
-        s->result += t;
-        s->pageIdx++;
-        if (s->pageIdx >= s->pageParas->size()) s->done = true;
+    // Search forward through page paragraphs to find a match.
+    // Some page paragraphs may not have translations — skip them.
+    if (!s->lastOrigText.empty()) {
+      for (size_t j = s->pageIdx; j < s->pageParas->size(); j++) {
+        if (wordsMatch((*s->pageParas)[j], s->lastOrigText)) {
+          if (!s->result.empty()) s->result += ' ';
+          s->result += t;
+          s->pageIdx = j + 1;
+          if (s->pageIdx >= s->pageParas->size()) s->done = true;
+          break;
+        }
       }
     }
     s->lastOrigText.clear();
