@@ -85,6 +85,33 @@ static std::string stripTags(const std::string& html) {
   return out;
 }
 
+// Skip leading whitespace and em-space (U+2003 = \xe2\x80\x83) for text comparison.
+// The layout engine prepends em-space for text-indent, which isn't in the source HTML.
+static const char* skipLeadingSpace(const char* s) {
+  while (*s) {
+    if (*s == ' ' || *s == '\n' || *s == '\r' || *s == '\t') {
+      s++;
+    } else if (static_cast<uint8_t>(s[0]) == 0xE2 && static_cast<uint8_t>(s[1]) == 0x80 &&
+               static_cast<uint8_t>(s[2]) == 0x83) {
+      s += 3;  // skip em-space (3 bytes UTF-8)
+    } else {
+      break;
+    }
+  }
+  return s;
+}
+
+// Compare two strings ignoring leading whitespace/em-space. Returns true if first N chars match.
+static bool prefixMatch(const std::string& a, const std::string& b, int minLen = 5) {
+  const char* pa = skipLeadingSpace(a.c_str());
+  const char* pb = skipLeadingSpace(b.c_str());
+  int la = strlen(pa);
+  int lb = strlen(pb);
+  int cmpLen = std::min({la, lb, 30});
+  if (cmpLen < minLen) return false;
+  return strncmp(pa, pb, cmpLen) == 0;
+}
+
 // Streaming HTML parser that extracts translated paragraph texts matching the given page paragraphs.
 // Reads the file in small chunks to avoid large allocations on ESP32.
 // Returns concatenated translations for matched paragraphs (space-separated).
@@ -116,16 +143,9 @@ static std::string extractMatchedTranslations(const std::string& path, const std
       }
     }
 
-    // Process complete elements in accum.
-    // Look for data-translation="true" markers to find translated paragraphs.
-    // Look for block elements without data-translation to track original paragraphs.
     bool madeProgress = false;
 
-    // Find next data-translation marker or block opening tag
-    size_t dtPos = accum.find("data-translation");
-    size_t blockPos = std::string::npos;
-
-    // Find opening block tags (p, h1-h6) that are NOT translation tags
+    // Find opening block tags (p, h1-h6) and process them
     for (size_t i = 0; i < accum.size(); i++) {
       if (accum[i] != '<') continue;
       if (i + 2 >= accum.size()) break;
@@ -161,14 +181,17 @@ static std::string extractMatchedTranslations(const std::string& path, const std
       while (!plainText.empty() && (plainText.back() == ' ' || plainText.back() == '\n' || plainText.back() == '\r'))
         plainText.pop_back();
 
-      bool isTrans = openTag.find("data-translation") != std::string::npos;
+      // A paragraph is a translation if it has data-translation="true" (our translator)
+      // OR a lang= attribute (Calibre/embedded translations).
+      // Skip lang on <html> and <body> which we already excluded (only p/h1-h6 reach here).
+      bool isTrans = openTag.find("data-translation") != std::string::npos ||
+                     openTag.find("lang=") != std::string::npos ||
+                     openTag.find("xml:lang=") != std::string::npos;
 
       if (isTrans) {
         // This is a translated paragraph. Check if lastOrigPara matches the current page paragraph.
         if (!plainText.empty() && !lastOrigPara.empty() && pageParaIdx < pageParas.size()) {
-          const auto& target = pageParas[pageParaIdx];
-          const int cmpLen = std::min({(int)target.size(), (int)lastOrigPara.size(), 30});
-          if (cmpLen >= 5 && target.compare(0, cmpLen, lastOrigPara, 0, cmpLen) == 0) {
+          if (prefixMatch(pageParas[pageParaIdx], lastOrigPara)) {
             if (!result.empty()) result += ' ';
             result += plainText;
             pageParaIdx++;
@@ -201,6 +224,10 @@ static std::string extractMatchedTranslations(const std::string& path, const std
 
   f.close();
   LOG_DBG("TIP", "Matched %d/%d page paras from HTML", (int)pageParaIdx, (int)pageParas.size());
+  if (pageParaIdx == 0 && !pageParas.empty()) {
+    LOG_DBG("TIP", "First page para (%.40s...)", skipLeadingSpace(pageParas[0].c_str()));
+    LOG_DBG("TIP", "Last HTML orig (%.40s...)", lastOrigPara.empty() ? "<empty>" : lastOrigPara.c_str());
+  }
   return result;
 }
 
