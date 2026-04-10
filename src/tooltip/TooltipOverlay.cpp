@@ -128,21 +128,17 @@ static bool isBlockTag(const char* name) {
 }
 
 struct ExpatExtractState {
-  const std::vector<std::string>* pageParas;
-  size_t pageParaIdx = 0;
-  std::string result;           // concatenated matched translations
+  // Collects ALL translated paragraph texts from the chapter, in order.
+  std::vector<std::string> allTranslations;
 
-  int blockDepth = 0;           // nesting depth inside current block element
-  bool inBlock = false;         // inside a block element
-  bool isTranslation = false;   // current block has lang/data-translation
-  std::string currentText;      // accumulated text of current block
-  std::string lastOrigText;     // last non-translation block text
-  bool done = false;            // all page paragraphs matched
+  int blockDepth = 0;
+  bool inBlock = false;
+  bool isTranslation = false;
+  std::string currentText;
 };
 
 static void XMLCALL expatStartEl(void* ud, const XML_Char* name, const XML_Char** atts) {
   auto* s = static_cast<ExpatExtractState*>(ud);
-  if (s->done) return;
 
   if (isBlockTag(name)) {
     s->inBlock = true;
@@ -167,35 +163,18 @@ static void XMLCALL expatStartEl(void* ud, const XML_Char* name, const XML_Char*
 
 static void XMLCALL expatEndEl(void* ud, const XML_Char* name) {
   auto* s = static_cast<ExpatExtractState*>(ud);
-  if (s->done) return;
 
   if (s->inBlock) {
     s->blockDepth--;
     if (s->blockDepth <= 0) {
       s->inBlock = false;
 
-      // Trim the accumulated text
       auto& t = s->currentText;
       while (!t.empty() && (t.front() == ' ' || t.front() == '\n' || t.front() == '\r')) t.erase(0, 1);
       while (!t.empty() && (t.back() == ' ' || t.back() == '\n' || t.back() == '\r')) t.pop_back();
 
-      if (!t.empty()) {
-        if (s->isTranslation) {
-          // Match against current page paragraph
-          if (!s->lastOrigText.empty() && s->pageParaIdx < s->pageParas->size()) {
-            if (prefixMatch((*s->pageParas)[s->pageParaIdx], s->lastOrigText)) {
-              if (!s->result.empty()) s->result += ' ';
-              s->result += t;
-              s->pageParaIdx++;
-              if (s->pageParaIdx >= s->pageParas->size()) {
-                s->done = true;
-              }
-            }
-          }
-          s->lastOrigText.clear();
-        } else {
-          s->lastOrigText = t;
-        }
+      if (!t.empty() && s->isTranslation) {
+        s->allTranslations.push_back(t);
       }
       s->currentText.clear();
     }
@@ -204,7 +183,7 @@ static void XMLCALL expatEndEl(void* ud, const XML_Char* name) {
 
 static void XMLCALL expatCharData(void* ud, const XML_Char* data, int len) {
   auto* s = static_cast<ExpatExtractState*>(ud);
-  if (s->done || !s->inBlock) return;
+  if (!s->inBlock) return;
 
   // Append text, collapsing whitespace
   for (int i = 0; i < len; i++) {
@@ -215,24 +194,24 @@ static void XMLCALL expatCharData(void* ud, const XML_Char* data, int len) {
   }
 }
 
-static std::string extractMatchedTranslations(const std::string& path, const std::vector<std::string>& pageParas) {
-  if (path.empty() || pageParas.empty()) return "";
+// Extract ALL translated paragraphs from the HTML using expat.
+static std::vector<std::string> extractAllTranslations(const std::string& path) {
+  std::vector<std::string> empty;
+  if (path.empty()) return empty;
 
   FsFile f = Storage.open(path.c_str(), O_RDONLY);
   if (!f) {
     LOG_ERR("TIP", "Cannot open HTML: %s", path.c_str());
-    return "";
+    return empty;
   }
 
   XML_Parser parser = XML_ParserCreate("UTF-8");
   if (!parser) {
     f.close();
-    return "";
+    return empty;
   }
 
   ExpatExtractState state;
-  state.pageParas = &pageParas;
-
   XML_SetUserData(parser, &state);
   XML_SetElementHandler(parser, expatStartEl, expatEndEl);
   XML_SetCharacterDataHandler(parser, expatCharData);
@@ -242,7 +221,7 @@ static std::string extractMatchedTranslations(const std::string& path, const std
   const size_t fileSize = f.size();
   size_t totalRead = 0;
 
-  while (totalRead < fileSize && !state.done) {
+  while (totalRead < fileSize) {
     const size_t toRead = ((fileSize - totalRead) < CHUNK) ? (fileSize - totalRead) : CHUNK;
     const int bytesRead = f.read(reinterpret_cast<uint8_t*>(buf), toRead);
     if (bytesRead <= 0) break;
@@ -258,24 +237,20 @@ static std::string extractMatchedTranslations(const std::string& path, const std
   XML_ParserFree(parser);
   f.close();
 
-  LOG_DBG("TIP", "Matched %d/%d page paras from HTML", (int)state.pageParaIdx, (int)pageParas.size());
-  if (state.pageParaIdx == 0 && !pageParas.empty()) {
-    LOG_DBG("TIP", "First page para: '%.40s'", skipLeadingSpace(pageParas[0].c_str()));
-    LOG_DBG("TIP", "Last HTML orig:  '%.40s'", state.lastOrigText.empty() ? "<none>" : state.lastOrigText.c_str());
-  }
-  return state.result;
+  LOG_DBG("TIP", "Extracted %d translated paragraphs from HTML", (int)state.allTranslations.size());
+  return std::move(state.allTranslations);
 }
 
 // ── Page preparation ──────────────────────────────────────────────────────────
 
-void TooltipOverlay::preparePage(const Page& page) {
+void TooltipOverlay::preparePage(const Page& page, int pageIndex, int pageCount) {
   if (pagePrepared) return;
   pagePrepared = true;
   origWordCount = 0;
   transWordCount = 0;
   transWordStorage.clear();
 
-  // 1. Collect original words from page TextBlocks (all words — CT_NO_RENDER has only originals).
+  // 1. Collect original words from page TextBlocks.
   for (const auto& el : page.elements) {
     if (el->getTag() != TAG_PageLine) continue;
     const auto* line = static_cast<const PageLine*>(el.get());
@@ -289,56 +264,48 @@ void TooltipOverlay::preparePage(const Page& page) {
 
   splits = splitSentences(origWordPtrs, origWordCount);
 
-  // 2. Extract page paragraph texts (group words by Y-gap > 30px).
-  std::vector<std::string> pageParas;
-  int16_t prevY = -1;
-  std::string curPara;
-  for (const auto& el : page.elements) {
-    if (el->getTag() != TAG_PageLine) continue;
-    const auto* line = static_cast<const PageLine*>(el.get());
-    const auto& words = line->getTextBlock()->getWords();
-    if (words.empty()) continue;
-
-    int16_t gap = (prevY >= 0) ? (el->yPos - prevY) : 0;
-    if (prevY >= 0 && gap > 30) {
-      if (!curPara.empty()) {
-        pageParas.push_back(std::move(curPara));
-        curPara.clear();
-      }
-    }
-    prevY = el->yPos;
-    for (const auto& w : words) {
-      if (!curPara.empty()) curPara += ' ';
-      curPara += w;
-    }
-  }
-  if (!curPara.empty()) pageParas.push_back(std::move(curPara));
-
-  // 3. Stream through the HTML file, match page paragraphs, extract translations.
-  std::string matchedTranslation = extractMatchedTranslations(translatedHtmlPath, pageParas);
-  if (matchedTranslation.empty()) {
-    LOG_DBG("TIP", "No translations matched for this page");
+  // 2. Extract ALL translated paragraphs from the HTML.
+  auto allTrans = extractAllTranslations(translatedHtmlPath);
+  if (allTrans.empty()) {
+    LOG_DBG("TIP", "No translated paragraphs found in HTML");
     return;
   }
 
-  // 5. Split matched translation into words.
-  transWordStorage.clear();
-  transWordCount = 0;
-  const char* p = matchedTranslation.c_str();
-  while (*p) {
-    while (*p == ' ') p++;
-    if (!*p) break;
-    const char* wordStart = p;
-    while (*p && *p != ' ') p++;
-    transWordStorage.emplace_back(wordStart, p - wordStart);
+  // 3. Estimate which portion of translations belongs to this page.
+  // Split all translations into words first, then take the page's proportional slice.
+  std::vector<std::string> allTransWords;
+  for (const auto& para : allTrans) {
+    const char* p = para.c_str();
+    while (*p) {
+      while (*p == ' ') p++;
+      if (!*p) break;
+      const char* ws = p;
+      while (*p && *p != ' ') p++;
+      allTransWords.emplace_back(ws, p - ws);
+    }
   }
-  for (int i = 0; i < (int)transWordStorage.size() && i < MAX_WORDS; i++) {
-    transWordPtrs[i] = transWordStorage[i].c_str();
+  allTrans.clear();  // free paragraph strings
+
+  if (allTransWords.empty() || pageCount <= 0) {
+    LOG_DBG("TIP", "No translated words or invalid pageCount");
+    return;
+  }
+
+  // Calculate the slice of translated words for this page.
+  const int totalTransWords = static_cast<int>(allTransWords.size());
+  const int startWord = totalTransWords * pageIndex / pageCount;
+  const int endWord = totalTransWords * (pageIndex + 1) / pageCount;
+
+  // Copy the slice into transWordStorage.
+  for (int i = startWord; i < endWord && transWordCount < MAX_WORDS; i++) {
+    transWordStorage.push_back(std::move(allTransWords[i]));
+    transWordPtrs[transWordCount] = transWordStorage.back().c_str();
     transWordCount++;
   }
 
-  LOG_DBG("TIP", "Page: %d orig words, %d trans words, %d sentences, %d page paras matched",
-          origWordCount, transWordCount, splits.count, (int)pageParas.size());
+  LOG_DBG("TIP", "Page %d/%d: %d orig words, %d trans words (slice %d-%d of %d), %d sentences",
+          pageIndex, pageCount, origWordCount, transWordCount, startWord, endWord, totalTransWords, splits.count);
+
 }
 
 // ── Sentence bounds and underline ─────────────────────────────────────────────
@@ -444,12 +411,12 @@ static int findSentenceLastLineY(const Page& page, const SentenceSpan& span, int
 }
 
 void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId, int tooltipFontId, int xOffset,
-                            int yOffset, int viewportWidth, int viewportHeight) {
+                            int yOffset, int viewportWidth, int viewportHeight, int pageIndex, int pageCount) {
   if (currentSentenceIndex < 0) return;
 
   LOG_DBG("TIP", "Rendering tooltip for sentence %d", currentSentenceIndex);
 
-  preparePage(page);
+  preparePage(page, pageIndex, pageCount);
 
   if (currentSentenceIndex >= splits.count) {
     LOG_DBG("TIP", "Sentence %d >= splits.count %d, dismissing", currentSentenceIndex, splits.count);

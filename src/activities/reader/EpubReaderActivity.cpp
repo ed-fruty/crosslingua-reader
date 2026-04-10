@@ -989,7 +989,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     const int vpWidth = renderer.getScreenWidth() - orientedMarginLeft - orientedMarginRight;
     const int vpHeight = renderer.getScreenHeight() - orientedMarginTop - orientedMarginBottom;
     tooltipOverlay->render(renderer, *page, SETTINGS.getReaderFontId(), tooltipFontId, orientedMarginLeft,
-                           orientedMarginTop, vpWidth, vpHeight);
+                           orientedMarginTop, vpWidth, vpHeight, section->currentPage, section->pageCount);
   }
   renderStatusBar(orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
   if (forceFullRefresh || pagesUntilFullRefresh <= 1) {
