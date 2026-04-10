@@ -85,113 +85,123 @@ static std::string stripTags(const std::string& html) {
   return out;
 }
 
-// Parse the translated HTML file and extract (original_paragraph, translated_paragraph) pairs.
-// Original paragraphs are block elements WITHOUT data-translation; translated have it.
-// They alternate: original, then its translation.
-struct ParagraphPair {
-  std::string original;
-  std::string translated;
-};
-
-static std::vector<ParagraphPair> extractParagraphPairs(const std::string& path) {
-  std::vector<ParagraphPair> pairs;
+// Streaming HTML parser that extracts translated paragraph texts matching the given page paragraphs.
+// Reads the file in small chunks to avoid large allocations on ESP32.
+// Returns concatenated translations for matched paragraphs (space-separated).
+static std::string extractMatchedTranslations(const std::string& path, const std::vector<std::string>& pageParas) {
+  std::string result;
+  if (path.empty() || pageParas.empty()) return result;
 
   FsFile f = Storage.open(path.c_str(), O_RDONLY);
-  if (!f) return pairs;
-
-  // Read entire file (chapter HTML is typically <50KB, fits in RAM briefly)
-  const size_t fileSize = f.size();
-  if (fileSize == 0 || fileSize > 200000) {
-    f.close();
-    return pairs;
+  if (!f) {
+    LOG_ERR("TIP", "Cannot open HTML: %s", path.c_str());
+    return result;
   }
-  std::string html;
-  html.resize(fileSize);
-  f.read(reinterpret_cast<uint8_t*>(&html[0]), fileSize);
+
+  // Stream the file in chunks, accumulating tag-level fragments.
+  // We track: last original paragraph text (for matching) and whether we're inside a data-translation block.
+  static constexpr int CHUNK = 512;
+  char buf[CHUNK];
+  std::string accum;       // rolling buffer of HTML being scanned
+  std::string lastOrigPara;  // last non-translation paragraph text
+  size_t pageParaIdx = 0;  // which page paragraph we're trying to match next
+
+  while (f.available() || !accum.empty()) {
+    // Read more data if available
+    if (f.available()) {
+      int n = f.read(reinterpret_cast<uint8_t*>(buf), CHUNK - 1);
+      if (n > 0) {
+        buf[n] = '\0';
+        accum.append(buf, n);
+      }
+    }
+
+    // Process complete elements in accum.
+    // Look for data-translation="true" markers to find translated paragraphs.
+    // Look for block elements without data-translation to track original paragraphs.
+    bool madeProgress = false;
+
+    // Find next data-translation marker or block opening tag
+    size_t dtPos = accum.find("data-translation");
+    size_t blockPos = std::string::npos;
+
+    // Find opening block tags (p, h1-h6) that are NOT translation tags
+    for (size_t i = 0; i < accum.size(); i++) {
+      if (accum[i] != '<') continue;
+      if (i + 2 >= accum.size()) break;
+      char t = accum[i + 1];
+      bool isBlock = false;
+      if (t == 'p' && (accum[i + 2] == ' ' || accum[i + 2] == '>')) isBlock = true;
+      if (t == 'h' && accum[i + 2] >= '1' && accum[i + 2] <= '6') isBlock = true;
+      if (!isBlock) continue;
+
+      // Find end of this opening tag
+      size_t tagEnd = accum.find('>', i);
+      if (tagEnd == std::string::npos) break;
+
+      // Determine tag name for finding closing tag
+      char tagName[4] = {t, 0, 0, 0};
+      if (t == 'h') { tagName[1] = accum[i + 2]; }
+      std::string closeStr = std::string("</") + tagName;
+
+      size_t closePos = accum.find(closeStr, tagEnd);
+      if (closePos == std::string::npos) break;  // incomplete, need more data
+
+      size_t endOfClose = accum.find('>', closePos);
+      if (endOfClose == std::string::npos) break;
+
+      // Extract tag attributes and content
+      std::string openTag = accum.substr(i, tagEnd - i + 1);
+      std::string content = accum.substr(tagEnd + 1, closePos - tagEnd - 1);
+      std::string plainText = stripTags(content);
+
+      // Trim
+      while (!plainText.empty() && (plainText.front() == ' ' || plainText.front() == '\n' || plainText.front() == '\r'))
+        plainText.erase(0, 1);
+      while (!plainText.empty() && (plainText.back() == ' ' || plainText.back() == '\n' || plainText.back() == '\r'))
+        plainText.pop_back();
+
+      bool isTrans = openTag.find("data-translation") != std::string::npos;
+
+      if (isTrans) {
+        // This is a translated paragraph. Check if lastOrigPara matches the current page paragraph.
+        if (!plainText.empty() && !lastOrigPara.empty() && pageParaIdx < pageParas.size()) {
+          const auto& target = pageParas[pageParaIdx];
+          const int cmpLen = std::min({(int)target.size(), (int)lastOrigPara.size(), 30});
+          if (cmpLen >= 5 && target.compare(0, cmpLen, lastOrigPara, 0, cmpLen) == 0) {
+            if (!result.empty()) result += ' ';
+            result += plainText;
+            pageParaIdx++;
+          }
+        }
+        lastOrigPara.clear();
+      } else {
+        if (!plainText.empty()) {
+          lastOrigPara = std::move(plainText);
+        }
+      }
+
+      // Consume up to end of closing tag
+      accum.erase(0, endOfClose + 1);
+      madeProgress = true;
+      break;  // restart scan from beginning of accum
+    }
+
+    if (!madeProgress) {
+      if (!f.available()) break;  // no more data and no progress
+      // If accum is getting too large without progress, trim old data
+      if (accum.size() > CHUNK * 8) {
+        accum.erase(0, accum.size() - CHUNK * 2);
+      }
+    }
+
+    // Early exit if all page paragraphs matched
+    if (pageParaIdx >= pageParas.size()) break;
+  }
+
   f.close();
-
-  // Walk through the HTML collecting translated paragraph texts.
-  // Format: <p ... data-translation="true" ...>text</p>
-  // The PRECEDING block element (without data-translation) is the original.
-  std::string lastOriginalText;
-  size_t pos = 0;
-
-  while (pos < html.size()) {
-    // Find next opening tag
-    size_t tagStart = html.find('<', pos);
-    if (tagStart == std::string::npos) break;
-
-    // Skip closing tags, comments, doctype
-    if (tagStart + 1 < html.size() && (html[tagStart + 1] == '/' || html[tagStart + 1] == '!')) {
-      pos = html.find('>', tagStart);
-      if (pos == std::string::npos) break;
-      pos++;
-      continue;
-    }
-
-    // Find end of opening tag
-    size_t tagEnd = html.find('>', tagStart);
-    if (tagEnd == std::string::npos) break;
-
-    std::string tag = html.substr(tagStart, tagEnd - tagStart + 1);
-
-    // Check if this is a block element (p, h1-h6, li, blockquote, div)
-    bool isBlock = false;
-    if (tag.size() > 2) {
-      char t = tag[1];
-      if (t == 'p' && (tag[2] == ' ' || tag[2] == '>')) isBlock = true;
-      if (t == 'h' && tag[2] >= '1' && tag[2] <= '6') isBlock = true;
-      if (tag.compare(1, 2, "li") == 0) isBlock = true;
-      if (tag.compare(1, 10, "blockquote") == 0) isBlock = true;
-      if (tag.compare(1, 3, "div") == 0) isBlock = true;
-    }
-
-    if (!isBlock) {
-      pos = tagEnd + 1;
-      continue;
-    }
-
-    // Find the matching closing tag
-    // Determine tag name
-    size_t nameEnd = tag.find_first_of(" >", 1);
-    std::string tagName = tag.substr(1, nameEnd - 1);
-    std::string closeTag = "</" + tagName;
-
-    size_t contentStart = tagEnd + 1;
-    size_t closePos = html.find(closeTag, contentStart);
-    if (closePos == std::string::npos) {
-      pos = tagEnd + 1;
-      continue;
-    }
-
-    std::string content = html.substr(contentStart, closePos - contentStart);
-    std::string plainText = stripTags(content);
-
-    // Trim whitespace
-    while (!plainText.empty() && (plainText.front() == ' ' || plainText.front() == '\n')) plainText.erase(0, 1);
-    while (!plainText.empty() && (plainText.back() == ' ' || plainText.back() == '\n')) plainText.pop_back();
-
-    bool isTranslation = tag.find("data-translation") != std::string::npos;
-
-    if (isTranslation) {
-      if (!plainText.empty() && !lastOriginalText.empty()) {
-        pairs.push_back({lastOriginalText, plainText});
-      }
-      lastOriginalText.clear();
-    } else {
-      if (!plainText.empty()) {
-        lastOriginalText = plainText;
-      }
-    }
-
-    // Move past closing tag
-    pos = html.find('>', closePos);
-    if (pos == std::string::npos) break;
-    pos++;
-  }
-
-  LOG_DBG("TIP", "Extracted %d paragraph pairs from HTML", (int)pairs.size());
-  return pairs;
+  LOG_DBG("TIP", "Matched %d/%d page paras from HTML", (int)pageParaIdx, (int)pageParas.size());
+  return result;
 }
 
 // ── Page preparation ──────────────────────────────────────────────────────────
@@ -242,34 +252,11 @@ void TooltipOverlay::preparePage(const Page& page) {
   }
   if (!curPara.empty()) pageParas.push_back(std::move(curPara));
 
-  // 3. Extract (original, translated) paragraph pairs from the HTML file.
-  auto pairs = extractParagraphPairs(translatedHtmlPath);
-  if (pairs.empty() || pageParas.empty()) {
-    LOG_DBG("TIP", "No pairs (%d) or no page paras (%d)", (int)pairs.size(), (int)pageParas.size());
+  // 3. Stream through the HTML file, match page paragraphs, extract translations.
+  std::string matchedTranslation = extractMatchedTranslations(translatedHtmlPath, pageParas);
+  if (matchedTranslation.empty()) {
+    LOG_DBG("TIP", "No translations matched for this page");
     return;
-  }
-
-  // 4. Match page paragraphs to chapter paragraph pairs.
-  // Page paragraphs are a contiguous subset of chapter originals. Find the starting match.
-  // Compare first 30 chars of each page paragraph to chapter originals.
-  std::string matchedTranslation;
-  size_t chapterIdx = 0;
-  for (const auto& pagePara : pageParas) {
-    const int cmpLen = std::min((int)pagePara.size(), 30);
-    bool found = false;
-    for (size_t j = chapterIdx; j < pairs.size(); j++) {
-      const int pairCmpLen = std::min((int)pairs[j].original.size(), cmpLen);
-      if (pairCmpLen >= 5 && pagePara.compare(0, pairCmpLen, pairs[j].original, 0, pairCmpLen) == 0) {
-        if (!matchedTranslation.empty()) matchedTranslation += ' ';
-        matchedTranslation += pairs[j].translated;
-        chapterIdx = j + 1;  // advance cursor
-        found = true;
-        break;
-      }
-    }
-    if (!found) {
-      LOG_DBG("TIP", "No match for page para: %.30s...", pagePara.c_str());
-    }
   }
 
   // 5. Split matched translation into words.
