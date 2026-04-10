@@ -4,15 +4,10 @@
 #include <MappedInputManager.h>
 #include <Epub/Page.h>
 
-#include <string>
-
 #include "SentenceSplitter.h"
 
 class TooltipOverlay {
  public:
-  // Set the path to the .translated.html file for the current chapter.
-  void setTranslatedHtmlPath(const std::string& path) { translatedHtmlPath = path; }
-
   // Returns true if input was consumed (caller should skip normal page-turn handling).
   bool handleInput(MappedInputManager& input);
 
@@ -31,39 +26,18 @@ class TooltipOverlay {
   bool wrapAround = false;
   bool pagePrepared = false;
 
-  std::string translatedHtmlPath;
-
   // Cached sentence data for the current page.
   static constexpr int MAX_WORDS = 500;
   const char* origWordPtrs[MAX_WORDS];
   int origWordCount = 0;
-
-  // Translated paragraph texts extracted from .translated.html (kept alive for pointer stability).
-  static constexpr int MAX_PARAGRAPHS = 60;
-  std::string translatedParagraphs[MAX_PARAGRAPHS];
-  int translatedParagraphCount = 0;
-
-  // Original paragraph texts extracted from the page (for matching to translations).
-  std::string originalParagraphs[MAX_PARAGRAPHS];
-  int originalParagraphCount = 0;
-
-  // Translated text split into words for sentence mapping.
-  static constexpr int MAX_TRANS_WORDS = 500;
-  std::string transWordStorage[MAX_TRANS_WORDS];
-  const char* transWordPtrs[MAX_TRANS_WORDS];
+  const char* transWordPtrs[MAX_WORDS];
   int transWordCount = 0;
 
   // Sentence split result for the current page.
   SentenceSplitResult splits;
 
-  // Prepare sentence data from the page + translated HTML (called once per page).
+  // Prepare sentence data from the page's TextBlocks (called once per page).
   void preparePage(const Page& page);
-
-  // Extract translated paragraphs from the .translated.html file.
-  void loadTranslationsFromHtml();
-
-  // Match page paragraphs to chapter translations and build translated word arrays.
-  void matchPageTranslations(const Page& page);
 
   struct SentenceBounds {
     int firstLineY;

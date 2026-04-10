@@ -806,12 +806,8 @@ void EpubReaderActivity::render(Activity::RenderLock&& lock) {
     // when "Translation Only" or similar modes strip all untranslated text.
     const bool hasTranslation = section->hasTranslatedHtml() || epub->hasCalibreTranslation() ||
                                 chapterHasEmbeddedTranslations(epub, currentSpineIndex);
-    // CT_TOOLTIP uses CT_NO_RENDER layout (original-only, no gaps for translated paragraphs).
-    // Tooltip reads translations separately from the .translated.html file.
     const uint8_t effectiveColorTextStyle =
-        !hasTranslation              ? CrossPointSettings::CT_NORMAL
-        : SETTINGS.colorTextStyle == CrossPointSettings::CT_TOOLTIP ? CrossPointSettings::CT_NO_RENDER
-                                     : SETTINGS.colorTextStyle;
+        hasTranslation ? SETTINGS.colorTextStyle : CrossPointSettings::CT_NORMAL;
 
     if (!section->loadSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
                                   SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
@@ -860,26 +856,9 @@ void EpubReaderActivity::render(Activity::RenderLock&& lock) {
       pendingPercentJump = false;
     }
 
-    // Set HTML source path for tooltip overlay to read translations from.
-    // Priority: .translated.html (our translator) > extracted chapter HTML (embedded translations).
-    if (tooltipOverlay && section) {
-      if (section->hasTranslatedHtml()) {
-        tooltipOverlay->setTranslatedHtmlPath(section->getTranslatedHtmlPath());
-      } else {
-        // Extract chapter HTML from EPUB for embedded/Calibre translations.
-        // Persisted as .tooltip.html so we don't re-extract every page.
-        const auto tooltipHtmlPath =
-            epub->getCachePath() + "/sections/" + std::to_string(currentSpineIndex) + ".tooltip.html";
-        if (!Storage.exists(tooltipHtmlPath.c_str())) {
-          const auto href = epub->getSpineItem(currentSpineIndex).href;
-          FsFile tmpFile;
-          if (Storage.openFileForWrite("TIP", tooltipHtmlPath, tmpFile)) {
-            epub->readItemContentsToStream(href, tmpFile, 1024);
-            tmpFile.close();
-          }
-        }
-        tooltipOverlay->setTranslatedHtmlPath(tooltipHtmlPath);
-      }
+    // Reset tooltip state for new section
+    if (tooltipOverlay) {
+      tooltipOverlay->onPageChanged();
     }
   }
 
