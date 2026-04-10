@@ -860,9 +860,26 @@ void EpubReaderActivity::render(Activity::RenderLock&& lock) {
       pendingPercentJump = false;
     }
 
-    // Set translated HTML path for tooltip overlay when section is loaded
+    // Set HTML source path for tooltip overlay to read translations from.
+    // Priority: .translated.html (our translator) > extracted chapter HTML (embedded translations).
     if (tooltipOverlay && section) {
-      tooltipOverlay->setTranslatedHtmlPath(section->getTranslatedHtmlPath());
+      if (section->hasTranslatedHtml()) {
+        tooltipOverlay->setTranslatedHtmlPath(section->getTranslatedHtmlPath());
+      } else {
+        // Extract chapter HTML from EPUB for embedded/Calibre translations.
+        // Persisted as .tooltip.html so we don't re-extract every page.
+        const auto tooltipHtmlPath =
+            epub->getCachePath() + "/sections/" + std::to_string(currentSpineIndex) + ".tooltip.html";
+        if (!Storage.exists(tooltipHtmlPath.c_str())) {
+          const auto href = epub->getSpineItem(currentSpineIndex).href;
+          FsFile tmpFile;
+          if (Storage.openFileForWrite("TIP", tooltipHtmlPath, tmpFile)) {
+            epub->readItemContentsToStream(href, tmpFile, 1024);
+            tmpFile.close();
+          }
+        }
+        tooltipOverlay->setTranslatedHtmlPath(tooltipHtmlPath);
+      }
     }
   }
 
