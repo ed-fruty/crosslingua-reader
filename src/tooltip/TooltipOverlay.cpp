@@ -60,7 +60,48 @@ void TooltipOverlay::onPageChanged() {
   splits.count = 0;
 }
 
-// ── Expat-based translation extraction (two-pass: count then extract slice) ──
+// ── Text helpers ──────────────────────────────────────────────────────────────
+
+// Skip em-space (U+2003) and ASCII whitespace at start of string.
+static const char* skipSpace(const char* s) {
+  while (*s) {
+    if (*s == ' ' || *s == '\n' || *s == '\r' || *s == '\t') {
+      s++;
+    } else if ((uint8_t)s[0] == 0xE2 && (uint8_t)s[1] == 0x80 && (uint8_t)s[2] == 0x83) {
+      s += 3;
+    } else {
+      break;
+    }
+  }
+  return s;
+}
+
+// Extract first N words from text (after skipping leading space). Returns lowercase.
+static std::string firstWords(const char* text, int n) {
+  const char* p = skipSpace(text);
+  std::string result;
+  int count = 0;
+  while (*p && count < n) {
+    while (*p == ' ') p++;
+    if (!*p) break;
+    if (count > 0) result += ' ';
+    while (*p && *p != ' ') {
+      result += *p++;
+    }
+    count++;
+  }
+  return result;
+}
+
+// Compare first N words of two texts. More robust than character-prefix comparison.
+static bool wordsMatch(const std::string& pageText, const std::string& htmlText, int n = 3) {
+  auto a = firstWords(pageText.c_str(), n);
+  auto b = firstWords(htmlText.c_str(), n);
+  if (a.empty() || b.empty()) return false;
+  return a == b;
+}
+
+// ── Expat-based extraction: single pass, matching page paragraphs ─────────────
 
 static const char* BLOCK_TAGS[] = {"p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote", "div", nullptr};
 
@@ -71,22 +112,22 @@ static bool isBlockTag(const char* name) {
   return false;
 }
 
-struct ExpatState {
+struct MatchState {
+  const std::vector<std::string>* pageParas;
+  size_t pageIdx = 0;
+  std::string result;  // matched translations concatenated
+
   int blockDepth = 0;
   bool inBlock = false;
   bool isTranslation = false;
   std::string currentText;
-
-  // Mode: countOnly=true just counts, countOnly=false extracts paragraphs in [startPara, endPara)
-  bool countOnly = true;
-  int totalTransParas = 0;
-  int startPara = 0;
-  int endPara = 0;
-  std::string collected;  // concatenated translations for the slice
+  std::string lastOrigText;
+  bool done = false;
 };
 
 static void XMLCALL onStart(void* ud, const XML_Char* name, const XML_Char** atts) {
-  auto* s = static_cast<ExpatState*>(ud);
+  auto* s = static_cast<MatchState*>(ud);
+  if (s->done) return;
   if (isBlockTag(name)) {
     s->inBlock = true;
     s->blockDepth = 1;
@@ -106,34 +147,36 @@ static void XMLCALL onStart(void* ud, const XML_Char* name, const XML_Char** att
 }
 
 static void XMLCALL onEnd(void* ud, const XML_Char* name) {
-  auto* s = static_cast<ExpatState*>(ud);
-  if (!s->inBlock) return;
+  auto* s = static_cast<MatchState*>(ud);
+  if (s->done || !s->inBlock) return;
   s->blockDepth--;
   if (s->blockDepth > 0) return;
   s->inBlock = false;
 
-  if (!s->isTranslation || s->currentText.empty()) return;
-
-  // Trim
   auto& t = s->currentText;
   while (!t.empty() && (t.front() == ' ' || t.front() == '\n')) t.erase(0, 1);
   while (!t.empty() && (t.back() == ' ' || t.back() == '\n')) t.pop_back();
   if (t.empty()) return;
 
-  if (s->countOnly) {
-    s->totalTransParas++;
-  } else {
-    if (s->totalTransParas >= s->startPara && s->totalTransParas < s->endPara) {
-      if (!s->collected.empty()) s->collected += ' ';
-      s->collected += t;
+  if (s->isTranslation) {
+    // Check if lastOrigText matches current page paragraph
+    if (!s->lastOrigText.empty() && s->pageIdx < s->pageParas->size()) {
+      if (wordsMatch((*s->pageParas)[s->pageIdx], s->lastOrigText)) {
+        if (!s->result.empty()) s->result += ' ';
+        s->result += t;
+        s->pageIdx++;
+        if (s->pageIdx >= s->pageParas->size()) s->done = true;
+      }
     }
-    s->totalTransParas++;
+    s->lastOrigText.clear();
+  } else {
+    s->lastOrigText = t;
   }
 }
 
 static void XMLCALL onChar(void* ud, const XML_Char* data, int len) {
-  auto* s = static_cast<ExpatState*>(ud);
-  if (!s->inBlock) return;
+  auto* s = static_cast<MatchState*>(ud);
+  if (s->done || !s->inBlock) return;
   for (int i = 0; i < len; i++) {
     char c = data[i];
     if (c == '\n' || c == '\r' || c == '\t') c = ' ';
@@ -142,13 +185,18 @@ static void XMLCALL onChar(void* ud, const XML_Char* data, int len) {
   }
 }
 
-static bool runExpat(const std::string& path, ExpatState& state) {
+static std::string extractMatchedTranslations(const std::string& path,
+                                               const std::vector<std::string>& pageParas) {
+  if (path.empty() || pageParas.empty()) return "";
+
   FsFile f = Storage.open(path.c_str(), O_RDONLY);
-  if (!f) return false;
+  if (!f) return "";
 
   XML_Parser parser = XML_ParserCreate("UTF-8");
-  if (!parser) { f.close(); return false; }
+  if (!parser) { f.close(); return ""; }
 
+  MatchState state;
+  state.pageParas = &pageParas;
   XML_SetUserData(parser, &state);
   XML_SetElementHandler(parser, onStart, onEnd);
   XML_SetCharacterDataHandler(parser, onChar);
@@ -157,7 +205,7 @@ static bool runExpat(const std::string& path, ExpatState& state) {
   const size_t fileSize = f.size();
   size_t totalRead = 0;
 
-  while (totalRead < fileSize) {
+  while (totalRead < fileSize && !state.done) {
     const size_t toRead = std::min(fileSize - totalRead, sizeof(buf));
     const int n = f.read(reinterpret_cast<uint8_t*>(buf), toRead);
     if (n <= 0) break;
@@ -170,19 +218,27 @@ static bool runExpat(const std::string& path, ExpatState& state) {
 
   XML_ParserFree(parser);
   f.close();
-  return true;
+
+  LOG_DBG("TIP", "Matched %d/%d page paras", (int)state.pageIdx, (int)pageParas.size());
+  if (state.pageIdx == 0 && !pageParas.empty()) {
+    auto pw = firstWords(pageParas[0].c_str(), 3);
+    auto hw = firstWords(state.lastOrigText.c_str(), 3);
+    LOG_DBG("TIP", "Page[0] words: '%s'", pw.c_str());
+    LOG_DBG("TIP", "HTML  orig:    '%s'", hw.c_str());
+  }
+  return state.result;
 }
 
 // ── Page preparation ──────────────────────────────────────────────────────────
 
-void TooltipOverlay::preparePage(const Page& page, int pageIndex, int pageCount) {
+void TooltipOverlay::preparePage(const Page& page) {
   if (pagePrepared) return;
   pagePrepared = true;
   origWordCount = 0;
   transWordCount = 0;
   transWordStorage.clear();
 
-  // 1. Collect original words from page (CT_NO_RENDER = only originals in cache).
+  // 1. Collect original words from page.
   for (const auto& el : page.elements) {
     if (el->getTag() != TAG_PageLine) continue;
     const auto* line = static_cast<const PageLine*>(el.get());
@@ -192,26 +248,54 @@ void TooltipOverlay::preparePage(const Page& page, int pageIndex, int pageCount)
   }
   splits = splitSentences(origWordPtrs, origWordCount);
 
-  if (translatedHtmlPath.empty() || pageCount <= 0) return;
+  // 2. Build page paragraph list using adaptive Y-gap detection.
+  //    Compute average line gap first, then use 1.5x average as paragraph boundary.
+  std::vector<int16_t> lineYs;
+  for (const auto& el : page.elements) {
+    if (el->getTag() != TAG_PageLine) continue;
+    lineYs.push_back(el->yPos);
+  }
 
-  // 2. Pass 1: count translated paragraphs in the HTML.
-  ExpatState countState;
-  countState.countOnly = true;
-  if (!runExpat(translatedHtmlPath, countState) || countState.totalTransParas == 0) return;
+  int avgGap = 25;  // fallback
+  if (lineYs.size() > 1) {
+    int totalGap = 0;
+    for (size_t i = 1; i < lineYs.size(); i++) totalGap += (lineYs[i] - lineYs[i - 1]);
+    avgGap = totalGap / (int)(lineYs.size() - 1);
+  }
+  const int paraThreshold = avgGap * 3 / 2;  // 1.5x average gap
 
-  // 3. Pass 2: extract only the page's paragraph slice.
-  const int total = countState.totalTransParas;
-  ExpatState extractState;
-  extractState.countOnly = false;
-  extractState.startPara = total * pageIndex / pageCount;
-  extractState.endPara = total * (pageIndex + 1) / pageCount;
-  if (extractState.startPara >= extractState.endPara) extractState.endPara = extractState.startPara + 1;
-  if (extractState.endPara > total) extractState.endPara = total;
+  std::vector<std::string> pageParas;
+  int16_t prevY = -1;
+  std::string curPara;
+  for (const auto& el : page.elements) {
+    if (el->getTag() != TAG_PageLine) continue;
+    const auto* line = static_cast<const PageLine*>(el.get());
+    const auto& words = line->getTextBlock()->getWords();
+    if (words.empty()) continue;
 
-  if (!runExpat(translatedHtmlPath, extractState) || extractState.collected.empty()) return;
+    if (prevY >= 0 && (el->yPos - prevY) > paraThreshold) {
+      if (!curPara.empty()) {
+        pageParas.push_back(std::move(curPara));
+        curPara.clear();
+      }
+    }
+    prevY = el->yPos;
+    for (const auto& w : words) {
+      if (!curPara.empty()) curPara += ' ';
+      curPara += w;
+    }
+  }
+  if (!curPara.empty()) pageParas.push_back(std::move(curPara));
 
-  // 4. Split collected translation into words.
-  const char* p = extractState.collected.c_str();
+  LOG_DBG("TIP", "Page: %d words, %d sentences, %d paras (avgGap=%d, threshold=%d)",
+          origWordCount, splits.count, (int)pageParas.size(), avgGap, paraThreshold);
+
+  // 3. Match page paragraphs to HTML and extract translations.
+  std::string matched = extractMatchedTranslations(translatedHtmlPath, pageParas);
+  if (matched.empty()) return;
+
+  // 4. Split into words.
+  const char* p = matched.c_str();
   while (*p && transWordCount < MAX_WORDS) {
     while (*p == ' ') p++;
     if (!*p) break;
@@ -222,31 +306,26 @@ void TooltipOverlay::preparePage(const Page& page, int pageIndex, int pageCount)
     transWordCount++;
   }
 
-  LOG_DBG("TIP", "Page %d/%d: %d orig, %d trans words, %d sentences (paras %d-%d of %d)",
-          pageIndex, pageCount, origWordCount, transWordCount, splits.count,
-          extractState.startPara, extractState.endPara, total);
+  LOG_DBG("TIP", "Translations: %d words matched", transWordCount);
 }
 
-// ── Sentence bounds and underline (all words are original in CT_NO_RENDER) ───
+// ── Sentence bounds and underline ─────────────────────────────────────────────
 
 TooltipOverlay::SentenceBounds TooltipOverlay::findSentenceBounds(const Page& page, const SentenceSpan& span,
                                                                    int fontId, int xOffset, int yOffset) const {
   SentenceBounds bounds = {0, 0, 0};
   int idx = 0;
   bool found = false;
-
   for (const auto& el : page.elements) {
     if (el->getTag() != TAG_PageLine) continue;
     const auto* line = static_cast<const PageLine*>(el.get());
     const auto& words = line->getTextBlock()->getWords();
-    const auto& xpositions = line->getTextBlock()->getWordXpos();
-
-    auto wIt = words.begin();
-    auto xIt = xpositions.begin();
-    for (; wIt != words.end() && xIt != xpositions.end(); ++wIt, ++xIt) {
+    const auto& xpos = line->getTextBlock()->getWordXpos();
+    auto wIt = words.begin(); auto xIt = xpos.begin();
+    for (; wIt != words.end() && xIt != xpos.end(); ++wIt, ++xIt) {
       if (idx >= span.startWord && idx < span.endWord) {
-        const int wx = *xIt + line->xPos + xOffset;
-        const int wy = line->yPos + yOffset;
+        int wx = *xIt + line->xPos + xOffset;
+        int wy = line->yPos + yOffset;
         if (!found) { bounds.firstLineY = wy; bounds.startX = wx; bounds.endX = wx; found = true; }
         if (wy == bounds.firstLineY) {
           if (wx < bounds.startX) bounds.startX = wx;
@@ -261,35 +340,32 @@ TooltipOverlay::SentenceBounds TooltipOverlay::findSentenceBounds(const Page& pa
 
 void TooltipOverlay::drawSentenceUnderline(GfxRenderer& renderer, const Page& page, const SentenceSpan& span,
                                            int fontId, int xOffset, int yOffset) const {
-  int idx = 0;
-  int curY = -1, startX = 0, endX = 0;
+  int idx = 0, curY = -1, sx = 0, ex = 0;
   const int ulOff = renderer.getFontAscenderSize(fontId) + 2;
-
   for (const auto& el : page.elements) {
     if (el->getTag() != TAG_PageLine) continue;
     const auto* line = static_cast<const PageLine*>(el.get());
     const auto& words = line->getTextBlock()->getWords();
     const auto& styles = line->getTextBlock()->getWordStyles();
     const auto& xpos = line->getTextBlock()->getWordXpos();
-
     auto wIt = words.begin(); auto sIt = styles.begin(); auto xIt = xpos.begin();
     for (; wIt != words.end() && sIt != styles.end() && xIt != xpos.end(); ++wIt, ++sIt, ++xIt) {
       if (idx >= span.startWord && idx < span.endWord) {
-        const int wx = *xIt + line->xPos + xOffset;
-        const int wy = line->yPos + yOffset;
-        const int ww = renderer.getTextWidth(fontId, wIt->c_str(),
-                                              static_cast<EpdFontFamily::Style>(static_cast<uint8_t>(*sIt) & 0x1F));
+        int wx = *xIt + line->xPos + xOffset;
+        int wy = line->yPos + yOffset;
+        int ww = renderer.getTextWidth(fontId, wIt->c_str(),
+                                        static_cast<EpdFontFamily::Style>((uint8_t)(*sIt) & 0x1F));
         if (wy != curY) {
-          if (curY >= 0) renderer.drawLine(startX, curY + ulOff, endX, curY + ulOff, true);
-          curY = wy; startX = wx; endX = wx + ww;
+          if (curY >= 0) renderer.drawLine(sx, curY + ulOff, ex, curY + ulOff, true);
+          curY = wy; sx = wx; ex = wx + ww;
         } else {
-          endX = wx + ww;
+          ex = wx + ww;
         }
       }
       idx++;
     }
   }
-  if (curY >= 0) renderer.drawLine(startX, curY + ulOff, endX, curY + ulOff, true);
+  if (curY >= 0) renderer.drawLine(sx, curY + ulOff, ex, curY + ulOff, true);
 }
 
 // ── Tooltip rendering ─────────────────────────────────────────────────────────
@@ -298,10 +374,9 @@ static int findLastLineY(const Page& page, const SentenceSpan& span, int yOffset
   int idx = 0, lastY = 0;
   for (const auto& el : page.elements) {
     if (el->getTag() != TAG_PageLine) continue;
-    const auto* line = static_cast<const PageLine*>(el.get());
-    for (const auto& w : line->getTextBlock()->getWords()) {
+    for (const auto& w : static_cast<const PageLine*>(el.get())->getTextBlock()->getWords()) {
       (void)w;
-      if (idx >= span.startWord && idx < span.endWord) lastY = line->yPos + yOffset;
+      if (idx >= span.startWord && idx < span.endWord) lastY = el->yPos + yOffset;
       idx++;
     }
   }
@@ -309,16 +384,15 @@ static int findLastLineY(const Page& page, const SentenceSpan& span, int yOffset
 }
 
 void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId, int tooltipFontId, int xOffset,
-                            int yOffset, int viewportWidth, int viewportHeight, int pageIndex, int pageCount) {
+                            int yOffset, int viewportWidth, int viewportHeight) {
   if (currentSentenceIndex < 0) return;
 
-  preparePage(page, pageIndex, pageCount);
+  preparePage(page);
 
   if (currentSentenceIndex >= splits.count) { currentSentenceIndex = -1; return; }
 
   const auto& span = splits.spans[currentSentenceIndex];
 
-  // Map translations to sentences. Use heap buffer to avoid stack overflow with UTF-8.
   static char translationBuffer[2048];
   MappedSentenceResult mapped = mapSentenceTranslations(origWordPtrs, origWordCount, transWordPtrs, transWordCount,
                                                         splits, translationBuffer, sizeof(translationBuffer));
@@ -329,7 +403,6 @@ void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId,
   const int lh = renderer.getLineHeight(fontId);
   auto bounds = findSentenceBounds(page, span, fontId, xOffset, yOffset);
   if (bounds.firstLineY == 0 && bounds.startX == 0) return;
-
   const int lastY = findLastLineY(page, span, yOffset);
 
   constexpr int PAD = 6, RAD = 3, GAP = 4;
@@ -338,13 +411,11 @@ void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId,
   const int tlh = renderer.getLineHeight(tooltipFontId);
 
   int tipW, tipH, nLines = 1;
-  if (tw <= maxW - 2 * PAD) {
-    tipW = tw + 2 * PAD;
-    tipH = tlh + 2 * PAD;
-  } else {
+  if (tw <= maxW - 2 * PAD) { tipW = tw + 2 * PAD; tipH = tlh + 2 * PAD; }
+  else {
     tipW = maxW;
     nLines = (tw + (tipW - 2 * PAD) - 1) / (tipW - 2 * PAD);
-    const int maxL = (viewportHeight * 4 / 10) / tlh;
+    int maxL = (viewportHeight * 4 / 10) / tlh;
     if (nLines > maxL) nLines = maxL;
     tipH = nLines * tlh + 2 * PAD;
   }
@@ -359,21 +430,17 @@ void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId,
   renderer.fillRect(tipX - 1, tipY - 1, tipW + 2, tipH + 2, false);
   renderer.drawRoundedRect(tipX, tipY, tipW, tipH, 1, RAD, true);
 
-  // Word-wrap and draw text
   const int avail = tipW - 2 * PAD;
   const int spW = renderer.getSpaceWidth(tooltipFontId);
   const char* p = text;
   int textY = tipY + PAD, drawn = 0;
-
   while (*p && drawn < nLines) {
     int lineW = 0;
-    const char* ls = p;
-    const char* le = p;
+    const char* ls = p, *le = p;
     while (*p) {
       const char* ws = p;
       while (*p && *p != ' ') p++;
-      char wb[128];
-      int wl = std::min((int)(p - ws), 127);
+      char wb[128]; int wl = std::min((int)(p - ws), 127);
       memcpy(wb, ws, wl); wb[wl] = '\0';
       int ww = renderer.getTextWidth(tooltipFontId, wb);
       if (lineW > 0 && lineW + spW + ww > avail) { p = ws; break; }
@@ -383,12 +450,10 @@ void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId,
     }
     int dl = (int)(le - ls);
     if (dl > 0) {
-      char lb[512];
-      int cl = std::min(dl, 511);
+      char lb[512]; int cl = std::min(dl, 511);
       memcpy(lb, ls, cl); lb[cl] = '\0';
       renderer.drawText(tooltipFontId, tipX + PAD, textY, lb);
-      textY += tlh;
-      drawn++;
+      textY += tlh; drawn++;
     }
     if (p == ls) break;
   }
