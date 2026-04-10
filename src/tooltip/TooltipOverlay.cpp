@@ -223,7 +223,7 @@ void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId,
 
   const SentenceSpan& span = splits.spans[currentSentenceIndex];
 
-  char translationBuffer[512];
+  char translationBuffer[1536];
   MappedSentenceResult mapped = mapSentenceTranslations(origWordPtrs, origWordCount, transWordPtrs, transWordCount,
                                                         splits, translationBuffer, sizeof(translationBuffer));
 
@@ -318,8 +318,8 @@ void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId,
 
     const int drawLen = static_cast<int>(lastWordEnd - lineStart);
     if (drawLen > 0) {
-      char lineBuf[256];
-      const int cLen = (drawLen < 255) ? drawLen : 255;
+      char lineBuf[512];
+      const int cLen = (drawLen < 511) ? drawLen : 511;
       memcpy(lineBuf, lineStart, cLen);
       lineBuf[cLen] = '\0';
       renderer.drawText(tooltipFontId, textX, textY, lineBuf);
