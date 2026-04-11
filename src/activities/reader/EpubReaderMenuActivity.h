@@ -24,7 +24,8 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
     SYNC,
     DELETE_CACHE,
     TRANSLATE_CHAPTER,
-    TRANSLATE_PAGE
+    TRANSLATE_PAGE,
+    TRANSLATE_BOOK
   };
 
   explicit EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title,
@@ -59,6 +60,7 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
                  {MenuAction::TRANSLATE_CHAPTER,
                   chapterIsTranslated ? StrId::STR_RETRANSLATE_CHAPTER : StrId::STR_TRANSLATE_CHAPTER},
                  {MenuAction::TRANSLATE_PAGE, StrId::STR_TRANSLATE_PAGE},
+                 {MenuAction::TRANSLATE_BOOK, StrId::STR_TRANSLATE_BOOK},
                  {MenuAction::CYCLE_TRANSLATION_MODE, StrId::STR_TRANSLATION_MODE}};
   }
 

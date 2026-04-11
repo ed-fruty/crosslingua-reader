@@ -201,6 +201,34 @@ void EpubReaderActivity::loop() {
       }
       return;
     }
+    if (pendingTranslateBook) {
+      pendingTranslateBook = false;
+      if (epub) {
+        enterNewActivity(new BookTranslatorActivity(
+            renderer, mappedInput, epub,
+            [this] {
+              exitActivity();
+              requestUpdate();
+              skipNextButtonCheck = true;
+            },
+            [this] {
+              exitActivity();
+              {
+                RenderLock lock(*this);
+                if (section) {
+                  cachedSpineIndex = currentSpineIndex;
+                  cachedChapterTotalPageCount = section->pageCount;
+                  nextPageNumber = section->currentPage;
+                  section->clearCache();
+                }
+                section.reset();
+              }
+              requestUpdate();
+              skipNextButtonCheck = true;
+            }));
+      }
+      return;
+    }
     // Deferred page translate: extract text from current page and launch PageTranslatorActivity
     if (pendingTranslatePage) {
       pendingTranslatePage = false;
@@ -630,6 +658,13 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       if (epub && section) {
         pendingTranslatePage = true;
         exitActivity();  // close the menu; loop() will launch PageTranslatorActivity
+      }
+      break;
+    }
+    case EpubReaderMenuActivity::MenuAction::TRANSLATE_BOOK: {
+      if (epub) {
+        pendingTranslateBook = true;
+        exitActivity();
       }
       break;
     }

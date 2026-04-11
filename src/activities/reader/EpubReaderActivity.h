@@ -2,6 +2,7 @@
 #include <Epub.h>
 #include <Epub/Section.h>
 
+#include "BookTranslatorActivity.h"
 #include "ChapterTranslatorActivity.h"
 #include "EpubReaderMenuActivity.h"
 #include "PageTranslatorActivity.h"
@@ -26,6 +27,7 @@ class EpubReaderActivity final : public ActivityWithSubactivity {
   bool pendingGoHome = false;              // Defer go home to avoid race condition with display task
   bool pendingTranslateChapter = false;    // Defer translate action to after subactivity exit
   bool pendingTranslatePage = false;       // Defer page translate to after subactivity exit
+  bool pendingTranslateBook = false;       // Defer book translate to after subactivity exit
   bool skipNextButtonCheck = false;        // Skip button processing for one frame after subactivity exit
   const std::function<void()> onGoBack;
   const std::function<void()> onGoHome;
