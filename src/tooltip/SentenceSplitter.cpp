@@ -12,8 +12,33 @@ static const char* const ABBREVIATIONS[] = {
 // i.e. and e.g. handled specially (two-letter prefix + period)
 static const char* const DOT_ABBREVIATIONS[] = {"i.e.", "e.g.", nullptr};
 
-static bool isClosingQuote(char c) {
-  return c == '"' || c == '\'' || c == ')' || c == ']';
+// Check for trailing UTF-8 closing quote at word[0..len-1].
+// Returns byte length of the closing quote (1 for ASCII, 2-3 for UTF-8), 0 if none.
+// Matches readest tooltip-7 isClosingQuote: " ' ) ] » « " " „ ' '
+static int trailingClosingQuote(const char* word, int len) {
+  if (len <= 0) return 0;
+  auto u = [](char c) -> uint8_t { return (uint8_t)c; };
+
+  // ASCII closing quotes
+  char c = word[len - 1];
+  if (c == '"' || c == '\'' || c == ')' || c == ']') return 1;
+
+  // 2-byte UTF-8: » U+00BB (0xC2 0xBB), « U+00AB (0xC2 0xAB)
+  if (len >= 2) {
+    uint8_t b0 = u(word[len - 2]), b1 = u(word[len - 1]);
+    if (b0 == 0xC2 && (b1 == 0xBB || b1 == 0xAB)) return 2;
+  }
+
+  // 3-byte UTF-8: " U+201D (E2 80 9D), " U+201C (E2 80 9C),
+  //   „ U+201E (E2 80 9E), ' U+2019 (E2 80 99), ' U+2018 (E2 80 98)
+  if (len >= 3) {
+    uint8_t b0 = u(word[len - 3]), b1 = u(word[len - 2]), b2 = u(word[len - 1]);
+    if (b0 == 0xE2 && b1 == 0x80 &&
+        (b2 == 0x9D || b2 == 0x9C || b2 == 0x9E || b2 == 0x99 || b2 == 0x98)) {
+      return 3;
+    }
+  }
+  return 0;
 }
 
 // Check if the word ending at the current position is an abbreviation.
@@ -47,10 +72,12 @@ static bool isEllipsis(const char* word, int pos) {
 }
 
 // Check if a word ends with a sentence terminator (. ! ?)
+// Strips trailing UTF-8 and ASCII closing quotes before checking.
 static char getTerminator(const char* word) {
   if (!word || *word == '\0') return '\0';
   int len = static_cast<int>(strlen(word));
-  while (len > 0 && isClosingQuote(word[len - 1])) len--;
+  int cq;
+  while (len > 0 && (cq = trailingClosingQuote(word, len)) > 0) len -= cq;
   if (len <= 0) return '\0';
   char c = word[len - 1];
   if (c == '.' || c == '!' || c == '?') return c;
@@ -72,9 +99,20 @@ SentenceSplitResult splitSentences(const char* const* words, int wordCount) {
     if (terminator == '.') {
       int len = static_cast<int>(strlen(word));
       int pos = len - 1;
-      while (pos > 0 && isClosingQuote(word[pos])) pos--;
+      int cq;
+      while (pos > 0 && (cq = trailingClosingQuote(word, pos + 1)) > 0) pos -= cq;
       if (isEllipsis(word, pos)) continue;
       if (isAbbreviation(word)) continue;
+
+      // Spaced ellipsis handling: for a standalone "." word, check if more
+      // "." words follow. If yes, skip this dot (middle of run). If no,
+      // this is the LAST dot — let it create ONE sentence break for the run.
+      // Result: ". . ." creates exactly one break (at the last dot), not three.
+      if (len == 1) {
+        bool moreDots = (i + 1 < wordCount && strlen(words[i + 1]) == 1 && words[i + 1][0] == '.');
+        if (moreDots) continue;  // middle of run — skip
+        // Last dot in run: fall through to create sentence break.
+      }
     }
 
     if (result.count < MAX_SENTENCES) {

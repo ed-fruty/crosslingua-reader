@@ -359,3 +359,6 @@ STR_TOOLTIP: "Tooltip"
 STR_TOOLTIP_BUTTONS: "Tooltip-knappar"
 STR_FRONT_BUTTONS: "Framknappar"
 STR_SIDE_BUTTONS: "Sidoknappar"
+
+STR_TOOLTIP_NAV: "Tooltip Navigation"
+STR_LOOP: "Loop"

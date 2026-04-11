@@ -206,6 +206,8 @@ class CrossPointSettings {
   uint8_t sourceLanguage = 0xFF;
   // Tooltip button assignment: 0=front buttons (Left/Right), 1=side buttons (PageBack/PageForward)
   uint8_t tooltipButtons = 0;
+  // Tooltip behavior: 0=loop (wrap around), 1=page turn (turn page at boundary)
+  uint8_t tooltipBehavior = 0;
 
   ~CrossPointSettings() = default;
 

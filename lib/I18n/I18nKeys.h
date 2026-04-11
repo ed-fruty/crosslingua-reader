@@ -393,6 +393,8 @@ enum class StrId : uint16_t {
   STR_TOOLTIP_BUTTONS,
   STR_FRONT_BUTTONS,
   STR_SIDE_BUTTONS,
+  STR_TOOLTIP_NAV,
+  STR_LOOP,
   // Sentinel - must be last
   _COUNT
 };

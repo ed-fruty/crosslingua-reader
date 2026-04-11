@@ -18,30 +18,56 @@ bool TooltipOverlay::handleInput(MappedInputManager& input) {
       useFrontButtons ? MappedInputManager::Button::Right : MappedInputManager::Button::PageForward;
   const auto backBtn =
       useFrontButtons ? MappedInputManager::Button::Left : MappedInputManager::Button::PageBack;
+  const bool pageTurnMode = (SETTINGS.tooltipBehavior == 1);
 
+  // Next button.
   if (input.wasReleased(nextBtn)) {
-    LOG_DBG("TIP", "Next btn, sentence=%d, splits=%d, path=%s",
-            currentSentenceIndex, splits.count, translatedHtmlPath.c_str());
+    skipDirection = 1;
     if (currentSentenceIndex < 0) {
-      currentSentenceIndex = 0;
-      wrapAround = false;
+      currentSentenceIndex = 0;  // activate; auto-skip finds first with translation
       return true;
     }
     if (currentSentenceIndex < splits.count - 1) {
       currentSentenceIndex++;
       return true;
     }
-    if (!wrapAround) {
+    // At last sentence.
+    if (pageTurnMode) {
+      pendingPageForward = true;
+      activateOnNextPage = true;
       currentSentenceIndex = -1;
-      wrapAround = true;
-      return true;
+    } else {
+      // Loop: wrap to first.
+      currentSentenceIndex = 0;
     }
-    currentSentenceIndex = 0;
-    wrapAround = false;
     return true;
   }
 
+  // Back button.
   if (input.wasReleased(backBtn)) {
+    skipDirection = -1;
+    if (currentSentenceIndex < 0) {
+      currentSentenceIndex = 0;  // activate; auto-skip with dir=-1 wraps to last
+      return true;
+    }
+    if (currentSentenceIndex > 0) {
+      currentSentenceIndex--;
+      return true;
+    }
+    // At first sentence.
+    if (pageTurnMode) {
+      pendingPageBack = true;
+      activateOnNextPage = true;
+      currentSentenceIndex = -1;
+    } else {
+      // Loop: wrap to last.
+      currentSentenceIndex = std::max(0, splits.count - 1);
+    }
+    return true;
+  }
+
+  // ESC/Back button: dismiss tooltip if active.
+  if (input.wasReleased(MappedInputManager::Button::Back)) {
     if (currentSentenceIndex >= 0) {
       currentSentenceIndex = -1;
       return true;
@@ -53,61 +79,28 @@ bool TooltipOverlay::handleInput(MappedInputManager& input) {
 }
 
 void TooltipOverlay::onPageChanged() {
+  bool shouldActivate = activateOnNextPage;
+  int8_t dir = skipDirection;
   currentSentenceIndex = -1;
-  wrapAround = false;
+  skipDirection = 1;
   pagePrepared = false;
   origWordCount = 0;
-  transWordCount = 0;
-  transWordStorage.clear();
+  sentenceTranslations.clear();
   splits.count = 0;
-}
+  activateOnNextPage = false;
+  activateFromEnd = false;
+  pendingPageForward = false;
+  pendingPageBack = false;
 
-// ── Text helpers ──────────────────────────────────────────────────────────────
-
-// Skip em-space (U+2003) and ASCII whitespace at start of string.
-static const char* skipSpace(const char* s) {
-  while (*s) {
-    if (*s == ' ' || *s == '\n' || *s == '\r' || *s == '\t') {
-      s++;
-    } else if ((uint8_t)s[0] == 0xE2 && (uint8_t)s[1] == 0x80 && (uint8_t)s[2] == 0x83) {
-      s += 3;
-    } else {
-      break;
-    }
+  // After a tooltip-triggered page turn, auto-activate on the new page.
+  if (shouldActivate) {
+    currentSentenceIndex = 0;  // preparePage will run; auto-skip uses direction
+    skipDirection = dir;
+    activateFromEnd = (dir < 0);  // going back → show last sentence
   }
-  return s;
 }
 
-// Extract first N words from text (after skipping leading space). Returns lowercase.
-static std::string firstWords(const char* text, int n) {
-  const char* p = skipSpace(text);
-  std::string result;
-  int count = 0;
-  while (*p && count < n) {
-    while (*p == ' ') p++;
-    if (!*p) break;
-    if (count > 0) result += ' ';
-    while (*p && *p != ' ') {
-      result += *p++;
-    }
-    count++;
-  }
-  return result;
-}
-
-// Compare first N words of two texts. More robust than character-prefix comparison.
-// Prefix-based matching: the shorter word sequence must be a prefix of the longer one.
-// Handles short paragraphs like "Plink" matching against "Plink . Sure enough, the...".
-static bool wordsMatch(const std::string& pageText, const std::string& htmlText) {
-  auto a = firstWords(pageText.c_str(), 5);
-  auto b = firstWords(htmlText.c_str(), 5);
-  if (a.empty() || b.empty()) return false;
-  // The shorter must be a prefix of the longer (or exact match)
-  if (a.size() <= b.size()) return b.compare(0, a.size(), a) == 0;
-  return a.compare(0, b.size(), b) == 0;
-}
-
-// ── Expat-based extraction: single pass, matching page paragraphs ─────────────
+// ── Chapter parsing: extract (orig, trans) paragraph pairs ───────────────────
 
 static const char* BLOCK_TAGS[] = {"p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote", "div", nullptr};
 
@@ -118,127 +111,262 @@ static bool isBlockTag(const char* name) {
   return false;
 }
 
-struct MatchState {
-  const std::vector<std::string>* pageParas;
-  size_t pageIdx = 0;
-  std::string result;  // matched translations concatenated
+struct SentEntry {
+  std::string key;          // first 6 words (normalized) of original sentence
+  std::string translation;  // mapped translation text
+};
 
+// Forward declaration — builds index entries for one paragraph pair.
+static void addPairToIndex(const std::string& origText, const std::string& transText,
+                           std::vector<SentEntry>& index);
+
+struct ParseCtx {
+  std::vector<SentEntry>* index;
   int blockDepth = 0;
   bool inBlock = false;
   bool isTranslation = false;
   std::string currentText;
   std::string lastOrigText;
-  bool done = false;
+  bool hasLastOrig = false;
+  int pairCount = 0;
 };
 
-static void XMLCALL onStart(void* ud, const XML_Char* name, const XML_Char** atts) {
-  auto* s = static_cast<MatchState*>(ud);
-  if (s->done) return;
+static void XMLCALL chOnStart(void* ud, const XML_Char* name, const XML_Char** atts) {
+  auto* ctx = static_cast<ParseCtx*>(ud);
   if (isBlockTag(name)) {
-    s->inBlock = true;
-    s->blockDepth = 1;
-    s->isTranslation = false;
-    s->currentText.clear();
+    ctx->inBlock = true;
+    ctx->blockDepth = 1;
+    ctx->isTranslation = false;
+    ctx->currentText.clear();
     if (atts) {
       for (int i = 0; atts[i]; i += 2) {
         if (strcmp(atts[i], "lang") == 0 || strcmp(atts[i], "xml:lang") == 0 ||
             strcmp(atts[i], "data-translation") == 0) {
-          s->isTranslation = true;
+          ctx->isTranslation = true;
         }
       }
     }
-  } else if (s->inBlock) {
-    s->blockDepth++;
+  } else if (ctx->inBlock) {
+    ctx->blockDepth++;
   }
 }
 
-static void XMLCALL onEnd(void* ud, const XML_Char* name) {
-  auto* s = static_cast<MatchState*>(ud);
-  if (s->done || !s->inBlock) return;
-  s->blockDepth--;
-  if (s->blockDepth > 0) return;
-  s->inBlock = false;
+static void XMLCALL chOnEnd(void* ud, const XML_Char* name) {
+  auto* ctx = static_cast<ParseCtx*>(ud);
+  if (!ctx->inBlock) return;
+  ctx->blockDepth--;
+  if (ctx->blockDepth > 0) return;
+  ctx->inBlock = false;
 
-  auto& t = s->currentText;
+  auto& t = ctx->currentText;
   while (!t.empty() && (t.front() == ' ' || t.front() == '\n')) t.erase(0, 1);
   while (!t.empty() && (t.back() == ' ' || t.back() == '\n')) t.pop_back();
   if (t.empty()) return;
 
-  if (s->isTranslation) {
-    // Search forward through page paragraphs to find a match.
-    // Some page paragraphs may not have translations — skip them.
-    if (!s->lastOrigText.empty()) {
-      for (size_t j = s->pageIdx; j < s->pageParas->size(); j++) {
-        if (wordsMatch((*s->pageParas)[j], s->lastOrigText)) {
-          if (!s->result.empty()) s->result += ' ';
-          s->result += t;
-          s->pageIdx = j + 1;
-          if (s->pageIdx >= s->pageParas->size()) s->done = true;
-          break;
-        }
-      }
+  if (ctx->isTranslation) {
+    if (ctx->hasLastOrig) {
+      // Process pair immediately — don't accumulate all pairs in memory.
+      addPairToIndex(ctx->lastOrigText, t, *ctx->index);
+      ctx->pairCount++;
+      ctx->lastOrigText.clear();
+      ctx->hasLastOrig = false;
     }
-    s->lastOrigText.clear();
   } else {
-    s->lastOrigText = t;
+    ctx->lastOrigText = std::move(t);
+    ctx->hasLastOrig = true;
   }
 }
 
-static void XMLCALL onChar(void* ud, const XML_Char* data, int len) {
-  auto* s = static_cast<MatchState*>(ud);
-  if (s->done || !s->inBlock) return;
+static void XMLCALL chOnChar(void* ud, const XML_Char* data, int len) {
+  auto* ctx = static_cast<ParseCtx*>(ud);
+  if (!ctx->inBlock) return;
   for (int i = 0; i < len; i++) {
     char c = data[i];
     if (c == '\n' || c == '\r' || c == '\t') c = ' ';
-    if (c == ' ' && !s->currentText.empty() && s->currentText.back() == ' ') continue;
-    s->currentText += c;
+    if (c == ' ' && !ctx->currentText.empty() && ctx->currentText.back() == ' ') continue;
+    ctx->currentText += c;
   }
 }
 
-static std::string extractMatchedTranslations(const std::string& path,
-                                               const std::vector<std::string>& pageParas) {
-  if (path.empty() || pageParas.empty()) return "";
+// ── Sentence index: map original sentences to translations ───────────────────
+
+static inline bool isAsciiSpace(char c) {
+  return c == ' ' || c == '\n' || c == '\r' || c == '\t';
+}
+
+static std::vector<std::string> tokenizeWords(const std::string& text) {
+  std::vector<std::string> words;
+  const char* p = text.c_str();
+  while (*p) {
+    while (*p && isAsciiSpace(*p)) p++;
+    if (!*p) break;
+    const char* ws = p;
+    while (*p && !isAsciiSpace(*p)) p++;
+    if (p > ws) words.emplace_back(ws, p);
+  }
+  return words;
+}
+
+static std::string joinSpan(const std::vector<std::string>& words, const SentenceSpan& span) {
+  std::string result;
+  for (int i = span.startWord; i < span.endWord && i < (int)words.size(); i++) {
+    if (!result.empty()) result += ' ';
+    result += words[i];
+  }
+  return result;
+}
+
+// Build a match key from the first N meaningful words of a sentence.
+// Skips whitespace-only words (from NBSP), strips leading em-space,
+// and stops before hyphenated line-break fragments (e.g., "dun-").
+static std::string sentenceKey(const char* const* words, int start, int end, int n = 6) {
+  std::string key;
+  int count = 0;
+  for (int i = start; i < end && count < n; i++) {
+    const char* w = words[i];
+    int wlen = (int)strlen(w);
+    if (wlen == 0) continue;
+    // Skip whitespace-only words
+    bool allSpace = true;
+    for (int j = 0; j < wlen; j++) { if (!isAsciiSpace(w[j])) { allSpace = false; break; } }
+    if (allSpace) continue;
+    // Skip single-char punctuation words (spaced ellipsis ".", stray punctuation)
+    if (wlen == 1 && !((w[0] >= 'A' && w[0] <= 'Z') || (w[0] >= 'a' && w[0] <= 'z') ||
+                       (w[0] >= '0' && w[0] <= '9') || (uint8_t)w[0] >= 0x80)) continue;
+    // Skip Unicode ellipsis … (U+2026 = E2 80 A6) — standalone or as entire word
+    if (wlen == 3 && (uint8_t)w[0] == 0xE2 && (uint8_t)w[1] == 0x80 && (uint8_t)w[2] == 0xA6) continue;
+    // Join hyphenated line-break fragments: "over-" + "whelming" → "overwhelming"
+    if (wlen > 1 && w[wlen - 1] == '-' && i + 1 < end) {
+      if (!key.empty()) key += ' ';
+      key.append(w, wlen - 1);         // "over" (strip hyphen)
+      key.append(words[i + 1]);         // + "whelming" → "overwhelming"
+      i++;                              // skip the continuation word
+      count++;
+      continue;
+    }
+    // Strip leading em-space (U+2003 = E2 80 83)
+    while (wlen >= 3 && (uint8_t)w[0] == 0xE2 && (uint8_t)w[1] == 0x80 && (uint8_t)w[2] == 0x83) {
+      w += 3; wlen -= 3;
+    }
+    // Strip trailing Unicode ellipsis … (U+2026 = E2 80 A6) — e.g., "relief…" → "relief"
+    while (wlen >= 3 && (uint8_t)w[wlen - 3] == 0xE2 && (uint8_t)w[wlen - 2] == 0x80 &&
+           (uint8_t)w[wlen - 1] == 0xA6) {
+      wlen -= 3;
+    }
+    // Strip trailing ASCII dots (e.g., "word..." → "word")
+    while (wlen > 0 && w[wlen - 1] == '.') wlen--;
+    if (wlen == 0) continue;
+    if (!key.empty()) key += ' ';
+    key.append(w, wlen);
+    count++;
+  }
+  return key;
+}
+
+// Process one (original, translation) paragraph pair: split both into sentences,
+// map by character-midpoint, and add entries to the index.
+// Called during HTML parsing — only one pair in memory at a time.
+static void addPairToIndex(const std::string& origText, const std::string& transText,
+                           std::vector<SentEntry>& index) {
+  auto origWords = tokenizeWords(origText);
+  auto transWords = tokenizeWords(transText);
+  if (origWords.empty() || transWords.empty()) return;
+
+  std::vector<const char*> origPtrs, transPtrs;
+  origPtrs.reserve(origWords.size());
+  transPtrs.reserve(transWords.size());
+  for (auto& w : origWords) origPtrs.push_back(w.c_str());
+  for (auto& w : transWords) transPtrs.push_back(w.c_str());
+
+  SentenceSplitResult origSplits = splitSentences(origPtrs.data(), (int)origPtrs.size());
+  SentenceSplitResult transSplits = splitSentences(transPtrs.data(), (int)transPtrs.size());
+  if (origSplits.count == 0 || transSplits.count == 0) return;
+
+  int origTotalChars = 0;
+  for (auto& w : origWords) origTotalChars += (int)w.size() + 1;
+  int transTotalChars = 0;
+  for (auto& w : transWords) transTotalChars += (int)w.size() + 1;
+
+  // Precompute translation sentence midpoints as fractions.
+  float transMidFrac[MAX_SENTENCES];
+  {
+    int tCum = 0;
+    for (int ts = 0; ts < transSplits.count; ts++) {
+      int tStart = tCum;
+      for (int w = transSplits.spans[ts].startWord; w < transSplits.spans[ts].endWord; w++)
+        tCum += (int)transWords[w].size() + 1;
+      transMidFrac[ts] = transTotalChars > 0 ? (float)(tStart + tCum) / 2.0f / transTotalChars : 0;
+    }
+  }
+
+  int oCum = 0;
+  for (int os = 0; os < origSplits.count; os++) {
+    int oStart = oCum;
+    for (int w = origSplits.spans[os].startWord; w < origSplits.spans[os].endWord; w++)
+      oCum += (int)origWords[w].size() + 1;
+    float origStartFrac = origTotalChars > 0 ? (float)oStart / origTotalChars : 0;
+    float origEndFrac = origTotalChars > 0 ? (float)oCum / origTotalChars : 1;
+
+    // Collect ALL translation sentences whose midpoint falls in [origStart, origEnd).
+    std::string trans;
+    for (int ts = 0; ts < transSplits.count; ts++) {
+      if (transMidFrac[ts] >= origStartFrac && transMidFrac[ts] < origEndFrac) {
+        if (!trans.empty()) trans += ' ';
+        trans += joinSpan(transWords, transSplits.spans[ts]);
+      }
+    }
+    // Fallback: closest midpoint if none fell in range.
+    if (trans.empty()) {
+      float origMid = (origStartFrac + origEndFrac) / 2;
+      int bestTs = 0;
+      float bestDist = 999.0f;
+      for (int ts = 0; ts < transSplits.count; ts++) {
+        float dist = std::abs(transMidFrac[ts] - origMid);
+        if (dist < bestDist) { bestDist = dist; bestTs = ts; }
+      }
+      trans = joinSpan(transWords, transSplits.spans[bestTs]);
+    }
+
+    std::string key = sentenceKey(origPtrs.data(), origSplits.spans[os].startWord,
+                                  origSplits.spans[os].endWord);
+    if (!key.empty() && !trans.empty()) {
+      index.push_back({std::move(key), std::move(trans)});
+    }
+  }
+}
+
+// Parse HTML and build sentence index in one pass — no intermediate storage.
+static std::vector<SentEntry> parseAndBuildIndex(const std::string& path) {
+  std::vector<SentEntry> index;
+  if (path.empty()) return index;
 
   FsFile f = Storage.open(path.c_str(), O_RDONLY);
-  if (!f) return "";
+  if (!f) return index;
 
   XML_Parser parser = XML_ParserCreate("UTF-8");
-  if (!parser) { f.close(); return ""; }
+  if (!parser) { f.close(); return index; }
 
-  MatchState state;
-  state.pageParas = &pageParas;
-  XML_SetUserData(parser, &state);
-  XML_SetElementHandler(parser, onStart, onEnd);
-  XML_SetCharacterDataHandler(parser, onChar);
+  ParseCtx ctx;
+  ctx.index = &index;
+  XML_SetUserData(parser, &ctx);
+  XML_SetElementHandler(parser, chOnStart, chOnEnd);
+  XML_SetCharacterDataHandler(parser, chOnChar);
 
   char buf[1024];
   const size_t fileSize = f.size();
   size_t totalRead = 0;
-
-  while (totalRead < fileSize && !state.done) {
+  while (totalRead < fileSize) {
     const size_t toRead = std::min(fileSize - totalRead, sizeof(buf));
     const int n = f.read(reinterpret_cast<uint8_t*>(buf), toRead);
     if (n <= 0) break;
     totalRead += n;
-    if (XML_Parse(parser, buf, n, (totalRead >= fileSize) ? 1 : 0) == XML_STATUS_ERROR) {
-      LOG_ERR("TIP", "XML error: %s", XML_ErrorString(XML_GetErrorCode(parser)));
-      break;
-    }
+    if (XML_Parse(parser, buf, n, (totalRead >= fileSize) ? 1 : 0) == XML_STATUS_ERROR) break;
   }
-
   XML_ParserFree(parser);
   f.close();
 
-  LOG_DBG("TIP", "Matched %d/%d page paras", (int)state.pageIdx, (int)pageParas.size());
-  if (state.pageIdx < pageParas.size()) {
-    auto pw = firstWords(pageParas[state.pageIdx].c_str(), 5);
-    LOG_DBG("TIP", "Unmatched page[%d] words: '%s'", (int)state.pageIdx, pw.c_str());
-  }
-  if (!state.lastOrigText.empty()) {
-    auto hw = firstWords(state.lastOrigText.c_str(), 5);
-    LOG_DBG("TIP", "Last HTML orig words:    '%s'", hw.c_str());
-  }
-  return state.result;
+  LOG_DBG("TIP", "Index: %d entries from %d pairs", (int)index.size(), ctx.pairCount);
+  return index;
 }
 
 // ── Page preparation ──────────────────────────────────────────────────────────
@@ -247,8 +375,7 @@ void TooltipOverlay::preparePage(const Page& page) {
   if (pagePrepared) return;
   pagePrepared = true;
   origWordCount = 0;
-  transWordCount = 0;
-  transWordStorage.clear();
+  sentenceTranslations.clear();
 
   // 1. Collect original words from page.
   for (const auto& el : page.elements) {
@@ -258,68 +385,103 @@ void TooltipOverlay::preparePage(const Page& page) {
       if (origWordCount < MAX_WORDS) origWordPtrs[origWordCount++] = w.c_str();
     }
   }
+
+  // 2. Split into sentences, then merge any "empty" sentences (dots, fragments)
+  //    into the previous sentence so the user doesn't click through junk.
   splits = splitSentences(origWordPtrs, origWordCount);
+  for (int i = splits.count - 1; i > 0; i--) {
+    std::string key = sentenceKey(origWordPtrs, splits.spans[i].startWord, splits.spans[i].endWord);
+    if (key.empty() || (key.size() <= 2 && splits.spans[i].endWord - splits.spans[i].startWord <= 3)) {
+      // Merge into previous sentence: extend its endWord.
+      splits.spans[i - 1].endWord = splits.spans[i].endWord;
+      for (int j = i; j < splits.count - 1; j++) splits.spans[j] = splits.spans[j + 1];
+      splits.count--;
+    }
+  }
+  LOG_DBG("TIP", "Page: %d words, %d sentences (after merge)", origWordCount, splits.count);
 
-  // 2. Build page paragraph list using adaptive Y-gap detection.
-  //    Compute average line gap first, then use 1.5x average as paragraph boundary.
-  std::vector<int16_t> lineYs;
-  for (const auto& el : page.elements) {
-    if (el->getTag() != TAG_PageLine) continue;
-    lineYs.push_back(el->yPos);
+  // 3. Parse HTML and build sentence index in one pass (memory-efficient).
+  auto index = parseAndBuildIndex(translatedHtmlPath);
+  if (index.empty()) {
+    LOG_DBG("TIP", "No index entries from %s", translatedHtmlPath.c_str());
+    return;
   }
 
-  // Use minimum line gap as baseline. Paragraph breaks have extra spacing above the min.
-  int minGap = 9999;
-  for (size_t i = 1; i < lineYs.size(); i++) {
-    int gap = lineYs[i] - lineYs[i - 1];
-    if (gap > 0 && gap < minGap) minGap = gap;
+  // 4. Match each page sentence against the index by key, then gap-fill neighbors.
+  sentenceTranslations.resize(splits.count);
+  std::vector<int> matchedIdx(splits.count, -1);
+  int matched = 0, lastIdx = -1;
+
+  // Pre-normalize index keys (strip dots, collapse spaces).
+  std::vector<std::string> normKeys(index.size());
+  for (int j = 0; j < (int)index.size(); j++) {
+    auto& nk = normKeys[j];
+    for (char c : index[j].key) {
+      if (c == '.') continue;
+      if (c == ' ' && (nk.empty() || nk.back() == ' ')) continue;
+      nk += c;
+    }
+    while (!nk.empty() && nk.back() == ' ') nk.pop_back();
   }
-  if (minGap == 9999) minGap = 25;
-  const int paraThreshold = minGap + minGap / 3;  // ~1.33x minimum gap
 
-  std::vector<std::string> pageParas;
-  int16_t prevY = -1;
-  std::string curPara;
-  for (const auto& el : page.elements) {
-    if (el->getTag() != TAG_PageLine) continue;
-    const auto* line = static_cast<const PageLine*>(el.get());
-    const auto& words = line->getTextBlock()->getWords();
-    if (words.empty()) continue;
+  // Forward pass: match by key.
+  for (int s = 0; s < splits.count; s++) {
+    std::string pk = sentenceKey(origWordPtrs, splits.spans[s].startWord, splits.spans[s].endWord);
+    if (pk.empty()) continue;
+    std::string np;
+    for (char c : pk) {
+      if (c == '.') continue;
+      if (c == ' ' && (np.empty() || np.back() == ' ')) continue;
+      np += c;
+    }
+    while (!np.empty() && np.back() == ' ') np.pop_back();
 
-    if (prevY >= 0 && (el->yPos - prevY) > paraThreshold) {
-      if (!curPara.empty()) {
-        pageParas.push_back(std::move(curPara));
-        curPara.clear();
+    int foundIdx = -1;
+    // Sequential hint.
+    if (lastIdx >= 0 && lastIdx + 1 < (int)index.size()) {
+      int cl = (int)std::min(np.size(), normKeys[lastIdx + 1].size());
+      if (cl >= 3 && np.compare(0, cl, normKeys[lastIdx + 1], 0, cl) == 0) foundIdx = lastIdx + 1;
+    }
+    // Full search fallback.
+    if (foundIdx < 0) {
+      int bestLen = 0;
+      for (int j = 0; j < (int)index.size(); j++) {
+        int cl = (int)std::min(np.size(), normKeys[j].size());
+        if (cl < 3) continue;
+        if (np.compare(0, cl, normKeys[j], 0, cl) == 0 && cl > bestLen) { bestLen = cl; foundIdx = j; }
       }
     }
-    prevY = el->yPos;
-    for (const auto& w : words) {
-      if (!curPara.empty()) curPara += ' ';
-      curPara += w;
+    if (foundIdx >= 0) {
+      sentenceTranslations[s] = index[foundIdx].translation;
+      matchedIdx[s] = foundIdx;
+      lastIdx = foundIdx;
+      matched++;
     }
   }
-  if (!curPara.empty()) pageParas.push_back(std::move(curPara));
 
-  LOG_DBG("TIP", "Page: %d words, %d sentences, %d paras (minGap=%d, threshold=%d)",
-          origWordCount, splits.count, (int)pageParas.size(), minGap, paraThreshold);
-
-  // 3. Match page paragraphs to HTML and extract translations.
-  std::string matched = extractMatchedTranslations(translatedHtmlPath, pageParas);
-  if (matched.empty()) return;
-
-  // 4. Split into words.
-  const char* p = matched.c_str();
-  while (*p && transWordCount < MAX_WORDS) {
-    while (*p == ' ') p++;
-    if (!*p) break;
-    const char* ws = p;
-    while (*p && *p != ' ') p++;
-    transWordStorage.emplace_back(ws, p - ws);
-    transWordPtrs[transWordCount] = transWordStorage.back().c_str();
-    transWordCount++;
+  // Gap fill: infer unmatched sentences from neighbors.
+  // Backward: if s+1 matched at idx N, s gets idx N-1.
+  for (int s = splits.count - 2; s >= 0; s--) {
+    if (matchedIdx[s] >= 0) continue;
+    if (matchedIdx[s + 1] > 0) {
+      int idx = matchedIdx[s + 1] - 1;
+      sentenceTranslations[s] = index[idx].translation;
+      matchedIdx[s] = idx;
+      matched++;
+    }
+  }
+  // Forward: if s-1 matched at idx N, s gets idx N+1.
+  for (int s = 1; s < splits.count; s++) {
+    if (matchedIdx[s] >= 0) continue;
+    if (matchedIdx[s - 1] >= 0 && matchedIdx[s - 1] + 1 < (int)index.size()) {
+      int idx = matchedIdx[s - 1] + 1;
+      sentenceTranslations[s] = index[idx].translation;
+      matchedIdx[s] = idx;
+      matched++;
+    }
   }
 
-  LOG_DBG("TIP", "Translations: %d words matched", transWordCount);
+  LOG_DBG("TIP", "Matched %d/%d sentences (incl gap-fill)", matched, splits.count);
 }
 
 // ── Sentence bounds and underline ─────────────────────────────────────────────
@@ -404,19 +566,43 @@ void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId,
 
   if (currentSentenceIndex >= splits.count) { currentSentenceIndex = -1; return; }
 
+  // After back-page-turn: jump to last sentence now that splits are populated.
+  if (activateFromEnd && splits.count > 0) {
+    currentSentenceIndex = splits.count - 1;
+    activateFromEnd = false;
+  }
+
+  // Auto-skip sentences without translations (e.g., partial sentences from previous page).
+  // Search in the user's navigation direction, wrapping around.
+  auto hasTranslation = [&](int i) {
+    return i >= 0 && i < splits.count && i < (int)sentenceTranslations.size() &&
+           !sentenceTranslations[i].empty();
+  };
+
+  if (!hasTranslation(currentSentenceIndex)) {
+    bool found = false;
+    int n = splits.count;
+    // Walk up to n steps in skipDirection, wrapping around.
+    for (int step = 1; step < n && !found; step++) {
+      int i = ((currentSentenceIndex + skipDirection * step) % n + n) % n;
+      if (hasTranslation(i)) { currentSentenceIndex = i; found = true; }
+    }
+    if (!found) { currentSentenceIndex = -1; return; }
+  }
+
+  if (currentSentenceIndex >= splits.count) { currentSentenceIndex = -1; return; }
+
   const auto& span = splits.spans[currentSentenceIndex];
 
-  static char translationBuffer[2048];
-  MappedSentenceResult mapped = mapSentenceTranslations(origWordPtrs, origWordCount, transWordPtrs, transWordCount,
-                                                        splits, translationBuffer, sizeof(translationBuffer));
-
-  const char* text = (currentSentenceIndex < mapped.count) ? mapped.sentences[currentSentenceIndex].translatedText : "";
+  // Get pre-computed translation for this sentence.
+  const char* text = (currentSentenceIndex < (int)sentenceTranslations.size())
+                         ? sentenceTranslations[currentSentenceIndex].c_str()
+                         : "";
   if (!text || text[0] == '\0') {
-    LOG_DBG("TIP", "No translation for sentence %d (mapped=%d, orig=%d, trans=%d)",
-            currentSentenceIndex, mapped.count, origWordCount, transWordCount);
+    currentSentenceIndex = -1;  // Nothing to show at all.
     return;
   }
-  LOG_DBG("TIP", "Drawing: '%.50s'", text);
+  LOG_DBG("TIP", "Drawing: '%.80s'", text);
 
   const int lh = renderer.getLineHeight(fontId);
   auto bounds = findSentenceBounds(page, span, fontId, xOffset, yOffset);
@@ -432,7 +618,8 @@ void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId,
   if (tw <= maxW - 2 * PAD) { tipW = tw + 2 * PAD; tipH = tlh + 2 * PAD; }
   else {
     tipW = maxW;
-    nLines = (tw + (tipW - 2 * PAD) - 1) / (tipW - 2 * PAD);
+    // +1 line to account for word-wrap rounding (space widths differ from getTextWidth estimate).
+    nLines = (tw + (tipW - 2 * PAD) - 1) / (tipW - 2 * PAD) + 1;
     int maxL = (viewportHeight * 4 / 10) / tlh;
     if (nLines > maxL) nLines = maxL;
     tipH = nLines * tlh + 2 * PAD;

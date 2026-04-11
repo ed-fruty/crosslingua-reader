@@ -359,3 +359,6 @@ STR_TOOLTIP: "Info-bulle"
 STR_TOOLTIP_BUTTONS: "Boutons info-bulle"
 STR_FRONT_BUTTONS: "Boutons avant"
 STR_SIDE_BUTTONS: "Boutons latéraux"
+
+STR_TOOLTIP_NAV: "Tooltip Navigation"
+STR_LOOP: "Loop"

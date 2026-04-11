@@ -359,3 +359,6 @@ STR_TOOLTIP: "Dica"
 STR_TOOLTIP_BUTTONS: "Botões de dica"
 STR_FRONT_BUTTONS: "Botões frontais"
 STR_SIDE_BUTTONS: "Botões laterais"
+
+STR_TOOLTIP_NAV: "Tooltip Navigation"
+STR_LOOP: "Loop"

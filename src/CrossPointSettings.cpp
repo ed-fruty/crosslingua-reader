@@ -139,6 +139,8 @@ uint8_t CrossPointSettings::writeSettings(FsFile& file, bool count_only) const {
   writer.writeItem(file, translationEngine);
   writer.writeItemString(file, translateApiKey);
   writer.writeItem(file, sourceLanguage);
+  writer.writeItem(file, tooltipButtons);
+  writer.writeItem(file, tooltipBehavior);
   // New fields need to be added at end for backward compatibility
 
   return writer.item_count;
@@ -280,6 +282,10 @@ bool CrossPointSettings::loadFromFile() {
     }
     if (++settingsRead >= fileSettingsCount) break;
     serialization::readPod(inputFile, sourceLanguage);
+    if (++settingsRead >= fileSettingsCount) break;
+    serialization::readPod(inputFile, tooltipButtons);
+    if (++settingsRead >= fileSettingsCount) break;
+    serialization::readPod(inputFile, tooltipBehavior);
     if (++settingsRead >= fileSettingsCount) break;
     // New fields added at end for backward compatibility
   } while (false);

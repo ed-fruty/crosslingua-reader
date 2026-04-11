@@ -270,6 +270,30 @@ void EpubReaderActivity::loop() {
 
   // Tooltip mode: let overlay consume front/side button presses for sentence stepping
   if (tooltipOverlay && tooltipOverlay->handleInput(mappedInput)) {
+    // Check if tooltip requests a page turn (Page Turn behavior at boundary).
+    if (tooltipOverlay->pendingPageForward || tooltipOverlay->pendingPageBack) {
+      const bool forward = tooltipOverlay->pendingPageForward;
+      tooltipOverlay->onPageChanged();  // resets flags + sets activateOnNextPage
+      if (forward) {
+        if (section->currentPage < section->pageCount - 1) {
+          section->currentPage++;
+        } else {
+          RenderLock lock(*this);
+          nextPageNumber = 0;
+          currentSpineIndex++;
+          section.reset();
+        }
+      } else {
+        if (section->currentPage > 0) {
+          section->currentPage--;
+        } else {
+          RenderLock lock(*this);
+          nextPageNumber = UINT16_MAX;
+          currentSpineIndex--;
+          section.reset();
+        }
+      }
+    }
     requestUpdate();
     return;
   }

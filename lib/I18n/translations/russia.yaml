@@ -359,3 +359,6 @@ STR_TOOLTIP: "Подсказка"
 STR_TOOLTIP_BUTTONS: "Кнопки подсказки"
 STR_FRONT_BUTTONS: "Передние кнопки"
 STR_SIDE_BUTTONS: "Боковые кнопки"
+
+STR_TOOLTIP_NAV: "Tooltip Navigation"
+STR_LOOP: "Loop"

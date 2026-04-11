@@ -5,6 +5,8 @@
 #include <I18n.h>
 #include <Logging.h>
 
+#include <vector>
+
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -72,43 +74,44 @@ void ClearCacheActivity::render(Activity::RenderLock&&) {
 void ClearCacheActivity::clearCache() {
   LOG_DBG("CLEAR_CACHE", "Clearing cache...");
 
-  // Open .crosspoint directory
-  auto root = Storage.open("/.crosspoint");
-  if (!root || !root.isDirectory()) {
-    LOG_DBG("CLEAR_CACHE", "Failed to open cache directory");
-    if (root) root.close();
-    state = FAILED;
-    requestUpdate();
-    return;
+  // Phase 1: collect cache directory names.
+  // Deleting dirs while iterating corrupts the FAT32 directory iterator.
+  std::vector<String> cacheDirs;
+  {
+    auto root = Storage.open("/.crosspoint");
+    if (!root || !root.isDirectory()) {
+      LOG_DBG("CLEAR_CACHE", "Failed to open cache directory");
+      if (root) root.close();
+      state = FAILED;
+      requestUpdate();
+      return;
+    }
+    char name[128];
+    for (auto file = root.openNextFile(); file; file = root.openNextFile()) {
+      file.getName(name, sizeof(name));
+      String itemName(name);
+      bool isDir = file.isDirectory();
+      file.close();
+      if (isDir && (itemName.startsWith("epub_") || itemName.startsWith("xtc_"))) {
+        cacheDirs.push_back(itemName);
+      }
+    }
+    root.close();
   }
 
+  // Phase 2: delete collected directories
   clearedCount = 0;
   failedCount = 0;
-  char name[128];
-
-  // Iterate through all entries in the directory
-  for (auto file = root.openNextFile(); file; file = root.openNextFile()) {
-    file.getName(name, sizeof(name));
-    String itemName(name);
-
-    // Only delete directories starting with epub_ or xtc_
-    if (file.isDirectory() && (itemName.startsWith("epub_") || itemName.startsWith("xtc_"))) {
-      String fullPath = "/.crosspoint/" + itemName;
-      LOG_DBG("CLEAR_CACHE", "Removing cache: %s", fullPath.c_str());
-
-      file.close();  // Close before attempting to delete
-
-      if (Storage.forceRemoveDir(fullPath.c_str())) {
-        clearedCount++;
-      } else {
-        LOG_ERR("CLEAR_CACHE", "Failed to remove: %s", fullPath.c_str());
-        failedCount++;
-      }
+  for (const auto& itemName : cacheDirs) {
+    String fullPath = "/.crosspoint/" + itemName;
+    LOG_DBG("CLEAR_CACHE", "Removing cache: %s", fullPath.c_str());
+    if (Storage.forceRemoveDir(fullPath.c_str())) {
+      clearedCount++;
     } else {
-      file.close();
+      LOG_ERR("CLEAR_CACHE", "Failed to remove: %s", fullPath.c_str());
+      failedCount++;
     }
   }
-  root.close();
 
   LOG_DBG("CLEAR_CACHE", "Cache cleared: %d removed, %d failed", clearedCount, failedCount);
 

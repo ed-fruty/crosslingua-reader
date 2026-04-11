@@ -359,3 +359,6 @@ STR_TOOLTIP: "Tooltip"
 STR_TOOLTIP_BUTTONS: "Tlačítka pro tooltip"
 STR_FRONT_BUTTONS: "Přední tlačítka"
 STR_SIDE_BUTTONS: "Boční tlačítka"
+
+STR_TOOLTIP_NAV: "Tooltip Navigation"
+STR_LOOP: "Loop"

@@ -22,9 +22,16 @@ class TooltipOverlay {
 
   bool isActive() const { return currentSentenceIndex >= 0; }
 
+  // Set by handleInput when "Page Turn" tooltip behavior reaches a page boundary.
+  // EpubReaderActivity checks these after handleInput and triggers the page turn.
+  bool pendingPageForward = false;
+  bool pendingPageBack = false;
+  bool activateOnNextPage = false;   // after page turn, auto-activate tooltip
+  bool activateFromEnd = false;      // start from last sentence (back page turn)
+
  private:
   int8_t currentSentenceIndex = -1;
-  bool wrapAround = false;
+  int8_t skipDirection = 1;  // 1=forward, -1=backward (for auto-skip)
   bool pagePrepared = false;
 
   std::string translatedHtmlPath;
@@ -33,11 +40,8 @@ class TooltipOverlay {
   const char* origWordPtrs[MAX_WORDS];
   int origWordCount = 0;
 
-  std::vector<std::string> transWordStorage;
-  const char* transWordPtrs[MAX_WORDS];
-  int transWordCount = 0;
-
   SentenceSplitResult splits;
+  std::vector<std::string> sentenceTranslations;  // one per split sentence
 
   void preparePage(const Page& page);
 

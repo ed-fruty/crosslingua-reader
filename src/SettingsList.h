@@ -78,9 +78,6 @@ inline std::vector<SettingInfo> getSettingsList() {
                          StrId::STR_NO_RENDER, StrId::STR_INVERT_TRANSLATION, StrId::STR_SIDE_BY_SIDE,
                          StrId::STR_TOOLTIP},
                         "colorTextStyle", StrId::STR_CAT_READER),
-      SettingInfo::Enum(StrId::STR_TOOLTIP_BUTTONS, &CrossPointSettings::tooltipButtons,
-                        {StrId::STR_FRONT_BUTTONS, StrId::STR_SIDE_BUTTONS},
-                        "tooltipButtons", StrId::STR_CAT_READER),
 
       // --- Controls ---
       SettingInfo::Enum(StrId::STR_SIDE_BTN_LAYOUT, &CrossPointSettings::sideButtonLayout,
@@ -94,6 +91,12 @@ inline std::vector<SettingInfo> getSettingsList() {
       SettingInfo::Enum(StrId::STR_SHORT_PWR_BTN, &CrossPointSettings::shortPwrBtn,
                         {StrId::STR_IGNORE, StrId::STR_SLEEP, StrId::STR_PAGE_TURN}, "shortPwrBtn",
                         StrId::STR_CAT_CONTROLS),
+      SettingInfo::Enum(StrId::STR_TOOLTIP_BUTTONS, &CrossPointSettings::tooltipButtons,
+                        {StrId::STR_FRONT_BUTTONS, StrId::STR_SIDE_BUTTONS},
+                        "tooltipButtons", StrId::STR_CAT_CONTROLS),
+      SettingInfo::Enum(StrId::STR_TOOLTIP_NAV, &CrossPointSettings::tooltipBehavior,
+                        {StrId::STR_LOOP, StrId::STR_PAGE_TURN},
+                        "tooltipBehavior", StrId::STR_CAT_CONTROLS),
 
       // --- System ---
       SettingInfo::Enum(StrId::STR_TIME_TO_SLEEP, &CrossPointSettings::sleepTimeout,

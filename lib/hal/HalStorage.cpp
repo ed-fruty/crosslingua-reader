@@ -3,6 +3,9 @@
 #include <Logging.h>
 #include <SDCardManager.h>
 
+#include <string>
+#include <utility>
+
 #define SDCard SDCardManager::getInstance()
 
 HalStorage HalStorage::instance;
@@ -66,37 +69,57 @@ bool HalStorage::openFileForWrite(const char* moduleName, const String& path, Fs
 bool HalStorage::removeDir(const char* path) { return SDCard.removeDir(path); }
 
 bool HalStorage::forceRemoveDir(const char* path) {
-  auto dir = open(path);
-  if (!dir || !dir.isDirectory()) {
-    if (dir) dir.close();
-    return false;
+  // Phase 1: collect all entries before modifying directory.
+  // Deleting files while iterating corrupts the FAT32 directory iterator.
+  std::vector<std::pair<std::string, bool>> entries;
+  {
+    auto dir = open(path);
+    if (!dir || !dir.isDirectory()) {
+      if (dir) dir.close();
+      return false;
+    }
+    char name[128];
+    for (auto f = dir.openNextFile(); f; f = dir.openNextFile()) {
+      f.getName(name, sizeof(name));
+      entries.push_back({std::string(path) + "/" + name, f.isDirectory()});
+      f.close();
+    }
+    dir.close();
   }
+
+  // Phase 2: delete collected entries
   bool allDeleted = true;
-  char name[128];
-  for (auto f = dir.openNextFile(); f; f = dir.openNextFile()) {
-    f.getName(name, sizeof(name));
-    std::string childPath = std::string(path) + "/" + name;
-    bool isDir = f.isDirectory();
-    f.close();
+  for (const auto& [childPath, isDir] : entries) {
     if (isDir) {
-      if (!forceRemoveDir(childPath.c_str())) allDeleted = false;
+      if (!forceRemoveDir(childPath.c_str())) {
+        LOG_ERR("HAL", "forceRemoveDir: failed subdir: %s", childPath.c_str());
+        allDeleted = false;
+      }
     } else {
-      if (!remove(childPath.c_str())) {
-        // Try to truncate to repair a broken FAT chain, then retry remove
-        FsFile tmp = open(childPath.c_str(), O_RDWR | O_TRUNC);
-        if (tmp) {
-          tmp.close();
-          if (!remove(childPath.c_str())) {
-            LOG_ERR("HAL", "forceRemoveDir: failed to remove %s", childPath.c_str());
-            allDeleted = false;
-          }
-        } else {
-          LOG_ERR("HAL", "forceRemoveDir: failed to truncate %s", childPath.c_str());
+      // Open writable, truncate to free FAT clusters, then remove the empty file.
+      // This avoids freeChain inside remove() which can fail and corrupt the chain.
+      FsFile f = open(childPath.c_str(), O_WRONLY);
+      if (f) {
+        f.truncate(0);
+        f.sync();
+        if (!f.remove()) {
+          LOG_ERR("HAL", "forceRemoveDir: remove after truncate failed: %s", childPath.c_str());
+          f.close();
           allDeleted = false;
         }
+      } else {
+        LOG_ERR("HAL", "forceRemoveDir: cannot open for write: %s", childPath.c_str());
+        allDeleted = false;
       }
     }
   }
-  dir.close();
-  return allDeleted && rmdir(path);
+  if (!allDeleted) {
+    LOG_ERR("HAL", "forceRemoveDir: not all entries deleted in %s", path);
+    return false;
+  }
+  if (!rmdir(path)) {
+    LOG_ERR("HAL", "forceRemoveDir: rmdir failed on %s", path);
+    return false;
+  }
+  return true;
 }
