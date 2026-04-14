@@ -360,14 +360,15 @@ void ModalOverlay::preparePage(const Page& page) {
 
     if (visibleSentences > 0 && visibleSentences < origTotal) {
       // +1 for the incomplete sentence fragment at the boundary.
-      // +2: one for the broken sentence at each boundary edge.
-      int showSentences = std::min(visibleSentences + 2, (int)pairs[i].transSentenceCount);
+      // +1 for the incomplete sentence fragment at the end boundary.
+      int showSentences = std::min(visibleSentences + 1, (int)pairs[i].transSentenceCount);
 
       if (isFirst && !isLast) {
         // Tail — continuation from previous page.
         // Find how many sentences are BEFORE the visible portion, skip them.
         int skipSentences = countSentencesBefore(pairs[i].origText, visibleText);
-        int fromSentence = skipSentences;  // 0-indexed start
+        // -1 to include the broken sentence that starts on the previous page
+        int fromSentence = std::max(0, skipSentences - 1);
         int toSentence = std::min(fromSentence + showSentences, (int)pairs[i].transSentenceCount);
         // Use trimToSentences to get first `toSentence`, then trimToLastSentences to drop first `fromSentence`.
         std::string trimmed = trimToSentences(pairs[i].translation, toSentence);
