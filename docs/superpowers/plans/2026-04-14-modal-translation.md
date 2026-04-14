@@ -192,12 +192,6 @@ class ModalOverlay {
 
   bool isActive() const { return active; }
 
-  // Set by handleInput when page turn is needed at content boundary.
-  // EpubReaderActivity checks these after handleInput and triggers the page turn.
-  bool pendingPageForward = false;
-  bool pendingPageBack = false;
-  bool activateOnNextPage = false;
-
  private:
   bool active = false;
   int16_t scrollOffset = 0;
@@ -533,29 +527,20 @@ void ModalOverlay::onSectionChanged() {
   sectionParsed = false;
   chapterParagraphs.clear();
   pageTranslations.clear();
-  pendingPageForward = false;
-  pendingPageBack = false;
-  activateOnNextPage = false;
 }
 
 void ModalOverlay::onPageChanged() {
-  bool shouldActivate = activateOnNextPage;
   active = false;
   scrollOffset = 0;
   totalContentHeight = 0;
   pagePrepared = false;
   pageTranslations.clear();
-  pendingPageForward = false;
-  pendingPageBack = false;
-  activateOnNextPage = false;
-
-  if (shouldActivate) {
-    active = true;
-  }
 }
 ```
 
-- [ ] **Step 2: Add handleInput with scroll and page-turn logic**
+- [ ] **Step 2: Add handleInput — long press activates, short taps scroll, close at end**
+
+Modal mode does NOT hijack buttons for page turns. Normal page-turn behavior is preserved. Only long press on the tooltip-configured buttons activates the modal. While active, short taps scroll. At the end of content, the next tap closes the modal.
 
 Add after the state management section:
 
@@ -568,68 +553,48 @@ bool ModalOverlay::handleInput(MappedInputManager& input) {
       useFrontButtons ? MappedInputManager::Button::Right : MappedInputManager::Button::PageForward;
   const auto backBtn =
       useFrontButtons ? MappedInputManager::Button::Left : MappedInputManager::Button::PageBack;
-  const bool pageTurnMode = (SETTINGS.tooltipBehavior == 1);
   constexpr unsigned long longPressMs = 700;
 
   // Next button
   if (input.wasReleased(nextBtn)) {
-    // Long press: page turn forward, dismiss modal.
-    if (input.getHeldTime() >= longPressMs) {
-      pendingPageForward = true;
+    if (!active) {
+      // Long press while IDLE: activate modal.
+      if (input.getHeldTime() >= longPressMs) {
+        active = true;
+        scrollOffset = 0;
+        return true;
+      }
+      // Short press while IDLE: don't consume — let normal page turn handle it.
+      return false;
+    }
+    // Active: short or long press both scroll/close.
+    if (totalContentHeight > 0 && scrollOffset < totalContentHeight) {
+      const int overlap = cachedLineHeight > 0 ? cachedLineHeight : 20;
+      const int screenScroll = cachedViewportHeight > overlap ? cachedViewportHeight - overlap : 200;
+      scrollOffset += screenScroll;
+      if (scrollOffset > totalContentHeight) scrollOffset = totalContentHeight;
+    } else {
+      // At bottom (or no content): close modal.
       active = false;
       scrollOffset = 0;
-      return true;
-    }
-    if (!active) {
-      // Activate: show modal at top.
-      active = true;
-      scrollOffset = 0;
-      return true;
-    }
-    // Active: scroll down.
-    // totalContentHeight is computed during render, so on first press it may be 0.
-    // In that case, just stay at offset 0 and let the first render compute it.
-    if (totalContentHeight > 0) {
-      const int screenScroll = std::max(1, (int)totalContentHeight / 4);  // temporary; real value set in render
-      // This will be refined in the render task — for now, store a "scroll down" intent.
-      // We use a simple approach: advance by a fixed amount, clamped.
-      scrollOffset += screenScroll;
-      if (scrollOffset >= totalContentHeight) {
-        // At bottom.
-        if (pageTurnMode) {
-          pendingPageForward = true;
-          activateOnNextPage = true;
-          active = false;
-          scrollOffset = 0;
-        } else {
-          // Loop: wrap to top.
-          scrollOffset = 0;
-        }
-      }
     }
     return true;
   }
 
   // Back button
   if (input.wasReleased(backBtn)) {
-    // Long press: page turn backward, dismiss modal.
-    if (input.getHeldTime() >= longPressMs) {
-      pendingPageBack = true;
-      active = false;
-      scrollOffset = 0;
-      return true;
-    }
     if (!active) {
-      // Not active: don't consume, let page-turn handle it.
+      // Not active: don't consume, let normal page turn handle it.
       return false;
     }
-    // Active: scroll up or dismiss.
+    // Active: scroll up or close.
     if (scrollOffset > 0) {
-      const int screenScroll = std::max(1, (int)totalContentHeight / 4);
+      const int overlap = cachedLineHeight > 0 ? cachedLineHeight : 20;
+      const int screenScroll = cachedViewportHeight > overlap ? cachedViewportHeight - overlap : 200;
       scrollOffset -= screenScroll;
       if (scrollOffset < 0) scrollOffset = 0;
     } else {
-      // At top: dismiss modal.
+      // At top: close modal.
       active = false;
       scrollOffset = 0;
     }
@@ -811,52 +776,25 @@ In `src/tooltip/ModalOverlay.h`, add these two private method declarations insid
                            int spW, int clipTop, int clipBottom);
 ```
 
-- [ ] **Step 3: Update handleInput scroll amounts to use viewportHeight**
+- [ ] **Step 3: Add cached viewport/line height members for scroll computation**
 
-The scroll amount in `handleInput` currently uses `totalContentHeight / 4` as a placeholder. We need to store the `viewportHeight` so the input handler can compute proper scroll distances. Add a member to the header:
+`handleInput` needs `viewportHeight` and `lineHeight` to compute scroll amounts, but these are only known during `render()`. Add cached members to the header.
 
 In `src/tooltip/ModalOverlay.h`, add to private members:
 
 ```cpp
   int16_t cachedViewportHeight = 0;
-```
-
-Then in `ModalOverlay::render()`, after the clamp block, add:
-
-```cpp
-  cachedViewportHeight = viewportHeight;
-```
-
-And update `handleInput` to use it. Replace both occurrences of:
-
-```cpp
-      const int screenScroll = std::max(1, (int)totalContentHeight / 4);
-```
-
-with:
-
-```cpp
-      const int screenScroll = cachedViewportHeight > 0 ? cachedViewportHeight - lh : 200;
-```
-
-Wait — `handleInput` doesn't have access to `lh` (line height). We need to store it. Add another member to the header:
-
-```cpp
   int16_t cachedLineHeight = 0;
 ```
 
-Set it in `render()` after computing `lh`:
+Then in `ModalOverlay::render()`, after computing `lh`, add:
 
 ```cpp
+  cachedViewportHeight = viewportHeight;
   cachedLineHeight = lh;
 ```
 
-Now replace both scroll computations in `handleInput` with:
-
-```cpp
-      const int overlap = cachedLineHeight > 0 ? cachedLineHeight : 20;
-      const int screenScroll = cachedViewportHeight > overlap ? cachedViewportHeight - overlap : 200;
-```
+These are already used by `handleInput` (added in Task 4).
 
 - [ ] **Step 4: Build to verify**
 
@@ -915,58 +853,21 @@ Add:
 
 - [ ] **Step 3: Add modal input dispatch in loop()**
 
-In `EpubReaderActivity::loop()`, after the tooltip input dispatch block (lines 300-328), add the same pattern for modal:
+In `EpubReaderActivity::loop()`, after the tooltip input dispatch block (lines 300-328), add the modal dispatch. Unlike tooltip, modal does NOT hijack buttons or trigger page turns — it only consumes input when active (scrolling) or on long-press activation:
 
 ```cpp
-  // Modal mode: let overlay consume button presses for scrolling
+  // Modal mode: long press activates, short taps scroll while active
   if (modalOverlay && modalOverlay->handleInput(mappedInput)) {
-    if (modalOverlay->pendingPageForward || modalOverlay->pendingPageBack) {
-      const bool forward = modalOverlay->pendingPageForward;
-      modalOverlay->onPageChanged();
-      if (forward) {
-        if (section->currentPage < section->pageCount - 1) {
-          section->currentPage++;
-        } else {
-          RenderLock lock(*this);
-          nextPageNumber = 0;
-          currentSpineIndex++;
-          section.reset();
-        }
-      } else {
-        if (section->currentPage > 0) {
-          section->currentPage--;
-        } else {
-          RenderLock lock(*this);
-          nextPageNumber = UINT16_MAX;
-          currentSpineIndex--;
-          section.reset();
-        }
-      }
-    }
     requestUpdate();
     return;
   }
 ```
 
-- [ ] **Step 4: Add modal to button-skip logic**
+- [ ] **Step 4: No button-skip changes needed**
 
-In `EpubReaderActivity::loop()`, at lines 376-378, update the button skip logic to also account for modal mode:
+Unlike tooltip mode, modal mode does NOT hijack any buttons for page turns. Normal page-turn buttons always work. The modal only consumes long-press to activate and short-press while active. The existing `tooltipUsesFront`/`tooltipUsesSide` logic at lines 376-378 does NOT need to include modal — those flags prevent short-press page turns on the hijacked buttons, which modal doesn't do.
 
-```cpp
-  const bool isTooltipMode = SETTINGS.colorTextStyle == CrossPointSettings::CT_TOOLTIP && tooltipOverlay;
-  const bool tooltipUsesFront = isTooltipMode && SETTINGS.tooltipButtons == 0;
-  const bool tooltipUsesSide = isTooltipMode && SETTINGS.tooltipButtons == 1;
-```
-
-Change to:
-
-```cpp
-  const bool isTooltipMode = SETTINGS.colorTextStyle == CrossPointSettings::CT_TOOLTIP && tooltipOverlay;
-  const bool isModalMode = SETTINGS.colorTextStyle == CrossPointSettings::CT_MODAL && modalOverlay;
-  const bool overlayMode = isTooltipMode || isModalMode;
-  const bool tooltipUsesFront = overlayMode && SETTINGS.tooltipButtons == 0;
-  const bool tooltipUsesSide = overlayMode && SETTINGS.tooltipButtons == 1;
-```
+No changes needed here.
 
 - [ ] **Step 5: Reset modal on page change**
 
@@ -1043,19 +944,7 @@ After the tooltip HTML setup block (lines 907-926), add the equivalent for modal
 
 - [ ] **Step 8: Add modal render call in renderContents**
 
-In `renderContents()`, after the tooltip render block (lines 1014-1021):
-
-```cpp
-  if (tooltipOverlay && tooltipOverlay->isActive()) {
-    const int tooltipFontId = getTooltipFontId();
-    const int vpWidth = renderer.getScreenWidth() - orientedMarginLeft - orientedMarginRight;
-    const int vpHeight = renderer.getScreenHeight() - orientedMarginTop - orientedMarginBottom;
-    tooltipOverlay->render(renderer, *page, SETTINGS.getReaderFontId(), tooltipFontId, orientedMarginLeft,
-                           orientedMarginTop, vpWidth, vpHeight);
-  }
-```
-
-Add:
+In `renderContents()`, after the tooltip render block (lines 1014-1021), add. Note: modal renders a full white overlay so it fully covers the page content — the page->render() call above still runs but is invisible under the overlay:
 
 ```cpp
   if (modalOverlay && modalOverlay->isActive()) {
@@ -1107,17 +996,18 @@ pio run --target upload 2>&1 | tail -20
 Test on device with a translated book:
 1. Open Settings → Reader → Translation Mode → set to "Modal"
 2. Open a translated book chapter
-3. Press next button → white overlay appears with translated paragraphs
-4. Press next again → overlay scrolls down (if content is long enough)
-5. Press back → overlay scrolls up or dismisses at top
-6. Press ESC/Back → overlay dismisses
-7. Long-press next → page turns forward
-8. Long-press back → page turns backward
-9. Set Tooltip Navigation to "Page Turn" → verify page turn at end of scroll
-10. Set Tooltip Navigation to "Loop" → verify wrap-around at end of scroll
-11. Switch Tooltip Buttons between Front/Side → verify correct buttons control modal
-12. Switch to an untranslated chapter → verify buttons work normally (no overlay)
-13. Switch back to Tooltip mode → verify tooltip still works correctly
+3. Short press next → page turns normally (modal does NOT activate on short press)
+4. Long-press next (≥700ms) → white overlay appears with translated paragraphs
+5. Short press next → overlay scrolls down (if content is long enough)
+6. Keep pressing next → when at bottom, next press closes the modal
+7. Long-press next again → overlay opens again
+8. Short press back → overlay scrolls up, then closes at top
+9. Press ESC/Back → overlay dismisses from any scroll position
+10. While modal is closed, short press page-turn buttons → pages turn normally
+11. Long-press back while modal is active → closes modal
+12. Switch Tooltip Buttons between Front/Side → verify correct buttons control modal
+13. Switch to an untranslated chapter → verify long press does nothing (no overlay)
+14. Switch back to Tooltip mode → verify tooltip still works correctly
 
 - [ ] **Step 4: Commit any fixes found during testing**
 

@@ -77,32 +77,41 @@ IDLE  ←→  SHOWING (with scrollOffset)
 - `int16_t totalContentHeight = 0` (total rendered height of all translated paragraphs)
 - Cached paragraph translations rebuilt on section/page change
 
+### Button Philosophy
+
+Unlike tooltip mode (which hijacks a button pair for navigation), modal mode keeps **all page-turn buttons working normally**. The modal is activated by a **long press** on the tooltip-configured buttons.
+
 ### Activation / Deactivation
 
-- **Activate:** Short press of next button while IDLE → show overlay at scrollOffset=0
+- **Activate:** Long press (≥700ms) of the **next** tooltip-configured button (Right or PageForward, per `tooltipButtons`) while IDLE → show overlay at scrollOffset=0. The long press is consumed — no page turn.
 - **Deactivate:** ESC/Back button while overlay is showing → dismiss overlay, return to page
-- **Deactivate:** Short press of back button while at scrollOffset=0 → dismiss overlay
+- **Deactivate:** Short press of next button when already scrolled to the bottom → close the modal
+- **Deactivate:** Short press of back button when already at scrollOffset=0 → close the modal
 
-### Scrolling
+### Scrolling (while modal is active)
 
-When active, short presses scroll through the translated content:
+When the modal is active, the tooltip-configured buttons scroll through content:
 
-- **Next button (short press):** Scroll down by one "screen" (viewportHeight minus some overlap). If already at the bottom → behavior depends on `tooltipBehavior`:
-  - Loop (0): wrap to scrollOffset=0
-  - Page Turn (1): set `pendingPageForward`, auto-activate on next page
-- **Back button (short press):** Scroll up by one screen. If already at scrollOffset=0 → dismiss overlay (back to original page). This matches tooltip's pattern where back button dismisses.
+- **Next button (short press):** Scroll down by one "screen" (viewportHeight minus some overlap). If already at the bottom → **close the modal** (no loop, no page turn).
+- **Back button (short press):** Scroll up by one screen. If already at scrollOffset=0 → **close the modal**.
 
-### Long Press
+### Long Press While Active
 
-- **Next button (long press, ≥700ms):** Page turn forward (same as tooltip). Dismiss overlay, set `pendingPageForward`.
-- **Back button (long press, ≥700ms):** Page turn backward. Dismiss overlay, set `pendingPageBack`.
+- **Next button (long press, ≥700ms) while active:** Close the modal (same as reaching the end).
+- **Back button (long press, ≥700ms) while active:** Close the modal.
 
-### Page Turn Integration
+Long presses while the modal is active simply dismiss it — they do NOT trigger page turns. Since normal page-turn buttons are never hijacked, the user can always turn pages normally.
 
-Same flag-based mechanism as tooltip:
-- `pendingPageForward` / `pendingPageBack` — checked by `EpubReaderActivity` after `handleInput()`
-- `activateOnNextPage` — auto-show overlay on the new page after tooltip-behavior page turn
-- `onPageChanged()` — resets state, clears cached translations
+### No Page Turn Integration
+
+Unlike tooltip mode, modal does NOT use `pendingPageForward` / `pendingPageBack` / `activateOnNextPage`. The modal never triggers page turns. It only opens and closes.
+
+- `onPageChanged()` — resets state (closes modal, clears cached translations) when the user turns a page via normal buttons.
+
+### Settings
+
+- `tooltipButtons` — controls which button pair activates and scrolls the modal (same setting as tooltip)
+- `tooltipBehavior` — **NOT used** by modal mode. Modal always closes at the end of content.
 
 ## 4. Modal Rendering
 
@@ -212,7 +221,6 @@ Note: This is higher than tooltip (~700B) because we store all chapter translati
 ## 10. Settings Reuse
 
 No new settings fields needed. CT_MODAL reuses:
-- `tooltipButtons` (0=front buttons, 1=side buttons) — controls which buttons scroll the modal
-- `tooltipBehavior` (0=Loop, 1=Page Turn) — controls end-of-content behavior
+- `tooltipButtons` (0=front buttons, 1=side buttons) — controls which buttons activate and scroll the modal
 
-The setting names say "tooltip" but apply to both modes. We keep them as-is per the design decision to minimize churn.
+`tooltipBehavior` (Loop/Page Turn) is NOT used by modal mode — modal always closes at end of content.
