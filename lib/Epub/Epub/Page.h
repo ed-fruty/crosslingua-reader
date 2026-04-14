@@ -31,8 +31,10 @@ class PageLine final : public PageElement {
   std::shared_ptr<TextBlock> block;
 
  public:
-  PageLine(std::shared_ptr<TextBlock> block, const int16_t xPos, const int16_t yPos)
-      : PageElement(xPos, yPos), block(std::move(block)) {}
+  int16_t paragraphIdx = -1;  // Which paragraph this line belongs to (for modal translation)
+
+  PageLine(std::shared_ptr<TextBlock> block, const int16_t xPos, const int16_t yPos, int16_t paragraphIdx = -1)
+      : PageElement(xPos, yPos), block(std::move(block)), paragraphIdx(paragraphIdx) {}
   void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) override;
   bool serialize(FsFile& file) override;
   const std::shared_ptr<TextBlock>& getTextBlock() const { return block; }

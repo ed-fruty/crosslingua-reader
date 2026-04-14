@@ -269,87 +269,68 @@ void ModalOverlay::preparePage(const Page& page) {
   }
   LOG_DBG("MOD", "Page first words: '%.80s'", firstWords.c_str());
 
-  // Build page text to detect partial paragraphs at boundaries.
-  std::string pageText;
+  // Build per-paragraph text from page lines using paragraphIdx on each PageLine.
+  // This lets us count sentences per paragraph accurately.
+  struct ParaText {
+    int16_t idx;
+    std::string text;
+  };
+  std::vector<ParaText> pageParas;
   for (const auto& el : page.elements) {
     if (el->getTag() != TAG_PageLine) continue;
     const auto* line = static_cast<const PageLine*>(el.get());
+    int16_t pIdx = line->paragraphIdx;
+    if (pIdx < 0) continue;
+    if (pageParas.empty() || pageParas.back().idx != pIdx) {
+      pageParas.push_back({pIdx, ""});
+    }
     for (const auto& w : line->getTextBlock()->getWords()) {
-      if (!pageText.empty()) pageText += ' ';
-      pageText += w;
+      if (!pageParas.back().text.empty()) pageParas.back().text += ' ';
+      pageParas.back().text += w;
     }
   }
 
-  // Count sentences visible on the page for boundary paragraphs.
-  int pageSentences = countSentences(pageText);
-
-  // Collect translations for the paragraph range on this page.
-  // For first/last paragraphs, trim to visible sentence count if partial.
   int first = page.firstParagraphIdx;
   int last = page.lastParagraphIdx;
 
   for (int i = first; i <= last && i < (int)pairs.size(); i++) {
     if (pairs[i].translation.empty()) continue;
 
+    // Find this paragraph's visible text on the page.
+    int visibleSentences = 0;
+    for (const auto& pp : pageParas) {
+      if (pp.idx == i) {
+        visibleSentences = countSentences(pp.text);
+        break;
+      }
+    }
+
+    int origTotal = pairs[i].origSentenceCount;
     bool isFirst = (i == first);
     bool isLast = (i == last);
-    bool isOnly = (first == last);  // Only one paragraph on page
 
-    if (isOnly) {
-      // Single paragraph on page — might be partial at both ends.
-      // Count sentences on page vs total in original.
-      int origTotal = pairs[i].origSentenceCount;
-      if (pageSentences < origTotal) {
-        // Partial — just show the page's sentence count from the translation.
-        // We don't know if it's head or tail, so take first N sentences.
-        pageTranslations.push_back(trimToSentences(pairs[i].translation, pageSentences));
-        LOG_DBG("MOD", "  idx %d: PARTIAL only, %d/%d sentences", i, pageSentences, origTotal);
-      } else {
-        pageTranslations.push_back(pairs[i].translation);
-        LOG_DBG("MOD", "  idx %d: FULL (only)", i);
-      }
-    } else if (isFirst) {
-      // First paragraph — might be a tail (continuation from previous page).
-      // Count sentences from first paragraph's text on page.
-      // Heuristic: sentences on page minus sentences from other paragraphs = first para's sentences.
-      int otherParaSentences = 0;
-      for (int j = first + 1; j <= last && j < (int)pairs.size(); j++) {
-        otherParaSentences += pairs[j].origSentenceCount;
-      }
-      int firstParaSentences = std::max(1, pageSentences - otherParaSentences);
-      int origTotal = pairs[i].origSentenceCount;
-      if (firstParaSentences < origTotal) {
-        // It's a tail — show last N sentences of translation.
-        pageTranslations.push_back(trimToLastSentences(pairs[i].translation, firstParaSentences));
-        LOG_DBG("MOD", "  idx %d: TAIL, %d/%d sentences", i, firstParaSentences, origTotal);
-      } else {
-        pageTranslations.push_back(pairs[i].translation);
-        LOG_DBG("MOD", "  idx %d: FULL (first)", i);
-      }
-    } else if (isLast) {
-      // Last paragraph — might be a head (continues on next page).
-      int otherParaSentences = 0;
-      for (int j = first; j < last && j < (int)pairs.size(); j++) {
-        otherParaSentences += pairs[j].origSentenceCount;
-      }
-      int lastParaSentences = std::max(1, pageSentences - otherParaSentences);
-      int origTotal = pairs[i].origSentenceCount;
-      if (lastParaSentences < origTotal) {
-        // It's a head — show first N sentences of translation.
-        pageTranslations.push_back(trimToSentences(pairs[i].translation, lastParaSentences));
-        LOG_DBG("MOD", "  idx %d: HEAD, %d/%d sentences", i, lastParaSentences, origTotal);
-      } else {
-        pageTranslations.push_back(pairs[i].translation);
-        LOG_DBG("MOD", "  idx %d: FULL (last)", i);
+    if (visibleSentences > 0 && visibleSentences < origTotal) {
+      if (isFirst && !isLast) {
+        // Tail — continuation from previous page. Show last N sentences.
+        pageTranslations.push_back(trimToLastSentences(pairs[i].translation, visibleSentences));
+        LOG_DBG("MOD", "  idx %d: TAIL, %d/%d sentences", i, visibleSentences, origTotal);
+      } else if (isLast && !isFirst) {
+        // Head — continues on next page. Show first N sentences.
+        pageTranslations.push_back(trimToSentences(pairs[i].translation, visibleSentences));
+        LOG_DBG("MOD", "  idx %d: HEAD, %d/%d sentences", i, visibleSentences, origTotal);
+      } else if (isFirst && isLast) {
+        // Only paragraph, partial at both ends — show first N sentences.
+        pageTranslations.push_back(trimToSentences(pairs[i].translation, visibleSentences));
+        LOG_DBG("MOD", "  idx %d: PARTIAL, %d/%d sentences", i, visibleSentences, origTotal);
       }
     } else {
-      // Middle paragraph — always full.
+      // Full paragraph on page.
       pageTranslations.push_back(pairs[i].translation);
-      LOG_DBG("MOD", "  idx %d: FULL (middle)", i);
+      LOG_DBG("MOD", "  idx %d: FULL, %d sentences", i, origTotal);
     }
   }
 
-  LOG_DBG("MOD", "Result: %d translations, pageSentences=%d", (int)pageTranslations.size(), pageSentences);
+  LOG_DBG("MOD", "Result: %d translations", (int)pageTranslations.size());
 }
 
 // ── Button handling ──────────────────────────────────────────────────────────
