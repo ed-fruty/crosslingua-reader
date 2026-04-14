@@ -229,17 +229,21 @@ bool ModalOverlay::handleInput(MappedInputManager& input) {
       }
       return false;
     }
-    if (totalContentHeight > 0 && scrollOffset < totalContentHeight) {
+    {
       const int lh = cachedLineHeight > 0 ? cachedLineHeight : 20;
-      const int screenScroll = (cachedViewportHeight / lh) * lh;
-      LOG_DBG("MOD", "SCROLL NEXT: offset %d -> %d (step=%d, vpH=%d, lh=%d, totalH=%d)",
-              scrollOffset, scrollOffset + screenScroll, screenScroll, cachedViewportHeight, lh, totalContentHeight);
-      scrollOffset += screenScroll;
-      if (scrollOffset > totalContentHeight) scrollOffset = totalContentHeight;
-    } else {
-      LOG_DBG("MOD", "SCROLL NEXT: at bottom, closing (offset=%d, totalH=%d)", scrollOffset, totalContentHeight);
-      active = false;
-      scrollOffset = 0;
+      const int vpH = cachedViewportHeight > 0 ? cachedViewportHeight : 700;
+      const int screenScroll = (vpH / lh) * lh;
+      const int maxScroll = std::max(0, (int)totalContentHeight - vpH);
+      LOG_DBG("MOD", "SCROLL NEXT: offset %d -> %d (step=%d, vpH=%d, lh=%d, totalH=%d, maxScroll=%d)",
+              scrollOffset, scrollOffset + screenScroll, screenScroll, vpH, lh, totalContentHeight, maxScroll);
+      if (scrollOffset < maxScroll) {
+        scrollOffset += screenScroll;
+        if (scrollOffset > maxScroll) scrollOffset = maxScroll;
+      } else {
+        // Already at/past end — close modal.
+        active = false;
+        scrollOffset = 0;
+      }
     }
     return true;
   }
@@ -303,9 +307,14 @@ void ModalOverlay::render(GfxRenderer& renderer, const Page& page, int fontId, i
     contentH += paraSpacing;
   }
   if (!pageTranslations.empty()) contentH -= paraSpacing;
-  totalContentHeight = std::max(0, contentH - viewportHeight);
 
-  if (scrollOffset > totalContentHeight) scrollOffset = totalContentHeight;
+  // totalContentHeight = full content height (NOT minus viewport).
+  // scrollOffset steps through it in viewport-sized chunks.
+  totalContentHeight = contentH;
+
+  // Clamp to last "page" of content.
+  const int maxScroll = std::max(0, contentH - viewportHeight);
+  if (scrollOffset > maxScroll) scrollOffset = maxScroll;
   if (scrollOffset < 0) scrollOffset = 0;
 
   int curY = yOffset - scrollOffset;
