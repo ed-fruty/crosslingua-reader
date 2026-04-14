@@ -363,7 +363,7 @@ int ModalOverlay::drawParagraph(GfxRenderer& renderer, int fontId, const char* t
       lineEnd = p;
       while (*p == ' ') p++;
     }
-    if (y + lh > clipTop && y < clipBottom) {
+    if (y + lh > clipTop && y + lh <= clipBottom) {
       int dl = (int)(lineEnd - lineStart);
       if (dl > 0) {
         char lb[512];
