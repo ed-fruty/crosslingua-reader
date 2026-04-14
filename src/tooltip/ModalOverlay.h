@@ -33,19 +33,15 @@ class ModalOverlay {
   int16_t scrollOffset = 0;
   int16_t totalContentHeight = 0;
   bool pagePrepared = false;
-  bool sectionParsed = false;
   int16_t cachedViewportHeight = 0;
   int16_t cachedLineHeight = 0;
 
   std::string translatedHtmlPath;
 
-  // Chapter-level: all (original_key, translation) pairs from HTML.
-  std::vector<ParagraphEntry> chapterParagraphs;
-
-  // Page-level: translations for paragraphs visible on current page.
+  // Page-level only: translations for paragraphs visible on current page.
+  // Chapter-level data is NOT cached — parsed on demand per page to save RAM.
   std::vector<std::string> pageTranslations;
 
-  void parseChapterHtml();
   void preparePage(const Page& page);
 
   static int measureParagraphHeight(GfxRenderer& renderer, int fontId, const char* text, int maxW, int lh, int spW);

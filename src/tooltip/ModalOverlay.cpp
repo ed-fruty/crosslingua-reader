@@ -14,11 +14,7 @@
 // ── State management ─────────────────────────────────────────────────────────
 
 void ModalOverlay::setTranslatedHtmlPath(const std::string& path) {
-  if (path != translatedHtmlPath) {
-    translatedHtmlPath = path;
-    sectionParsed = false;
-    chapterParagraphs.clear();
-  }
+  translatedHtmlPath = path;
 }
 
 void ModalOverlay::onSectionChanged() {
@@ -26,8 +22,6 @@ void ModalOverlay::onSectionChanged() {
   scrollOffset = 0;
   totalContentHeight = 0;
   pagePrepared = false;
-  sectionParsed = false;
-  chapterParagraphs.clear();
   pageTranslations.clear();
 }
 
@@ -142,26 +136,27 @@ static void XMLCALL modalOnText(void* ud, const XML_Char* s, int len) {
   if (ctx->inBlock) ctx->currentText.append(s, len);
 }
 
-void ModalOverlay::parseChapterHtml() {
-  sectionParsed = true;
-  chapterParagraphs.clear();
+// Parse HTML and return (key, translation) pairs. Caller owns the result.
+// Temporary — freed after page matching completes.
+static std::vector<ModalOverlay::ParagraphEntry> parseChapterHtml(const std::string& htmlPath) {
+  std::vector<ModalOverlay::ParagraphEntry> entries;
 
-  if (translatedHtmlPath.empty()) return;
+  if (htmlPath.empty()) return entries;
 
   FsFile file;
-  if (!Storage.openFileForRead("MOD", translatedHtmlPath, file)) {
-    LOG_ERR("MOD", "Cannot open %s", translatedHtmlPath.c_str());
-    return;
+  if (!Storage.openFileForRead("MOD", htmlPath, file)) {
+    LOG_ERR("MOD", "Cannot open %s", htmlPath.c_str());
+    return entries;
   }
 
   XML_Parser parser = XML_ParserCreate(nullptr);
   if (!parser) {
     file.close();
-    return;
+    return entries;
   }
 
   ModalParseCtx ctx;
-  ctx.entries = &chapterParagraphs;
+  ctx.entries = &entries;
   XML_SetUserData(parser, &ctx);
   XML_SetElementHandler(parser, modalOnStart, modalOnEnd);
   XML_SetCharacterDataHandler(parser, modalOnText);
@@ -178,7 +173,8 @@ void ModalOverlay::parseChapterHtml() {
   }
   XML_ParserFree(parser);
   file.close();
-  LOG_DBG("MOD", "Parsed %d paragraph pairs from %s", (int)chapterParagraphs.size(), translatedHtmlPath.c_str());
+  LOG_DBG("MOD", "Parsed %d paragraph pairs from %s", (int)entries.size(), htmlPath.c_str());
+  return entries;
 }
 
 // ── Page preparation: match page paragraphs to chapter index ──────────────────
@@ -189,7 +185,9 @@ void ModalOverlay::preparePage(const Page& page) {
   pageTranslations.clear();
   totalContentHeight = 0;
 
-  if (!sectionParsed) parseChapterHtml();
+  // Parse HTML into a temporary vector — freed at end of this function.
+  // This avoids keeping all chapter translations in RAM permanently.
+  auto chapterParagraphs = parseChapterHtml(translatedHtmlPath);
   if (chapterParagraphs.empty()) return;
 
   // Collect page paragraphs by grouping consecutive PageLines that share the same TextBlock.
