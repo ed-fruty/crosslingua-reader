@@ -165,29 +165,47 @@ void ModalOverlay::preparePage(const Page& page) {
 
   if (pageText.empty()) return;
 
-  // For each (original, translation) pair from HTML, check if the original
-  // paragraph's text appears on this page. We normalize the original text
-  // to single spaces (HTML may have newlines, multiple spaces) and compare
-  // the first few words against the page text.
+  // For each (original, translation) pair from HTML, check if ANY part of the
+  // original paragraph's text appears on this page. This handles:
+  // - Paragraph fully on page (beginning matches)
+  // - Paragraph starts on previous page, only tail is here (middle/end matches)
+  // - Paragraph starts here but continues on next page (beginning matches)
   for (const auto& pair : pairs) {
     if (pair.original.empty() || pair.translation.empty()) continue;
 
-    // Normalize original text: collapse whitespace to single spaces, take first ~50 chars.
+    // Normalize full original text: collapse whitespace to single spaces.
     std::string normalized;
-    bool lastWasSpace = true;  // skip leading whitespace
+    bool lastWasSpace = true;
     for (char c : pair.original) {
       if (c == ' ' || c == '\n' || c == '\r' || c == '\t') {
-        if (!lastWasSpace && (int)normalized.size() < 60) normalized += ' ';
+        if (!lastWasSpace) normalized += ' ';
         lastWasSpace = true;
       } else {
         normalized += c;
         lastWasSpace = false;
       }
-      if ((int)normalized.size() >= 50) break;
     }
     while (!normalized.empty() && normalized.back() == ' ') normalized.pop_back();
+    if (normalized.size() < 3) continue;
 
-    if (normalized.size() >= 3 && pageText.find(normalized) != std::string::npos) {
+    // Try multiple snippets from different positions in the original text:
+    // beginning, middle, and near end — any match means this paragraph is on the page.
+    bool found = false;
+    constexpr int SNIPPET_LEN = 40;
+    int positions[] = {0, (int)normalized.size() / 3, (int)normalized.size() * 2 / 3};
+    for (int pos : positions) {
+      if (pos + SNIPPET_LEN > (int)normalized.size()) pos = std::max(0, (int)normalized.size() - SNIPPET_LEN);
+      // Align to word boundary (don't start mid-word).
+      while (pos > 0 && normalized[pos - 1] != ' ') pos++;
+      int len = std::min(SNIPPET_LEN, (int)normalized.size() - pos);
+      if (len < 3) continue;
+      if (pageText.find(normalized.c_str() + pos, 0, len) != std::string::npos) {
+        found = true;
+        break;
+      }
+    }
+
+    if (found) {
       pageTranslations.push_back(pair.translation);
     }
   }
