@@ -230,8 +230,9 @@ bool ModalOverlay::handleInput(MappedInputManager& input) {
       return false;
     }
     if (totalContentHeight > 0 && scrollOffset < totalContentHeight) {
-      const int overlap = cachedLineHeight > 0 ? cachedLineHeight : 20;
-      const int screenScroll = cachedViewportHeight > overlap ? cachedViewportHeight - overlap : 200;
+      // Scroll by exactly one screenful — no overlap, next press = next content.
+      const int lh = cachedLineHeight > 0 ? cachedLineHeight : 20;
+      const int screenScroll = (cachedViewportHeight / lh) * lh;
       scrollOffset += screenScroll;
       if (scrollOffset > totalContentHeight) scrollOffset = totalContentHeight;
     } else {
@@ -245,8 +246,9 @@ bool ModalOverlay::handleInput(MappedInputManager& input) {
   if (input.wasReleased(backBtn)) {
     if (!active) return false;
     if (scrollOffset > 0) {
-      const int overlap = cachedLineHeight > 0 ? cachedLineHeight : 20;
-      const int screenScroll = cachedViewportHeight > overlap ? cachedViewportHeight - overlap : 200;
+      // Scroll by exactly one screenful — no overlap, next press = next content.
+      const int lh = cachedLineHeight > 0 ? cachedLineHeight : 20;
+      const int screenScroll = (cachedViewportHeight / lh) * lh;
       scrollOffset -= screenScroll;
       if (scrollOffset < 0) scrollOffset = 0;
     } else {
