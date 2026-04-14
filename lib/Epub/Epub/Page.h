@@ -57,6 +57,12 @@ class Page {
  public:
   // the list of block index and line numbers on this page
   std::vector<std::shared_ptr<PageElement>> elements;
+
+  // Paragraph indices (from parser's sequential counter).
+  // Used by modal translation to know which paragraphs are on this page.
+  // -1 means unknown (old cache format).
+  int16_t firstParagraphIdx = -1;
+  int16_t lastParagraphIdx = -1;
   void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) const;
   bool serialize(FsFile& file) const;
   static std::unique_ptr<Page> deserialize(FsFile& file);

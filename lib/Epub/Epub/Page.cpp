@@ -67,6 +67,10 @@ bool Page::serialize(FsFile& file) const {
     }
   }
 
+  // Paragraph indices for modal translation (appended at end for backward compat).
+  serialization::writePod(file, firstParagraphIdx);
+  serialization::writePod(file, lastParagraphIdx);
+
   return true;
 }
 
@@ -157,6 +161,11 @@ std::unique_ptr<Page> Page::deserialize(FsFile& file) {
       return nullptr;
     }
   }
+
+  // Paragraph indices — may not be present in old cache files.
+  // If read fails (EOF), defaults remain -1.
+  serialization::readPod(file, page->firstParagraphIdx);
+  serialization::readPod(file, page->lastParagraphIdx);
 
   return page;
 }

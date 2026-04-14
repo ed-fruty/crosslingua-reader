@@ -47,6 +47,7 @@ class ChapterHtmlSlimParser {
   const CssParser* cssParser;
   bool embeddedStyle;
   uint8_t translationMode;
+  int16_t paragraphCounter = 0;  // Sequential counter for original paragraphs (for modal translation)
   std::string contentBase;
   std::string imageBasePath;
   int imageCounter = 0;

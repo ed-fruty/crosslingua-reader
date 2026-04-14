@@ -86,11 +86,12 @@ static void XMLCALL modalOnEnd(void* ud, const XML_Char* name) {
 
   if (ctx->isTranslation) {
     if (ctx->hasLastOrig) {
-      ctx->entries->push_back({std::move(ctx->lastOrigText), std::move(t)});
+      ctx->entries->push_back({std::move(t)});
       ctx->hasLastOrig = false;
     }
   } else {
-    ctx->lastOrigText = std::move(t);
+    // Original paragraph — reserve a slot. If no translation follows,
+    // the slot stays from the previous push (translations are paired by index).
     ctx->hasLastOrig = true;
   }
   ctx->currentText.clear();
@@ -140,7 +141,7 @@ static std::vector<ModalOverlay::ParagraphPair> parseChapterHtml(const std::stri
   return entries;
 }
 
-// ── Page preparation: match page text against original paragraphs ─────────────
+// ── Page preparation: use paragraph indices stored during page building ────────
 
 void ModalOverlay::preparePage(const Page& page) {
   if (pagePrepared) return;
@@ -148,70 +149,25 @@ void ModalOverlay::preparePage(const Page& page) {
   pageTranslations.clear();
   totalContentHeight = 0;
 
-  // Parse HTML into temporary (original, translation) pairs.
+  // The page knows exactly which paragraph indices it contains (set by the parser).
+  if (page.firstParagraphIdx < 0 || page.lastParagraphIdx < 0) {
+    LOG_DBG("MOD", "Page has no paragraph indices (old cache?) — clear cache and retry");
+    return;
+  }
+
+  // Parse HTML to get (original, translation) pairs. Temporary — freed after this function.
   auto pairs = parseChapterHtml(translatedHtmlPath);
   if (pairs.empty()) return;
 
-  // Collect all words on the page into a single string.
-  std::string pageText;
-  for (const auto& el : page.elements) {
-    if (el->getTag() != TAG_PageLine) continue;
-    const auto* line = static_cast<const PageLine*>(el.get());
-    for (const auto& w : line->getTextBlock()->getWords()) {
-      if (!pageText.empty()) pageText += ' ';
-      pageText += w;
+  // Collect translations for the paragraph range on this page.
+  for (int i = page.firstParagraphIdx; i <= page.lastParagraphIdx && i < (int)pairs.size(); i++) {
+    if (!pairs[i].translation.empty()) {
+      pageTranslations.push_back(pairs[i].translation);
     }
   }
 
-  if (pageText.empty()) return;
-
-  // For each (original, translation) pair from HTML, check if ANY part of the
-  // original paragraph's text appears on this page. This handles:
-  // - Paragraph fully on page (beginning matches)
-  // - Paragraph starts on previous page, only tail is here (middle/end matches)
-  // - Paragraph starts here but continues on next page (beginning matches)
-  for (const auto& pair : pairs) {
-    if (pair.original.empty() || pair.translation.empty()) continue;
-
-    // Normalize full original text: collapse whitespace to single spaces.
-    std::string normalized;
-    bool lastWasSpace = true;
-    for (char c : pair.original) {
-      if (c == ' ' || c == '\n' || c == '\r' || c == '\t') {
-        if (!lastWasSpace) normalized += ' ';
-        lastWasSpace = true;
-      } else {
-        normalized += c;
-        lastWasSpace = false;
-      }
-    }
-    while (!normalized.empty() && normalized.back() == ' ') normalized.pop_back();
-    if (normalized.size() < 3) continue;
-
-    // Try multiple snippets from different positions in the original text:
-    // beginning, middle, and near end — any match means this paragraph is on the page.
-    bool found = false;
-    constexpr int SNIPPET_LEN = 40;
-    int positions[] = {0, (int)normalized.size() / 3, (int)normalized.size() * 2 / 3};
-    for (int pos : positions) {
-      if (pos + SNIPPET_LEN > (int)normalized.size()) pos = std::max(0, (int)normalized.size() - SNIPPET_LEN);
-      // Align to word boundary (don't start mid-word).
-      while (pos > 0 && normalized[pos - 1] != ' ') pos++;
-      int len = std::min(SNIPPET_LEN, (int)normalized.size() - pos);
-      if (len < 3) continue;
-      if (pageText.find(normalized.c_str() + pos, 0, len) != std::string::npos) {
-        found = true;
-        break;
-      }
-    }
-
-    if (found) {
-      pageTranslations.push_back(pair.translation);
-    }
-  }
-
-  LOG_DBG("MOD", "Page: %d chars, %d/%d paragraphs matched", (int)pageText.size(), (int)pageTranslations.size(),
-          (int)pairs.size());
+  LOG_DBG("MOD", "Page paragraphs [%d..%d], %d translations (of %d pairs)", page.firstParagraphIdx,
+          page.lastParagraphIdx, (int)pageTranslations.size(), (int)pairs.size());
 }
 
 // ── Button handling ──────────────────────────────────────────────────────────
