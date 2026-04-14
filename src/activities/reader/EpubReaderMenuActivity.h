@@ -89,7 +89,7 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   const std::vector<StrId> translationModeLabels = {StrId::STR_NORMAL, StrId::STR_TRANSLATION_GREY,
                                                     StrId::STR_TRANSLATION_LIGHT_GREY, StrId::STR_NO_RENDER,
                                                     StrId::STR_INVERT_TRANSLATION, StrId::STR_SIDE_BY_SIDE,
-                                                    StrId::STR_TOOLTIP};
+                                                    StrId::STR_TOOLTIP, StrId::STR_MODAL};
   uint8_t pendingFontFamily = 0;
   const std::vector<StrId> fontFamilyLabels = {StrId::STR_BOOKERLY, StrId::STR_EDSLAB, StrId::STR_ALEGREYA,
                                                 StrId::STR_GPRO};
