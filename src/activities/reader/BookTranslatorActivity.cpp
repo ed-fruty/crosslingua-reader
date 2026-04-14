@@ -183,6 +183,19 @@ void BookTranslatorActivity::runTranslation() {
 
   const auto& cachePath = epub->getCachePath();
 
+  // Ensure sections directory exists (normally created by Section::createSectionFile,
+  // but chapters the user hasn't visited yet won't have it).
+  const std::string sectionsDir = cachePath + "/sections";
+  Storage.mkdir(sectionsDir.c_str());
+
+  // Dump ALL spine items for debugging
+  LOG_DBG("BKT", "=== SPINE DUMP: %d items ===", totalChapters);
+  for (int i = 0; i < totalChapters; i++) {
+    const auto& item = epub->getSpineItem(i);
+    LOG_DBG("BKT", "  spine[%d] href=%s", i, item.href.c_str());
+  }
+  LOG_DBG("BKT", "=== END SPINE DUMP ===");
+
   for (int si = 0; si < totalChapters; si++) {
     if (cancelFlag) break;
 
@@ -214,13 +227,16 @@ void BookTranslatorActivity::runTranslation() {
       taskFailed = true;
       return;
     }
+    tmpFile.flush();
+    size_t tmpSize = tmpFile.size();
     tmpFile.close();
 
     // Count blocks for progress bar
     progressTotal = TranslatingHtmlRewriter::countBlocksInFile(tmpPath);
     progressCurrent = 0;
 
-    LOG_DBG("BKT", "Chapter %d/%d: %d blocks, translating...", si + 1, totalChapters, (int)progressTotal);
+    LOG_DBG("BKT", "Ch %d/%d: href=%s, size=%d, blocks=%d",
+            si + 1, totalChapters, spineItem.href.c_str(), (int)tmpSize, (int)progressTotal);
 
     // Delete old translation if exists
     if (Storage.exists(translatedPath.c_str())) {
@@ -243,6 +259,10 @@ void BookTranslatorActivity::runTranslation() {
     outFile.close();
     Storage.remove(tmpPath.c_str());
 
+    LOG_DBG("BKT", "Ch %d/%d: translated=%d, skipped=%d, errors=%d, cancelled=%d",
+            si + 1, totalChapters, result.paragraphsTranslated, result.paragraphsSkipped,
+            result.abortedOnErrors ? 1 : 0, result.cancelled ? 1 : 0);
+
     if (cancelFlag || result.cancelled) {
       Storage.remove(translatedPath.c_str());
       break;
@@ -260,8 +280,12 @@ void BookTranslatorActivity::runTranslation() {
     }
 
     chaptersCompleted++;
-    LOG_DBG("BKT", "Chapter %d/%d: done (%d translated, %d skipped)", si + 1, totalChapters,
-            result.paragraphsTranslated, result.paragraphsSkipped);
+    LOG_DBG("BKT", "Chapter %d/%d: done (%d translated, %d skipped), free=%d",
+            si + 1, totalChapters, result.paragraphsTranslated, result.paragraphsSkipped,
+            (int)ESP.getFreeHeap());
+
+    // Let heap recover between chapters — prevents fragmentation from accumulating.
+    delay(500);
   }
 
   taskDone = true;

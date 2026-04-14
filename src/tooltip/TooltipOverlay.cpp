@@ -19,9 +19,16 @@ bool TooltipOverlay::handleInput(MappedInputManager& input) {
   const auto backBtn =
       useFrontButtons ? MappedInputManager::Button::Left : MappedInputManager::Button::PageBack;
   const bool pageTurnMode = (SETTINGS.tooltipBehavior == 1);
+  constexpr unsigned long longPressMs = 700;
 
   // Next button.
   if (input.wasReleased(nextBtn)) {
+    // Long press: turn page forward (like non-tooltip mode), dismiss tooltip.
+    if (input.getHeldTime() >= longPressMs) {
+      pendingPageForward = true;
+      currentSentenceIndex = -1;
+      return true;
+    }
     skipDirection = 1;
     if (currentSentenceIndex < 0) {
       currentSentenceIndex = 0;  // activate; auto-skip finds first with translation
@@ -45,6 +52,12 @@ bool TooltipOverlay::handleInput(MappedInputManager& input) {
 
   // Back button.
   if (input.wasReleased(backBtn)) {
+    // Long press: turn page backward (like non-tooltip mode), dismiss tooltip.
+    if (input.getHeldTime() >= longPressMs) {
+      pendingPageBack = true;
+      currentSentenceIndex = -1;
+      return true;
+    }
     skipDirection = -1;
     if (currentSentenceIndex < 0) {
       currentSentenceIndex = 0;  // activate; auto-skip with dir=-1 wraps to last

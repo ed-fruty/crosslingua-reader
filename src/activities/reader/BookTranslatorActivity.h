@@ -46,7 +46,7 @@ class BookTranslatorActivity final : public ActivityWithSubactivity {
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
-  bool preventAutoSleep() override { return state == TRANSLATING || state == WIFI_SELECTION; }
+  bool preventAutoSleep() override { return true; }  // Never sleep during book translation
 
  private:
   std::shared_ptr<Epub> epub;
