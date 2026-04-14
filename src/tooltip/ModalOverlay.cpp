@@ -86,12 +86,15 @@ static void XMLCALL modalOnEnd(void* ud, const XML_Char* name) {
 
   if (ctx->isTranslation) {
     if (ctx->hasLastOrig) {
-      ctx->entries->push_back({std::move(t)});
+      // Replace the empty slot we pushed for this original with the actual translation.
+      ctx->entries->back().translation = std::move(t);
       ctx->hasLastOrig = false;
     }
   } else {
-    // Original paragraph — reserve a slot. If no translation follows,
-    // the slot stays from the previous push (translations are paired by index).
+    // Every original block gets a slot — even if no translation follows.
+    // This keeps indices aligned with ChapterHtmlSlimParser's paragraphCounter
+    // which counts ALL non-empty text blocks (headings, divs, paragraphs).
+    ctx->entries->push_back({""});
     ctx->hasLastOrig = true;
   }
   ctx->currentText.clear();
