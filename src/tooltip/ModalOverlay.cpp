@@ -290,7 +290,7 @@ void ModalOverlay::render(GfxRenderer& renderer, const Page& page, int fontId, i
   const int spW = renderer.getSpaceWidth(modalFontId);
   constexpr int PAD = 10;
   const int maxTextW = viewportWidth - 2 * PAD;
-  const int paraSpacing = lh / 2;
+  const int paraSpacing = lh;  // Full line height so scroll stays aligned
 
   cachedViewportHeight = viewportHeight;
   cachedLineHeight = lh;
