@@ -120,7 +120,7 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
     wordColor = 0;
   }
 
-  // Tooltip: keep both original and translated text as-is.
+  // Tooltip & Modal: keep both original and translated text as-is.
   // Translated words retain their grayLevel marker and will be hidden
   // at render time via colorTextGrayLevel=3, but stay in TextBlock for extraction.
   // (No transformation needed — wordColor passes through unchanged.)

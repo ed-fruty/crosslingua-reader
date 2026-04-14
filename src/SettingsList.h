@@ -76,14 +76,14 @@ inline std::vector<SettingInfo> getSettingsList() {
       SettingInfo::Enum(StrId::STR_TRANSLATION_MODE, &CrossPointSettings::colorTextStyle,
                         {StrId::STR_NORMAL, StrId::STR_TRANSLATION_GREY, StrId::STR_TRANSLATION_LIGHT_GREY,
                          StrId::STR_NO_RENDER, StrId::STR_INVERT_TRANSLATION, StrId::STR_SIDE_BY_SIDE,
-                         StrId::STR_TOOLTIP},
+                         StrId::STR_TOOLTIP, StrId::STR_MODAL},
                         "colorTextStyle", StrId::STR_CAT_READER),
 
       // --- Controls ---
       SettingInfo::Enum(StrId::STR_SIDE_BTN_LAYOUT, &CrossPointSettings::sideButtonLayout,
                         {StrId::STR_PREV_NEXT, StrId::STR_NEXT_PREV}, "sideButtonLayout", StrId::STR_CAT_CONTROLS),
       SettingInfo::Enum(StrId::STR_LONG_PRESS_SKIP, &CrossPointSettings::longPressChapterSkip,
-                        {StrId::STR_NONE_OPT, StrId::STR_CHAPTER_SKIP, StrId::STR_TRANSLATION_MODES},
+                        {StrId::STR_NONE_OPT, StrId::STR_CHAPTER_SKIP},
                         "longPressChapterSkip", StrId::STR_CAT_CONTROLS),
       SettingInfo::Enum(StrId::STR_LONG_PRESS_OK, &CrossPointSettings::longPressOk,
                         {StrId::STR_TOGGLE_TRANSLATION, StrId::STR_TRANSLATE_PAGE}, "longPressOk",

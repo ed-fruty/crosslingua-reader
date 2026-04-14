@@ -114,7 +114,7 @@ class CrossPointSettings {
   };
 
   // Long-press side button behavior
-  enum LONG_PRESS_SIDE { LP_NONE = 0, LP_CHAPTER_SKIP = 1, LP_TRANSLATION_MODES = 2, LONG_PRESS_SIDE_COUNT };
+  enum LONG_PRESS_SIDE { LP_NONE = 0, LP_CHAPTER_SKIP = 1, LONG_PRESS_SIDE_COUNT };
 
   // Long-press OK button behavior
   enum LONG_PRESS_OK { LP_OK_TOGGLE_TRANSLATION = 0, LP_OK_TRANSLATE_PAGE = 1, LONG_PRESS_OK_COUNT };
@@ -172,7 +172,7 @@ class CrossPointSettings {
   char opdsPassword[64] = "";
   // Hide battery percentage
   uint8_t hideBatteryPercentage = HIDE_NEVER;
-  // Long-press side button behavior (LP_NONE, LP_CHAPTER_SKIP, LP_TRANSLATION_MODES)
+  // Long-press side button behavior (LP_NONE, LP_CHAPTER_SKIP)
   uint8_t longPressChapterSkip = LP_CHAPTER_SKIP;
   // Long-press OK button behavior (LP_OK_TOGGLE_TRANSLATION, LP_OK_TRANSLATE_PAGE)
   uint8_t longPressOk = LP_OK_TOGGLE_TRANSLATION;
@@ -183,7 +183,7 @@ class CrossPointSettings {
   // Use book's embedded CSS styles for EPUB rendering (1 = enabled, 0 = disabled)
   uint8_t embeddedStyle = 1;
   // How CSS-colored text renders on e-ink: 0=Normal, 1=Dark, 2=Light, 3=No Render, 4=Invert
-  enum COLOR_TEXT_STYLE { CT_NORMAL = 0, CT_DARK = 1, CT_LIGHT = 2, CT_NO_RENDER = 3, CT_INVERT = 4, CT_SIDE_BY_SIDE = 5, CT_TOOLTIP = 6, COLOR_TEXT_STYLE_COUNT };
+  enum COLOR_TEXT_STYLE { CT_NORMAL = 0, CT_DARK = 1, CT_LIGHT = 2, CT_NO_RENDER = 3, CT_INVERT = 4, CT_SIDE_BY_SIDE = 5, CT_TOOLTIP = 6, CT_MODAL = 7, COLOR_TEXT_STYLE_COUNT };
   uint8_t colorTextStyle = CT_DARK;
   // Last-used translation language (index into LanguagePickerActivity::LANGUAGES[], 0xFF = unset)
   uint8_t translationLanguage = 0xFF;

@@ -174,6 +174,7 @@ void EpubReaderActivity::loop() {
                                        chapterHasEmbeddedTranslations(epub, currentSpineIndex);
         const auto translatedPath = section->getTranslatedHtmlPath();
         const int si = currentSpineIndex;
+        LOG_DBG("ERS", "Translate Chapter: spineIndex=%d, href=%s", si, epub->getSpineItem(si).href.c_str());
         enterNewActivity(new ChapterTranslatorActivity(
             renderer, mappedInput, epub, si, translatedPath, alreadyTranslated,
             [this] {
@@ -414,22 +415,6 @@ void EpubReaderActivity::loop() {
       nextPageNumber = 0;
       currentSpineIndex = nextTriggered ? currentSpineIndex + 1 : currentSpineIndex - 1;
       section.reset();
-    }
-    requestUpdate();
-    return;
-  }
-
-  // In Translation Modes, long-press side buttons switch orientation + translation mode
-  if (SETTINGS.longPressChapterSkip == CrossPointSettings::LP_TRANSLATION_MODES &&
-      mappedInput.getHeldTime() > skipChapterMs) {
-    if (nextTriggered) {
-      // Long-press PageForward: Landscape CCW + Side by Side
-      applyOrientation(CrossPointSettings::ORIENTATION::LANDSCAPE_CCW);
-      applyTranslationMode(CrossPointSettings::CT_SIDE_BY_SIDE);
-    } else {
-      // Long-press PageBack: Portrait + Original Only
-      applyOrientation(CrossPointSettings::ORIENTATION::PORTRAIT);
-      applyTranslationMode(CrossPointSettings::CT_NO_RENDER);
     }
     requestUpdate();
     return;
@@ -868,9 +853,11 @@ void EpubReaderActivity::render(Activity::RenderLock&& lock) {
     // CT_TOOLTIP renders exactly like Original Only (CT_NO_RENDER).
     // Translation data comes from the HTML file, not the section cache.
     const uint8_t effectiveColorTextStyle =
-        !hasTranslation                                                          ? CrossPointSettings::CT_NORMAL
-        : SETTINGS.colorTextStyle == CrossPointSettings::CT_TOOLTIP ? CrossPointSettings::CT_NO_RENDER
-                                                                                 : SETTINGS.colorTextStyle;
+        !hasTranslation ? CrossPointSettings::CT_NORMAL
+        : (SETTINGS.colorTextStyle == CrossPointSettings::CT_TOOLTIP ||
+           SETTINGS.colorTextStyle == CrossPointSettings::CT_MODAL)
+            ? CrossPointSettings::CT_NO_RENDER
+            : SETTINGS.colorTextStyle;
 
     if (!section->loadSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
                                   SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
@@ -994,24 +981,6 @@ void EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageC
   }
 }
 bool EpubReaderActivity::handleLongPressConfirm() {
-  if (SETTINGS.longPressChapterSkip == CrossPointSettings::LP_TRANSLATION_MODES &&
-      mappedInput.isPressed(MappedInputManager::Button::PageForward)) {
-    // OK + PageForward: switch to Landscape CCW + Side by Side
-    applyOrientation(CrossPointSettings::ORIENTATION::LANDSCAPE_CCW);
-    applyTranslationMode(CrossPointSettings::CT_SIDE_BY_SIDE);
-    skipNextButtonCheck = true;
-    requestUpdate();
-    return true;
-  }
-  if (SETTINGS.longPressChapterSkip == CrossPointSettings::LP_TRANSLATION_MODES &&
-      mappedInput.isPressed(MappedInputManager::Button::PageBack)) {
-    // OK + PageBack: switch to Portrait + Original Only
-    applyOrientation(CrossPointSettings::ORIENTATION::PORTRAIT);
-    applyTranslationMode(CrossPointSettings::CT_NO_RENDER);
-    skipNextButtonCheck = true;
-    requestUpdate();
-    return true;
-  }
   if (SETTINGS.longPressOk == CrossPointSettings::LP_OK_TRANSLATE_PAGE) {
     // Translate Page mode: launch page translator in Normal or Original Only
     if (SETTINGS.colorTextStyle == CrossPointSettings::CT_NORMAL ||
