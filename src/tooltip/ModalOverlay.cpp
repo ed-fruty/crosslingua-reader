@@ -31,6 +31,79 @@ void ModalOverlay::onPageChanged() {
   pageTranslations.clear();
 }
 
+// ── Sentence helpers ─────────────────────────────────────────────────────────
+
+// Count sentences in text. A sentence ends with . ! ? followed by space/end.
+static int countSentences(const std::string& text) {
+  if (text.empty()) return 0;
+  int count = 0;
+  for (int i = 0; i < (int)text.size(); i++) {
+    char c = text[i];
+    if (c == '.' || c == '!' || c == '?') {
+      // Skip ellipsis (... or . . .)
+      if (c == '.' && i + 1 < (int)text.size() && text[i + 1] == '.') continue;
+      // Check followed by space, end, or closing quote
+      int next = i + 1;
+      // Skip closing quotes/brackets
+      while (next < (int)text.size() && (text[next] == '"' || text[next] == '\'' || text[next] == ')' ||
+                                          text[next] == ']' || (uint8_t)text[next] > 0x80))
+        next++;
+      if (next >= (int)text.size() || text[next] == ' ' || text[next] == '\n') {
+        count++;
+      }
+    }
+  }
+  return std::max(1, count);  // At least 1 sentence per non-empty text
+}
+
+// Trim text to first N sentences. Returns the trimmed text.
+static std::string trimToSentences(const std::string& text, int maxSentences) {
+  if (maxSentences <= 0) return "";
+  int count = 0;
+  for (int i = 0; i < (int)text.size(); i++) {
+    char c = text[i];
+    if (c == '.' || c == '!' || c == '?') {
+      if (c == '.' && i + 1 < (int)text.size() && text[i + 1] == '.') continue;
+      int next = i + 1;
+      while (next < (int)text.size() && (text[next] == '"' || text[next] == '\'' || text[next] == ')' ||
+                                          text[next] == ']' || (uint8_t)text[next] > 0x80))
+        next++;
+      if (next >= (int)text.size() || text[next] == ' ' || text[next] == '\n') {
+        count++;
+        if (count >= maxSentences) {
+          return text.substr(0, next);
+        }
+      }
+    }
+  }
+  return text;  // Fewer sentences than max — return all
+}
+
+// Trim text to LAST N sentences.
+static std::string trimToLastSentences(const std::string& text, int maxSentences) {
+  if (maxSentences <= 0) return "";
+  // Find all sentence end positions
+  std::vector<int> ends;
+  for (int i = 0; i < (int)text.size(); i++) {
+    char c = text[i];
+    if (c == '.' || c == '!' || c == '?') {
+      if (c == '.' && i + 1 < (int)text.size() && text[i + 1] == '.') continue;
+      int next = i + 1;
+      while (next < (int)text.size() && (text[next] == '"' || text[next] == '\'' || text[next] == ')' ||
+                                          text[next] == ']' || (uint8_t)text[next] > 0x80))
+        next++;
+      if (next >= (int)text.size() || text[next] == ' ' || text[next] == '\n') {
+        ends.push_back(next);
+      }
+    }
+  }
+  if ((int)ends.size() <= maxSentences) return text;
+  int startFrom = ends[ends.size() - maxSentences];
+  // Skip leading space
+  while (startFrom < (int)text.size() && text[startFrom] == ' ') startFrom++;
+  return text.substr(startFrom);
+}
+
 // ── HTML parsing: extract (original, translation) paragraph pairs ─────────────
 
 static const char* BLOCK_TAGS[] = {"p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote", "div", nullptr};
@@ -86,17 +159,15 @@ static void XMLCALL modalOnEnd(void* ud, const XML_Char* name) {
 
   if (ctx->isTranslation) {
     if (ctx->hasLastOrig) {
-      // Replace the empty slot we pushed for this original with the actual translation.
       ctx->entries->back().translation = std::move(t);
+      ctx->entries->back().transSentenceCount = countSentences(ctx->entries->back().translation);
       ctx->hasLastOrig = false;
     }
   } else {
     // Every original block gets a slot — even if no translation follows.
-    // This keeps indices aligned with ChapterHtmlSlimParser's paragraphCounter
-    // which counts ALL non-empty text blocks (headings, divs, paragraphs).
-    // Store first ~30 chars of original for debug logging.
-    std::string origSnippet = t.substr(0, 30);
-    ctx->entries->push_back({std::move(origSnippet), ""});
+    // This keeps indices aligned with ChapterHtmlSlimParser's paragraphCounter.
+    int origSentences = countSentences(t);
+    ctx->entries->push_back({"", (int16_t)origSentences, 0});
     ctx->hasLastOrig = true;
   }
   ctx->currentText.clear();
@@ -178,8 +249,9 @@ void ModalOverlay::preparePage(const Page& page) {
   int logStart = std::max(0, (int)page.firstParagraphIdx - 2);
   int logEnd = std::min((int)pairs.size(), (int)page.lastParagraphIdx + 3);
   for (int i = logStart; i < logEnd; i++) {
-    LOG_DBG("MOD", "  pair[%d] orig='%.30s' trans=%s(len=%d)", i, pairs[i].original.c_str(),
-            pairs[i].translation.empty() ? "EMPTY" : "OK", (int)pairs[i].translation.size());
+    LOG_DBG("MOD", "  pair[%d] origS=%d transS=%d trans=%s(len=%d)", i, pairs[i].origSentenceCount,
+            pairs[i].transSentenceCount, pairs[i].translation.empty() ? "EMPTY" : "OK",
+            (int)pairs[i].translation.size());
   }
 
   // Log page text content for debugging
@@ -197,16 +269,87 @@ void ModalOverlay::preparePage(const Page& page) {
   }
   LOG_DBG("MOD", "Page first words: '%.80s'", firstWords.c_str());
 
-  // Collect translations for the paragraph range on this page.
-  for (int i = page.firstParagraphIdx; i <= page.lastParagraphIdx && i < (int)pairs.size(); i++) {
-    LOG_DBG("MOD", "  idx %d: translation %s (len=%d)", i, pairs[i].translation.empty() ? "EMPTY" : "OK",
-            (int)pairs[i].translation.size());
-    if (!pairs[i].translation.empty()) {
-      pageTranslations.push_back(pairs[i].translation);
+  // Build page text to detect partial paragraphs at boundaries.
+  std::string pageText;
+  for (const auto& el : page.elements) {
+    if (el->getTag() != TAG_PageLine) continue;
+    const auto* line = static_cast<const PageLine*>(el.get());
+    for (const auto& w : line->getTextBlock()->getWords()) {
+      if (!pageText.empty()) pageText += ' ';
+      pageText += w;
     }
   }
 
-  LOG_DBG("MOD", "Result: %d translations collected", (int)pageTranslations.size());
+  // Count sentences visible on the page for boundary paragraphs.
+  int pageSentences = countSentences(pageText);
+
+  // Collect translations for the paragraph range on this page.
+  // For first/last paragraphs, trim to visible sentence count if partial.
+  int first = page.firstParagraphIdx;
+  int last = page.lastParagraphIdx;
+
+  for (int i = first; i <= last && i < (int)pairs.size(); i++) {
+    if (pairs[i].translation.empty()) continue;
+
+    bool isFirst = (i == first);
+    bool isLast = (i == last);
+    bool isOnly = (first == last);  // Only one paragraph on page
+
+    if (isOnly) {
+      // Single paragraph on page — might be partial at both ends.
+      // Count sentences on page vs total in original.
+      int origTotal = pairs[i].origSentenceCount;
+      if (pageSentences < origTotal) {
+        // Partial — just show the page's sentence count from the translation.
+        // We don't know if it's head or tail, so take first N sentences.
+        pageTranslations.push_back(trimToSentences(pairs[i].translation, pageSentences));
+        LOG_DBG("MOD", "  idx %d: PARTIAL only, %d/%d sentences", i, pageSentences, origTotal);
+      } else {
+        pageTranslations.push_back(pairs[i].translation);
+        LOG_DBG("MOD", "  idx %d: FULL (only)", i);
+      }
+    } else if (isFirst) {
+      // First paragraph — might be a tail (continuation from previous page).
+      // Count sentences from first paragraph's text on page.
+      // Heuristic: sentences on page minus sentences from other paragraphs = first para's sentences.
+      int otherParaSentences = 0;
+      for (int j = first + 1; j <= last && j < (int)pairs.size(); j++) {
+        otherParaSentences += pairs[j].origSentenceCount;
+      }
+      int firstParaSentences = std::max(1, pageSentences - otherParaSentences);
+      int origTotal = pairs[i].origSentenceCount;
+      if (firstParaSentences < origTotal) {
+        // It's a tail — show last N sentences of translation.
+        pageTranslations.push_back(trimToLastSentences(pairs[i].translation, firstParaSentences));
+        LOG_DBG("MOD", "  idx %d: TAIL, %d/%d sentences", i, firstParaSentences, origTotal);
+      } else {
+        pageTranslations.push_back(pairs[i].translation);
+        LOG_DBG("MOD", "  idx %d: FULL (first)", i);
+      }
+    } else if (isLast) {
+      // Last paragraph — might be a head (continues on next page).
+      int otherParaSentences = 0;
+      for (int j = first; j < last && j < (int)pairs.size(); j++) {
+        otherParaSentences += pairs[j].origSentenceCount;
+      }
+      int lastParaSentences = std::max(1, pageSentences - otherParaSentences);
+      int origTotal = pairs[i].origSentenceCount;
+      if (lastParaSentences < origTotal) {
+        // It's a head — show first N sentences of translation.
+        pageTranslations.push_back(trimToSentences(pairs[i].translation, lastParaSentences));
+        LOG_DBG("MOD", "  idx %d: HEAD, %d/%d sentences", i, lastParaSentences, origTotal);
+      } else {
+        pageTranslations.push_back(pairs[i].translation);
+        LOG_DBG("MOD", "  idx %d: FULL (last)", i);
+      }
+    } else {
+      // Middle paragraph — always full.
+      pageTranslations.push_back(pairs[i].translation);
+      LOG_DBG("MOD", "  idx %d: FULL (middle)", i);
+    }
+  }
+
+  LOG_DBG("MOD", "Result: %d translations, pageSentences=%d", (int)pageTranslations.size(), pageSentences);
 }
 
 // ── Button handling ──────────────────────────────────────────────────────────
