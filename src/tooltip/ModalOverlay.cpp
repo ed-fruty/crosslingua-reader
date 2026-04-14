@@ -361,41 +361,33 @@ void ModalOverlay::preparePage(const Page& page) {
     }
 
     if (visibleSentences > 0 && visibleSentences < origTotal) {
-      // +1 for the incomplete sentence fragment at the boundary.
-      // +2: visible counts only complete sentences, but page also has
-      // a broken sentence at the start (counted from fromSentence) and
-      // a broken sentence at the end. +2 covers both.
-      int showSentences = std::min(visibleSentences + 2, (int)pairs[i].transSentenceCount);
-
       if (isFirst && !isLast) {
-        // Tail — continuation from previous page.
-        // Find how many sentences are BEFORE the visible portion, skip them.
+        // Tail — only START is broken (+1), end is full.
+        int show = std::min(visibleSentences + 1, (int)pairs[i].transSentenceCount);
         int skipSentences = countSentencesBefore(pairs[i].origText, visibleText);
-        // countSentencesBefore = fully completed sentences before visible text.
-        // Start from that index = the broken sentence straddling the boundary.
         int fromSentence = skipSentences;
-        int toSentence = std::min(fromSentence + showSentences, (int)pairs[i].transSentenceCount);
-        // Use trimToSentences to get first `toSentence`, then trimToLastSentences to drop first `fromSentence`.
+        int toSentence = std::min(fromSentence + show, (int)pairs[i].transSentenceCount);
         std::string trimmed = trimToSentences(pairs[i].translation, toSentence);
         if (fromSentence > 0) trimmed = trimToLastSentences(trimmed, toSentence - fromSentence);
         pageTranslations.push_back(std::move(trimmed));
-        LOG_DBG("MOD", "  idx %d: TAIL, skip=%d show=%d/%d (visible=%d)", i, skipSentences, showSentences, origTotal,
+        LOG_DBG("MOD", "  idx %d: TAIL, skip=%d show=%d/%d (visible=%d)", i, skipSentences, show, origTotal,
                 visibleSentences);
       } else if (isLast && !isFirst) {
-        // Head — continues on next page. Show first N+1 sentences.
-        pageTranslations.push_back(trimToSentences(pairs[i].translation, showSentences));
-        LOG_DBG("MOD", "  idx %d: HEAD, %d/%d sentences (visible=%d)", i, showSentences, origTotal, visibleSentences);
+        // Head — only END is broken (+1), start is full.
+        int show = std::min(visibleSentences + 1, (int)pairs[i].transSentenceCount);
+        pageTranslations.push_back(trimToSentences(pairs[i].translation, show));
+        LOG_DBG("MOD", "  idx %d: HEAD, %d/%d sentences (visible=%d)", i, show, origTotal, visibleSentences);
       } else if (isFirst && isLast) {
-        // Single partial paragraph (middle of a large paragraph).
-        // Find where visible text starts, skip sentences before it, show visible count.
+        // PARTIAL — both edges broken (+2).
+        int show = std::min(visibleSentences + 2, (int)pairs[i].transSentenceCount);
         int skipSentences = countSentencesBefore(pairs[i].origText, visibleText);
         int fromSentence = skipSentences;
-        int toSentence = std::min(fromSentence + showSentences, (int)pairs[i].transSentenceCount);
+        int toSentence = std::min(fromSentence + show, (int)pairs[i].transSentenceCount);
         std::string trimmed = trimToSentences(pairs[i].translation, toSentence);
         if (fromSentence > 0) trimmed = trimToLastSentences(trimmed, toSentence - fromSentence);
         pageTranslations.push_back(std::move(trimmed));
-        LOG_DBG("MOD", "  idx %d: PARTIAL, skip=%d show=%d/%d (visible=%d)", i, skipSentences, showSentences,
-                origTotal, visibleSentences);
+        LOG_DBG("MOD", "  idx %d: PARTIAL, skip=%d show=%d/%d (visible=%d)", i, skipSentences, show, origTotal,
+                visibleSentences);
       }
     } else {
       // Full paragraph on page.
