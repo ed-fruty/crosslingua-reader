@@ -166,17 +166,28 @@ void ModalOverlay::preparePage(const Page& page) {
   if (pageText.empty()) return;
 
   // For each (original, translation) pair from HTML, check if the original
-  // paragraph's text appears on this page. We check if the first ~50 chars
-  // of the original can be found in the page text.
+  // paragraph's text appears on this page. We normalize the original text
+  // to single spaces (HTML may have newlines, multiple spaces) and compare
+  // the first few words against the page text.
   for (const auto& pair : pairs) {
     if (pair.original.empty() || pair.translation.empty()) continue;
 
-    // Take the first ~50 characters of the original as a search snippet.
-    // This is enough to uniquely identify a paragraph on the page.
-    int snippetLen = std::min((int)pair.original.size(), 50);
-    std::string snippet = pair.original.substr(0, snippetLen);
+    // Normalize original text: collapse whitespace to single spaces, take first ~50 chars.
+    std::string normalized;
+    bool lastWasSpace = true;  // skip leading whitespace
+    for (char c : pair.original) {
+      if (c == ' ' || c == '\n' || c == '\r' || c == '\t') {
+        if (!lastWasSpace && (int)normalized.size() < 60) normalized += ' ';
+        lastWasSpace = true;
+      } else {
+        normalized += c;
+        lastWasSpace = false;
+      }
+      if ((int)normalized.size() >= 50) break;
+    }
+    while (!normalized.empty() && normalized.back() == ' ') normalized.pop_back();
 
-    if (pageText.find(snippet) != std::string::npos) {
+    if (normalized.size() >= 3 && pageText.find(normalized) != std::string::npos) {
       pageTranslations.push_back(pair.translation);
     }
   }
