@@ -7,12 +7,14 @@
 #include "EpubReaderMenuActivity.h"
 #include "PageTranslatorActivity.h"
 #include "activities/ActivityWithSubactivity.h"
+#include "tooltip/ModalOverlay.h"
 #include "tooltip/TooltipOverlay.h"
 
 class EpubReaderActivity final : public ActivityWithSubactivity {
   std::shared_ptr<Epub> epub;
   std::unique_ptr<Section> section = nullptr;
   std::unique_ptr<TooltipOverlay> tooltipOverlay;
+  std::unique_ptr<ModalOverlay> modalOverlay;
   int currentSpineIndex = 0;
   int nextPageNumber = 0;
   int pagesUntilFullRefresh = 0;

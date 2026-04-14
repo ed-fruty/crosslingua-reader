@@ -126,6 +126,9 @@ void EpubReaderActivity::onEnter() {
   if (SETTINGS.colorTextStyle == CrossPointSettings::CT_TOOLTIP) {
     tooltipOverlay = std::make_unique<TooltipOverlay>();
   }
+  if (SETTINGS.colorTextStyle == CrossPointSettings::CT_MODAL) {
+    modalOverlay = std::make_unique<ModalOverlay>();
+  }
 
   // Trigger first update
   requestUpdate();
@@ -327,6 +330,12 @@ void EpubReaderActivity::loop() {
     return;
   }
 
+  // Modal mode: long press activates, short taps scroll while active
+  if (modalOverlay && modalOverlay->handleInput(mappedInput)) {
+    requestUpdate();
+    return;
+  }
+
   // Confirm button: short press opens menu, long press (>=700ms) triggers mode shortcuts
   constexpr unsigned long longPressMs = 700;
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
@@ -429,6 +438,9 @@ void EpubReaderActivity::loop() {
   // Reset tooltip when changing pages
   if (tooltipOverlay && (prevTriggered || nextTriggered)) {
     tooltipOverlay->onPageChanged();
+  }
+  if (modalOverlay && (prevTriggered || nextTriggered)) {
+    modalOverlay->onPageChanged();
   }
 
   if (prevTriggered) {
@@ -722,11 +734,16 @@ void EpubReaderActivity::applyTranslationMode(const uint8_t translationMode) {
     SETTINGS.colorTextStyle = translationMode;
     SETTINGS.saveToFile();
 
-    // Create or destroy tooltip overlay based on mode
+    // Create or destroy overlays based on mode
     if (translationMode == CrossPointSettings::CT_TOOLTIP) {
       tooltipOverlay = std::make_unique<TooltipOverlay>();
+      modalOverlay.reset();
+    } else if (translationMode == CrossPointSettings::CT_MODAL) {
+      modalOverlay = std::make_unique<ModalOverlay>();
+      tooltipOverlay.reset();
     } else {
       tooltipOverlay.reset();
+      modalOverlay.reset();
     }
 
     // Reset section to force re-layout with the new translation mode.
@@ -926,6 +943,26 @@ void EpubReaderActivity::render(Activity::RenderLock&& lock) {
         tooltipOverlay->setTranslatedHtmlPath(tipPath);
       }
     }
+
+    // Set up modal data source.
+    if (modalOverlay) {
+      modalOverlay->onSectionChanged();
+      if (section->hasTranslatedHtml()) {
+        modalOverlay->setTranslatedHtmlPath(section->getTranslatedHtmlPath());
+      } else if (hasTranslation) {
+        const auto modalPath =
+            epub->getCachePath() + "/sections/" + std::to_string(currentSpineIndex) + ".modal.html";
+        if (!Storage.exists(modalPath.c_str())) {
+          const auto href = epub->getSpineItem(currentSpineIndex).href;
+          FsFile tmpFile;
+          if (Storage.openFileForWrite("MOD", modalPath, tmpFile)) {
+            epub->readItemContentsToStream(href, tmpFile, 1024);
+            tmpFile.close();
+          }
+        }
+        modalOverlay->setTranslatedHtmlPath(modalPath);
+      }
+    }
   }
 
   renderer.clearScreen();
@@ -1020,6 +1057,13 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     const int vpHeight = renderer.getScreenHeight() - orientedMarginTop - orientedMarginBottom;
     tooltipOverlay->render(renderer, *page, SETTINGS.getReaderFontId(), tooltipFontId, orientedMarginLeft,
                            orientedMarginTop, vpWidth, vpHeight);
+  }
+  if (modalOverlay && modalOverlay->isActive()) {
+    const int modalFontId = getModalFontId();
+    const int vpWidth = renderer.getScreenWidth() - orientedMarginLeft - orientedMarginRight;
+    const int vpHeight = renderer.getScreenHeight() - orientedMarginTop - orientedMarginBottom;
+    modalOverlay->render(renderer, *page, SETTINGS.getReaderFontId(), modalFontId, orientedMarginLeft,
+                         orientedMarginTop, vpWidth, vpHeight);
   }
   renderStatusBar(orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
   if (forceFullRefresh || pagesUntilFullRefresh <= 1) {
