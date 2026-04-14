@@ -230,12 +230,14 @@ bool ModalOverlay::handleInput(MappedInputManager& input) {
       return false;
     }
     if (totalContentHeight > 0 && scrollOffset < totalContentHeight) {
-      // Scroll by exactly one screenful — no overlap, next press = next content.
       const int lh = cachedLineHeight > 0 ? cachedLineHeight : 20;
       const int screenScroll = (cachedViewportHeight / lh) * lh;
+      LOG_DBG("MOD", "SCROLL NEXT: offset %d -> %d (step=%d, vpH=%d, lh=%d, totalH=%d)",
+              scrollOffset, scrollOffset + screenScroll, screenScroll, cachedViewportHeight, lh, totalContentHeight);
       scrollOffset += screenScroll;
       if (scrollOffset > totalContentHeight) scrollOffset = totalContentHeight;
     } else {
+      LOG_DBG("MOD", "SCROLL NEXT: at bottom, closing (offset=%d, totalH=%d)", scrollOffset, totalContentHeight);
       active = false;
       scrollOffset = 0;
     }
