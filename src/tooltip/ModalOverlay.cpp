@@ -150,24 +150,56 @@ void ModalOverlay::preparePage(const Page& page) {
   totalContentHeight = 0;
 
   // The page knows exactly which paragraph indices it contains (set by the parser).
+  LOG_DBG("MOD", "Page paragraph indices: first=%d last=%d", page.firstParagraphIdx, page.lastParagraphIdx);
+
   if (page.firstParagraphIdx < 0 || page.lastParagraphIdx < 0) {
     LOG_DBG("MOD", "Page has no paragraph indices (old cache?) — clear cache and retry");
     return;
   }
 
-  // Parse HTML to get (original, translation) pairs. Temporary — freed after this function.
+  LOG_DBG("MOD", "HTML path: %s", translatedHtmlPath.c_str());
+
+  // Parse HTML to get translation entries. Temporary — freed after this function.
   auto pairs = parseChapterHtml(translatedHtmlPath);
-  if (pairs.empty()) return;
+  if (pairs.empty()) {
+    LOG_DBG("MOD", "No pairs parsed from HTML");
+    return;
+  }
+
+  LOG_DBG("MOD", "Parsed %d pairs, page wants indices [%d..%d]", (int)pairs.size(), page.firstParagraphIdx,
+          page.lastParagraphIdx);
+
+  // Log first few pairs for debugging
+  for (int i = 0; i < std::min((int)pairs.size(), 5); i++) {
+    LOG_DBG("MOD", "  pair[%d] translation: '%.60s%s'", i, pairs[i].translation.c_str(),
+            pairs[i].translation.size() > 60 ? "..." : "");
+  }
+
+  // Log page text content for debugging
+  std::string firstWords;
+  int wc = 0;
+  for (const auto& el : page.elements) {
+    if (el->getTag() != TAG_PageLine) continue;
+    const auto* line = static_cast<const PageLine*>(el.get());
+    for (const auto& w : line->getTextBlock()->getWords()) {
+      if (!firstWords.empty()) firstWords += ' ';
+      firstWords += w;
+      if (++wc >= 10) break;
+    }
+    if (wc >= 10) break;
+  }
+  LOG_DBG("MOD", "Page first words: '%.80s'", firstWords.c_str());
 
   // Collect translations for the paragraph range on this page.
   for (int i = page.firstParagraphIdx; i <= page.lastParagraphIdx && i < (int)pairs.size(); i++) {
+    LOG_DBG("MOD", "  idx %d: translation %s (len=%d)", i, pairs[i].translation.empty() ? "EMPTY" : "OK",
+            (int)pairs[i].translation.size());
     if (!pairs[i].translation.empty()) {
       pageTranslations.push_back(pairs[i].translation);
     }
   }
 
-  LOG_DBG("MOD", "Page paragraphs [%d..%d], %d translations (of %d pairs)", page.firstParagraphIdx,
-          page.lastParagraphIdx, (int)pageTranslations.size(), (int)pairs.size());
+  LOG_DBG("MOD", "Result: %d translations collected", (int)pageTranslations.size());
 }
 
 // ── Button handling ──────────────────────────────────────────────────────────
