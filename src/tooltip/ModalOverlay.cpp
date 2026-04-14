@@ -310,18 +310,21 @@ void ModalOverlay::preparePage(const Page& page) {
     bool isLast = (i == last);
 
     if (visibleSentences > 0 && visibleSentences < origTotal) {
+      // +1 for the incomplete sentence fragment at the boundary.
+      int showSentences = std::min(visibleSentences + 1, (int)pairs[i].transSentenceCount);
       if (isFirst && !isLast) {
-        // Tail — continuation from previous page. Show last N sentences.
-        pageTranslations.push_back(trimToLastSentences(pairs[i].translation, visibleSentences));
-        LOG_DBG("MOD", "  idx %d: TAIL, %d/%d sentences", i, visibleSentences, origTotal);
+        // Tail — continuation from previous page. Show last N+1 sentences.
+        pageTranslations.push_back(trimToLastSentences(pairs[i].translation, showSentences));
+        LOG_DBG("MOD", "  idx %d: TAIL, %d/%d sentences (visible=%d)", i, showSentences, origTotal, visibleSentences);
       } else if (isLast && !isFirst) {
-        // Head — continues on next page. Show first N sentences.
-        pageTranslations.push_back(trimToSentences(pairs[i].translation, visibleSentences));
-        LOG_DBG("MOD", "  idx %d: HEAD, %d/%d sentences", i, visibleSentences, origTotal);
+        // Head — continues on next page. Show first N+1 sentences.
+        pageTranslations.push_back(trimToSentences(pairs[i].translation, showSentences));
+        LOG_DBG("MOD", "  idx %d: HEAD, %d/%d sentences (visible=%d)", i, showSentences, origTotal, visibleSentences);
       } else if (isFirst && isLast) {
-        // Only paragraph, partial at both ends — show first N sentences.
-        pageTranslations.push_back(trimToSentences(pairs[i].translation, visibleSentences));
-        LOG_DBG("MOD", "  idx %d: PARTIAL, %d/%d sentences", i, visibleSentences, origTotal);
+        // Only paragraph, partial at both ends — +2 (one for each boundary).
+        int showBoth = std::min(visibleSentences + 2, (int)pairs[i].transSentenceCount);
+        pageTranslations.push_back(trimToSentences(pairs[i].translation, showBoth));
+        LOG_DBG("MOD", "  idx %d: PARTIAL, %d/%d sentences (visible=%d)", i, showBoth, origTotal, visibleSentences);
       }
     } else {
       // Full paragraph on page.
