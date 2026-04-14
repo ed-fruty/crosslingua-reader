@@ -367,8 +367,9 @@ void ModalOverlay::preparePage(const Page& page) {
         // Tail — continuation from previous page.
         // Find how many sentences are BEFORE the visible portion, skip them.
         int skipSentences = countSentencesBefore(pairs[i].origText, visibleText);
-        // -1 to include the broken sentence that starts on the previous page
-        int fromSentence = std::max(0, skipSentences - 1);
+        // -2: one because the broken sentence at the boundary isn't counted,
+        // and one more to include the sentence that ends right at the page start.
+        int fromSentence = std::max(0, skipSentences - 2);
         int toSentence = std::min(fromSentence + showSentences, (int)pairs[i].transSentenceCount);
         // Use trimToSentences to get first `toSentence`, then trimToLastSentences to drop first `fromSentence`.
         std::string trimmed = trimToSentences(pairs[i].translation, toSentence);
