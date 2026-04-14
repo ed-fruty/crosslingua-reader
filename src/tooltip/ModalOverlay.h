@@ -11,6 +11,7 @@ class ModalOverlay {
  public:
   // Public because static XML callbacks in the .cpp need access.
   struct ParagraphPair {
+    std::string origText;       // full original text (temporary, freed after preparePage)
     std::string translation;    // translated paragraph text (indexed by paragraph position)
     int16_t origSentenceCount;  // number of sentences in original paragraph
     int16_t transSentenceCount; // number of sentences in translation

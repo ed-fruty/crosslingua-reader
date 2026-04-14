@@ -104,6 +104,48 @@ static std::string trimToLastSentences(const std::string& text, int maxSentences
   return text.substr(startFrom);
 }
 
+// Count sentences in origText that end BEFORE the position where visibleText starts.
+// Used to determine how many sentences to skip in translation for tail paragraphs.
+static int countSentencesBefore(const std::string& origText, const std::string& visibleStart) {
+  if (visibleStart.empty() || origText.empty()) return 0;
+
+  // Normalize visibleStart: collapse whitespace, take first 40 chars
+  std::string needle;
+  bool lastSp = true;
+  for (char c : visibleStart) {
+    if (c == ' ' || c == '\n' || c == '\r' || c == '\t') {
+      if (!lastSp) needle += ' ';
+      lastSp = true;
+    } else {
+      needle += c;
+      lastSp = false;
+    }
+    if ((int)needle.size() >= 40) break;
+  }
+  while (!needle.empty() && needle.back() == ' ') needle.pop_back();
+  if (needle.size() < 3) return 0;
+
+  // Normalize origText too
+  std::string normOrig;
+  lastSp = true;
+  for (char c : origText) {
+    if (c == ' ' || c == '\n' || c == '\r' || c == '\t') {
+      if (!lastSp) normOrig += ' ';
+      lastSp = true;
+    } else {
+      normOrig += c;
+      lastSp = false;
+    }
+  }
+
+  // Find where the visible text starts in the original
+  auto pos = normOrig.find(needle);
+  if (pos == std::string::npos) return 0;
+
+  // Count sentences that end before this position
+  return countSentences(normOrig.substr(0, pos));
+}
+
 // ── HTML parsing: extract (original, translation) paragraph pairs ─────────────
 
 static const char* BLOCK_TAGS[] = {"p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote", "div", nullptr};
@@ -166,8 +208,9 @@ static void XMLCALL modalOnEnd(void* ud, const XML_Char* name) {
   } else {
     // Every original block gets a slot — even if no translation follows.
     // This keeps indices aligned with ChapterHtmlSlimParser's paragraphCounter.
+    // Store full original text temporarily for partial paragraph matching.
     int origSentences = countSentences(t);
-    ctx->entries->push_back({"", (int16_t)origSentences, 0});
+    ctx->entries->push_back({std::move(t), "", (int16_t)origSentences, 0});
     ctx->hasLastOrig = true;
   }
   ctx->currentText.clear();
@@ -309,23 +352,43 @@ void ModalOverlay::preparePage(const Page& page) {
     bool isFirst = (i == first);
     bool isLast = (i == last);
 
+    // Find visible text for this paragraph on page.
+    std::string visibleText;
+    for (const auto& pp : pageParas) {
+      if (pp.idx == i) { visibleText = pp.text; break; }
+    }
+
     if (visibleSentences > 0 && visibleSentences < origTotal) {
       // +1 for the incomplete sentence fragment at the boundary.
       int showSentences = std::min(visibleSentences + 1, (int)pairs[i].transSentenceCount);
+
       if (isFirst && !isLast) {
-        // Tail — continuation from previous page. Show last N+1 sentences.
-        pageTranslations.push_back(trimToLastSentences(pairs[i].translation, showSentences));
-        LOG_DBG("MOD", "  idx %d: TAIL, %d/%d sentences (visible=%d)", i, showSentences, origTotal, visibleSentences);
+        // Tail — continuation from previous page.
+        // Find how many sentences are BEFORE the visible portion, skip them.
+        int skipSentences = countSentencesBefore(pairs[i].origText, visibleText);
+        int fromSentence = skipSentences;  // 0-indexed start
+        int toSentence = std::min(fromSentence + showSentences, (int)pairs[i].transSentenceCount);
+        // Use trimToSentences to get first `toSentence`, then trimToLastSentences to drop first `fromSentence`.
+        std::string trimmed = trimToSentences(pairs[i].translation, toSentence);
+        if (fromSentence > 0) trimmed = trimToLastSentences(trimmed, toSentence - fromSentence);
+        pageTranslations.push_back(std::move(trimmed));
+        LOG_DBG("MOD", "  idx %d: TAIL, skip=%d show=%d/%d (visible=%d)", i, skipSentences, showSentences, origTotal,
+                visibleSentences);
       } else if (isLast && !isFirst) {
         // Head — continues on next page. Show first N+1 sentences.
         pageTranslations.push_back(trimToSentences(pairs[i].translation, showSentences));
         LOG_DBG("MOD", "  idx %d: HEAD, %d/%d sentences (visible=%d)", i, showSentences, origTotal, visibleSentences);
       } else if (isFirst && isLast) {
         // Single partial paragraph (middle of a large paragraph).
-        // Just show the visible sentence count — no extra, since we can't
-        // know which part of the translation corresponds to this slice.
-        pageTranslations.push_back(trimToSentences(pairs[i].translation, visibleSentences));
-        LOG_DBG("MOD", "  idx %d: PARTIAL, %d/%d sentences", i, visibleSentences, origTotal);
+        // Find where visible text starts, skip sentences before it, show visible count.
+        int skipSentences = countSentencesBefore(pairs[i].origText, visibleText);
+        int fromSentence = skipSentences;
+        int toSentence = std::min(fromSentence + showSentences, (int)pairs[i].transSentenceCount);
+        std::string trimmed = trimToSentences(pairs[i].translation, toSentence);
+        if (fromSentence > 0) trimmed = trimToLastSentences(trimmed, toSentence - fromSentence);
+        pageTranslations.push_back(std::move(trimmed));
+        LOG_DBG("MOD", "  idx %d: PARTIAL, skip=%d show=%d/%d (visible=%d)", i, skipSentences, showSentences,
+                origTotal, visibleSentences);
       }
     } else {
       // Full paragraph on page.
