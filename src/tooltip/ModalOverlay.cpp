@@ -94,7 +94,9 @@ static void XMLCALL modalOnEnd(void* ud, const XML_Char* name) {
     // Every original block gets a slot — even if no translation follows.
     // This keeps indices aligned with ChapterHtmlSlimParser's paragraphCounter
     // which counts ALL non-empty text blocks (headings, divs, paragraphs).
-    ctx->entries->push_back({""});
+    // Store first ~30 chars of original for debug logging.
+    std::string origSnippet = t.substr(0, 30);
+    ctx->entries->push_back({std::move(origSnippet), ""});
     ctx->hasLastOrig = true;
   }
   ctx->currentText.clear();
@@ -172,10 +174,12 @@ void ModalOverlay::preparePage(const Page& page) {
   LOG_DBG("MOD", "Parsed %d pairs, page wants indices [%d..%d]", (int)pairs.size(), page.firstParagraphIdx,
           page.lastParagraphIdx);
 
-  // Log first few pairs for debugging
-  for (int i = 0; i < std::min((int)pairs.size(), 5); i++) {
-    LOG_DBG("MOD", "  pair[%d] translation: '%.60s%s'", i, pairs[i].translation.c_str(),
-            pairs[i].translation.size() > 60 ? "..." : "");
+  // Log pairs around the page range for debugging
+  int logStart = std::max(0, (int)page.firstParagraphIdx - 2);
+  int logEnd = std::min((int)pairs.size(), (int)page.lastParagraphIdx + 3);
+  for (int i = logStart; i < logEnd; i++) {
+    LOG_DBG("MOD", "  pair[%d] orig='%.30s' trans=%s(len=%d)", i, pairs[i].original.c_str(),
+            pairs[i].translation.empty() ? "EMPTY" : "OK", (int)pairs[i].translation.size());
   }
 
   // Log page text content for debugging
