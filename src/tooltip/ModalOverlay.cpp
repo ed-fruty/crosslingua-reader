@@ -190,81 +190,85 @@ void ModalOverlay::preparePage(const Page& page) {
   auto chapterParagraphs = parseChapterHtml(translatedHtmlPath);
   if (chapterParagraphs.empty()) return;
 
-  // Collect page paragraphs by grouping consecutive PageLines that share the same TextBlock.
-  struct PagePara {
-    std::vector<const char*> words;
-  };
-  std::vector<PagePara> pageParas;
-  const TextBlock* lastBlock = nullptr;
-
+  // Collect ALL words from the page into a flat array.
+  // PageLines each have their own TextBlock (paragraphs are split into lines),
+  // so we can't group by TextBlock pointer. Instead, we match chapter paragraph
+  // keys against the flat word sequence.
+  static constexpr int MAX_WORDS = 500;
+  const char* pageWords[MAX_WORDS];
+  int pageWordCount = 0;
   for (const auto& el : page.elements) {
     if (el->getTag() != TAG_PageLine) continue;
     const auto* line = static_cast<const PageLine*>(el.get());
-    const TextBlock* block = line->getTextBlock().get();
-    if (block != lastBlock) {
-      pageParas.emplace_back();
-      lastBlock = block;
-    }
-    for (const auto& w : block->getWords()) {
-      pageParas.back().words.push_back(w.c_str());
+    for (const auto& w : line->getTextBlock()->getWords()) {
+      if (pageWordCount < MAX_WORDS) pageWords[pageWordCount++] = w.c_str();
     }
   }
 
-  // Pre-normalize chapter keys for matching.
-  std::vector<std::string> normChapterKeys(chapterParagraphs.size());
-  for (int i = 0; i < (int)chapterParagraphs.size(); i++) {
-    auto& nk = normChapterKeys[i];
-    for (char c : chapterParagraphs[i].key) {
+  if (pageWordCount == 0) return;
+
+  // Build a key from the first words on the page to find our starting position
+  // in the chapter. Then collect consecutive paragraph translations.
+  std::string pageKey = paragraphKey(pageWords, pageWordCount);
+  if (pageKey.empty()) return;
+
+  // Normalize page key.
+  std::string normPageKey;
+  for (char c : pageKey) {
+    if (c == '.') continue;
+    if (c == ' ' && (normPageKey.empty() || normPageKey.back() == ' ')) continue;
+    normPageKey += c;
+  }
+  while (!normPageKey.empty() && normPageKey.back() == ' ') normPageKey.pop_back();
+
+  // Find the chapter paragraph that starts this page by matching the page key.
+  int startIdx = -1;
+  int bestLen = 0;
+  for (int j = 0; j < (int)chapterParagraphs.size(); j++) {
+    // Normalize chapter key for comparison.
+    std::string nk;
+    for (char c : chapterParagraphs[j].key) {
       if (c == '.') continue;
       if (c == ' ' && (nk.empty() || nk.back() == ' ')) continue;
       nk += c;
     }
     while (!nk.empty() && nk.back() == ' ') nk.pop_back();
-  }
 
-  // Match each page paragraph against chapter index.
-  int lastIdx = -1;
-  for (const auto& pp : pageParas) {
-    if (pp.words.empty()) continue;
-    std::string pk = paragraphKey(pp.words.data(), (int)pp.words.size());
-    if (pk.empty()) continue;
-
-    std::string np;
-    for (char c : pk) {
-      if (c == '.') continue;
-      if (c == ' ' && (np.empty() || np.back() == ' ')) continue;
-      np += c;
-    }
-    while (!np.empty() && np.back() == ' ') np.pop_back();
-
-    int foundIdx = -1;
-
-    // Sequential hint: try next after last match.
-    if (lastIdx >= 0 && lastIdx + 1 < (int)chapterParagraphs.size()) {
-      int cl = (int)std::min(np.size(), normChapterKeys[lastIdx + 1].size());
-      if (cl >= 3 && np.compare(0, cl, normChapterKeys[lastIdx + 1], 0, cl) == 0) foundIdx = lastIdx + 1;
-    }
-
-    // Full search fallback.
-    if (foundIdx < 0) {
-      int bestLen = 0;
-      for (int j = 0; j < (int)chapterParagraphs.size(); j++) {
-        int cl = (int)std::min(np.size(), normChapterKeys[j].size());
-        if (cl < 3) continue;
-        if (np.compare(0, cl, normChapterKeys[j], 0, cl) == 0 && cl > bestLen) {
-          bestLen = cl;
-          foundIdx = j;
-        }
-      }
-    }
-
-    if (foundIdx >= 0 && !chapterParagraphs[foundIdx].translation.empty()) {
-      pageTranslations.push_back(chapterParagraphs[foundIdx].translation);
-      lastIdx = foundIdx;
+    int cl = (int)std::min(normPageKey.size(), nk.size());
+    if (cl >= 3 && normPageKey.compare(0, cl, nk, 0, cl) == 0 && cl > bestLen) {
+      bestLen = cl;
+      startIdx = j;
     }
   }
 
-  LOG_DBG("MOD", "Page: %d paragraphs, %d matched translations", (int)pageParas.size(), (int)pageTranslations.size());
+  if (startIdx < 0) {
+    LOG_DBG("MOD", "Page: %d words, no matching paragraph found (key: '%.40s')", pageWordCount, normPageKey.c_str());
+    return;
+  }
+
+  // Collect translations starting from the matched paragraph.
+  // A page typically shows 5-15 paragraphs worth of content.
+  // We take translations until we've likely passed the page boundary.
+  // Heuristic: take up to pageWordCount * 2 words worth of translations
+  // (translated text is often longer than original).
+  int totalOrigWords = 0;
+  for (int j = startIdx; j < (int)chapterParagraphs.size(); j++) {
+    if (!chapterParagraphs[j].translation.empty()) {
+      pageTranslations.push_back(chapterParagraphs[j].translation);
+    }
+    // Count words in this paragraph's key to estimate original length.
+    int keyWords = 0;
+    for (char c : chapterParagraphs[j].key) {
+      if (c == ' ') keyWords++;
+    }
+    keyWords++;  // Last word has no trailing space.
+    totalOrigWords += std::max(keyWords, KEY_WORDS);  // At least KEY_WORDS per paragraph.
+    // Stop when we've collected enough paragraphs to cover the page.
+    if (totalOrigWords > pageWordCount && (int)pageTranslations.size() >= 2) break;
+  }
+
+  LOG_DBG("MOD", "Page: %d words, matched from idx %d, %d translations", pageWordCount, startIdx,
+          (int)pageTranslations.size());
 }
 
 // ── Button handling ──────────────────────────────────────────────────────────
