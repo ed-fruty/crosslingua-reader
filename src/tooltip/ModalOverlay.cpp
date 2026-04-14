@@ -98,7 +98,9 @@ static std::string trimToLastSentences(const std::string& text, int maxSentences
     }
   }
   if ((int)ends.size() <= maxSentences) return text;
-  int startFrom = ends[ends.size() - maxSentences];
+  // ends[K] = position after sentence K. To keep last N of T sentences,
+  // we drop first (T-N) sentences, starting from position after sentence (T-N-1).
+  int startFrom = ends[ends.size() - maxSentences - 1];
   // Skip leading space
   while (startFrom < (int)text.size() && text[startFrom] == ' ') startFrom++;
   return text.substr(startFrom);
