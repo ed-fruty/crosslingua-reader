@@ -10,7 +10,9 @@ void PageLine::render(GfxRenderer& renderer, const int fontId, const int xOffset
 bool PageLine::serialize(FsFile& file) {
   serialization::writePod(file, xPos);
   serialization::writePod(file, yPos);
-  serialization::writePod(file, paragraphIdx);
+
+  // paragraphIdx is NOT serialized here — it would break old cache format.
+  // It's serialized per-page at the end of Page::serialize instead.
 
   // serialize TextBlock pointed to by PageLine
   return block->serialize(file);
@@ -21,12 +23,9 @@ std::unique_ptr<PageLine> PageLine::deserialize(FsFile& file) {
   int16_t yPos;
   serialization::readPod(file, xPos);
   serialization::readPod(file, yPos);
-  int16_t paraIdx = -1;
-  serialization::readPod(file, paraIdx);
 
   auto tb = TextBlock::deserialize(file);
-  auto pl = std::unique_ptr<PageLine>(new PageLine(std::move(tb), xPos, yPos, paraIdx));
-  return pl;
+  return std::unique_ptr<PageLine>(new PageLine(std::move(tb), xPos, yPos));
 }
 
 void PageImage::render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset) {
@@ -74,6 +73,13 @@ bool Page::serialize(FsFile& file) const {
   // Paragraph indices for modal translation (appended at end for backward compat).
   serialization::writePod(file, firstParagraphIdx);
   serialization::writePod(file, lastParagraphIdx);
+
+  // Per-line paragraph indices (for sentence trimming of partial paragraphs).
+  for (const auto& el : elements) {
+    if (el->getTag() == TAG_PageLine) {
+      serialization::writePod(file, static_cast<const PageLine*>(el.get())->paragraphIdx);
+    }
+  }
 
   return true;
 }
@@ -170,6 +176,16 @@ std::unique_ptr<Page> Page::deserialize(FsFile& file) {
   // If read fails (EOF), defaults remain -1.
   serialization::readPod(file, page->firstParagraphIdx);
   serialization::readPod(file, page->lastParagraphIdx);
+
+  // Per-line paragraph indices (may not be present in old caches).
+  if (page->firstParagraphIdx >= 0) {
+    for (auto& el : page->elements) {
+      if (el->getTag() == TAG_PageLine) {
+        auto* line = static_cast<PageLine*>(el.get());
+        serialization::readPod(file, line->paragraphIdx);
+      }
+    }
+  }
 
   return page;
 }
