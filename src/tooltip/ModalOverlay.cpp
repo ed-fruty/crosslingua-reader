@@ -321,10 +321,11 @@ void ModalOverlay::preparePage(const Page& page) {
         pageTranslations.push_back(trimToSentences(pairs[i].translation, showSentences));
         LOG_DBG("MOD", "  idx %d: HEAD, %d/%d sentences (visible=%d)", i, showSentences, origTotal, visibleSentences);
       } else if (isFirst && isLast) {
-        // Only paragraph, partial at both ends — +2 (one for each boundary).
-        int showBoth = std::min(visibleSentences + 2, (int)pairs[i].transSentenceCount);
-        pageTranslations.push_back(trimToSentences(pairs[i].translation, showBoth));
-        LOG_DBG("MOD", "  idx %d: PARTIAL, %d/%d sentences (visible=%d)", i, showBoth, origTotal, visibleSentences);
+        // Single partial paragraph (middle of a large paragraph).
+        // Just show the visible sentence count — no extra, since we can't
+        // know which part of the translation corresponds to this slice.
+        pageTranslations.push_back(trimToSentences(pairs[i].translation, visibleSentences));
+        LOG_DBG("MOD", "  idx %d: PARTIAL, %d/%d sentences", i, visibleSentences, origTotal);
       }
     } else {
       // Full paragraph on page.
