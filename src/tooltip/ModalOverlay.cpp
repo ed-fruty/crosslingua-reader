@@ -236,11 +236,11 @@ bool ModalOverlay::handleInput(MappedInputManager& input) {
       const int maxScroll = std::max(0, (int)totalContentHeight - vpH);
       LOG_DBG("MOD", "SCROLL NEXT: offset %d -> %d (step=%d, vpH=%d, lh=%d, totalH=%d, maxScroll=%d)",
               scrollOffset, scrollOffset + screenScroll, screenScroll, vpH, lh, totalContentHeight, maxScroll);
-      if (scrollOffset < maxScroll) {
+      if (scrollOffset + vpH < totalContentHeight) {
+        // More content below — scroll down.
         scrollOffset += screenScroll;
-        if (scrollOffset > maxScroll) scrollOffset = maxScroll;
       } else {
-        // Already at/past end — close modal.
+        // Already showing last content — close modal.
         active = false;
         scrollOffset = 0;
       }
@@ -312,9 +312,6 @@ void ModalOverlay::render(GfxRenderer& renderer, const Page& page, int fontId, i
   // scrollOffset steps through it in viewport-sized chunks.
   totalContentHeight = contentH;
 
-  // Clamp to last "page" of content.
-  const int maxScroll = std::max(0, contentH - viewportHeight);
-  if (scrollOffset > maxScroll) scrollOffset = maxScroll;
   if (scrollOffset < 0) scrollOffset = 0;
 
   int curY = yOffset - scrollOffset;
