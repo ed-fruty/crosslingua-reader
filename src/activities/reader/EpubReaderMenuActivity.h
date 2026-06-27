@@ -91,7 +91,7 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
                                                     StrId::STR_INVERT_TRANSLATION, StrId::STR_SIDE_BY_SIDE,
                                                     StrId::STR_TOOLTIP, StrId::STR_MODAL};
   uint8_t pendingFontFamily = 0;
-  const std::vector<StrId> fontFamilyLabels = {StrId::STR_BOOKERLY, StrId::STR_EDSLAB, StrId::STR_ALEGREYA,
+  const std::vector<StrId> fontFamilyLabels = {StrId::STR_BOOKERLY, StrId::STR_EDSLAB, StrId::STR_CAECILIA,
                                                 StrId::STR_GPRO};
   uint8_t pendingFontSize = 0;
   const std::vector<StrId> fontSizeLabels = {StrId::STR_SMALL, StrId::STR_MEDIUM, StrId::STR_LARGE,

@@ -78,36 +78,48 @@ EpdFont ui12RegularFont(&ubuntu_12_regular);
 EpdFont ui12BoldFont(&ubuntu_12_bold);
 EpdFontFamily ui12FontFamily(&ui12RegularFont, &ui12BoldFont);
 
-// EdsLab: regular weight only — borrow Bookerly bold/italic for styled text, Ubuntu bold for size 10
+// EdsLab: dedicated Regular/Bold/Italic/BoldItalic weights. Size 10 (UI titles) uses Ubuntu bold.
 EpdFont edslab10Font(&edslab_10_regular);
 EpdFontFamily edslab10FontFamily(&edslab10Font, &ui10BoldFont, &edslab10Font, &ui10BoldFont);
 #ifndef OMIT_FONTS
 EpdFont edslab12Font(&edslab_12_regular);
-EpdFontFamily edslab12FontFamily(&edslab12Font, &bookerly12BoldFont, &bookerly12ItalicFont, &bookerly12BoldItalicFont);
+EpdFont edslab12BoldFont(&edslab_12_bold);
+EpdFont edslab12ItalicFont(&edslab_12_italic);
+EpdFont edslab12BoldItalicFont(&edslab_12_bolditalic);
+EpdFontFamily edslab12FontFamily(&edslab12Font, &edslab12BoldFont, &edslab12ItalicFont, &edslab12BoldItalicFont);
 EpdFont edslab14Font(&edslab_14_regular);
-EpdFontFamily edslab14FontFamily(&edslab14Font, &bookerly14BoldFont, &bookerly14ItalicFont, &bookerly14BoldItalicFont);
+EpdFont edslab14BoldFont(&edslab_14_bold);
+EpdFont edslab14ItalicFont(&edslab_14_italic);
+EpdFont edslab14BoldItalicFont(&edslab_14_bolditalic);
+EpdFontFamily edslab14FontFamily(&edslab14Font, &edslab14BoldFont, &edslab14ItalicFont, &edslab14BoldItalicFont);
 EpdFont edslab16Font(&edslab_16_regular);
-EpdFontFamily edslab16FontFamily(&edslab16Font, &bookerly16BoldFont, &bookerly16ItalicFont, &bookerly16BoldItalicFont);
+EpdFont edslab16BoldFont(&edslab_16_bold);
+EpdFont edslab16ItalicFont(&edslab_16_italic);
+EpdFont edslab16BoldItalicFont(&edslab_16_bolditalic);
+EpdFontFamily edslab16FontFamily(&edslab16Font, &edslab16BoldFont, &edslab16ItalicFont, &edslab16BoldItalicFont);
 EpdFont edslab18Font(&edslab_18_regular);
-EpdFontFamily edslab18FontFamily(&edslab18Font, &bookerly18BoldFont, &bookerly18ItalicFont, &bookerly18BoldItalicFont);
-// Alegreya: regular weight only — borrow Bookerly bold/italic for styled text
-EpdFont alegreya12Font(&alegreya_12_regular);
-EpdFontFamily alegreya12FontFamily(&alegreya12Font, &bookerly12BoldFont, &bookerly12ItalicFont, &bookerly12BoldItalicFont);
-EpdFont alegreya14Font(&alegreya_14_regular);
-EpdFontFamily alegreya14FontFamily(&alegreya14Font, &bookerly14BoldFont, &bookerly14ItalicFont, &bookerly14BoldItalicFont);
-EpdFont alegreya16Font(&alegreya_16_regular);
-EpdFontFamily alegreya16FontFamily(&alegreya16Font, &bookerly16BoldFont, &bookerly16ItalicFont, &bookerly16BoldItalicFont);
-EpdFont alegreya18Font(&alegreya_18_regular);
-EpdFontFamily alegreya18FontFamily(&alegreya18Font, &bookerly18BoldFont, &bookerly18ItalicFont, &bookerly18BoldItalicFont);
-// GPro: regular weight only — borrow Bookerly bold/italic for styled text
+EpdFont edslab18BoldFont(&edslab_18_bold);
+EpdFont edslab18ItalicFont(&edslab_18_italic);
+EpdFont edslab18BoldItalicFont(&edslab_18_bolditalic);
+EpdFontFamily edslab18FontFamily(&edslab18Font, &edslab18BoldFont, &edslab18ItalicFont, &edslab18BoldItalicFont);
+// Caecilia: regular weight only — borrow EdsLab bold/italic for styled text
+EpdFont caecilia12Font(&caecilia_12_regular);
+EpdFontFamily caecilia12FontFamily(&caecilia12Font, &edslab12BoldFont, &edslab12ItalicFont, &edslab12BoldItalicFont);
+EpdFont caecilia14Font(&caecilia_14_regular);
+EpdFontFamily caecilia14FontFamily(&caecilia14Font, &edslab14BoldFont, &edslab14ItalicFont, &edslab14BoldItalicFont);
+EpdFont caecilia16Font(&caecilia_16_regular);
+EpdFontFamily caecilia16FontFamily(&caecilia16Font, &edslab16BoldFont, &edslab16ItalicFont, &edslab16BoldItalicFont);
+EpdFont caecilia18Font(&caecilia_18_regular);
+EpdFontFamily caecilia18FontFamily(&caecilia18Font, &edslab18BoldFont, &edslab18ItalicFont, &edslab18BoldItalicFont);
+// GPro: regular weight only — borrow EdsLab bold/italic for styled text
 EpdFont gpro12Font(&gpro_12_regular);
-EpdFontFamily gpro12FontFamily(&gpro12Font, &bookerly12BoldFont, &bookerly12ItalicFont, &bookerly12BoldItalicFont);
+EpdFontFamily gpro12FontFamily(&gpro12Font, &edslab12BoldFont, &edslab12ItalicFont, &edslab12BoldItalicFont);
 EpdFont gpro14Font(&gpro_14_regular);
-EpdFontFamily gpro14FontFamily(&gpro14Font, &bookerly14BoldFont, &bookerly14ItalicFont, &bookerly14BoldItalicFont);
+EpdFontFamily gpro14FontFamily(&gpro14Font, &edslab14BoldFont, &edslab14ItalicFont, &edslab14BoldItalicFont);
 EpdFont gpro16Font(&gpro_16_regular);
-EpdFontFamily gpro16FontFamily(&gpro16Font, &bookerly16BoldFont, &bookerly16ItalicFont, &bookerly16BoldItalicFont);
+EpdFontFamily gpro16FontFamily(&gpro16Font, &edslab16BoldFont, &edslab16ItalicFont, &edslab16BoldItalicFont);
 EpdFont gpro18Font(&gpro_18_regular);
-EpdFontFamily gpro18FontFamily(&gpro18Font, &bookerly18BoldFont, &bookerly18ItalicFont, &bookerly18BoldItalicFont);
+EpdFontFamily gpro18FontFamily(&gpro18Font, &edslab18BoldFont, &edslab18ItalicFont, &edslab18BoldItalicFont);
 #endif  // OMIT_FONTS
 
 // measurement of power button press duration calibration value
@@ -253,16 +265,35 @@ void setupDisplayAndFonts() {
   renderer.insertFont(BOOKERLY_16_FONT_ID, bookerly16FontFamily);
   renderer.insertFont(BOOKERLY_18_FONT_ID, bookerly18FontFamily);
 
+  // Glyph fallback: the custom book fonts (EdsLab/Caecilia/GPro) are missing some
+  // typographic glyphs — e.g. the “ ” double curly quotes and U+2003 em-space (paragraph indent)
+  // — which makes them silently disappear. Route misses to the same-size Bookerly (full coverage)
+  // so they render instead. Must be set BEFORE insertFont, which copies the family into the map.
+  // (EdsLab-10 has no Bookerly-10; it borrows Bookerly-12, the nearest size.)
+  edslab10FontFamily.setFallback(&bookerly12FontFamily);
+  edslab12FontFamily.setFallback(&bookerly12FontFamily);
+  edslab14FontFamily.setFallback(&bookerly14FontFamily);
+  edslab16FontFamily.setFallback(&bookerly16FontFamily);
+  edslab18FontFamily.setFallback(&bookerly18FontFamily);
+  caecilia12FontFamily.setFallback(&bookerly12FontFamily);
+  caecilia14FontFamily.setFallback(&bookerly14FontFamily);
+  caecilia16FontFamily.setFallback(&bookerly16FontFamily);
+  caecilia18FontFamily.setFallback(&bookerly18FontFamily);
+  gpro12FontFamily.setFallback(&bookerly12FontFamily);
+  gpro14FontFamily.setFallback(&bookerly14FontFamily);
+  gpro16FontFamily.setFallback(&bookerly16FontFamily);
+  gpro18FontFamily.setFallback(&bookerly18FontFamily);
+
   renderer.insertFont(EDSLAB_10_FONT_ID, edslab10FontFamily);
   renderer.insertFont(EDSLAB_12_FONT_ID, edslab12FontFamily);
   renderer.insertFont(EDSLAB_14_FONT_ID, edslab14FontFamily);
   renderer.insertFont(EDSLAB_16_FONT_ID, edslab16FontFamily);
   renderer.insertFont(EDSLAB_18_FONT_ID, edslab18FontFamily);
 
-  renderer.insertFont(ALEGREYA_12_FONT_ID, alegreya12FontFamily);
-  renderer.insertFont(ALEGREYA_14_FONT_ID, alegreya14FontFamily);
-  renderer.insertFont(ALEGREYA_16_FONT_ID, alegreya16FontFamily);
-  renderer.insertFont(ALEGREYA_18_FONT_ID, alegreya18FontFamily);
+  renderer.insertFont(CAECILIA_12_FONT_ID, caecilia12FontFamily);
+  renderer.insertFont(CAECILIA_14_FONT_ID, caecilia14FontFamily);
+  renderer.insertFont(CAECILIA_16_FONT_ID, caecilia16FontFamily);
+  renderer.insertFont(CAECILIA_18_FONT_ID, caecilia18FontFamily);
 
   renderer.insertFont(GPRO_12_FONT_ID, gpro12FontFamily);
   renderer.insertFont(GPRO_14_FONT_ID, gpro14FontFamily);

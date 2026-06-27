@@ -49,7 +49,7 @@ inline std::vector<SettingInfo> getSettingsList() {
       SettingInfo::String(StrId::STR_TRANSLATE_API_KEY, SETTINGS.translateApiKey,
                           sizeof(SETTINGS.translateApiKey), "translateApiKey", StrId::STR_CAT_READER),
       SettingInfo::Enum(StrId::STR_FONT_FAMILY, &CrossPointSettings::fontFamily,
-                        {StrId::STR_BOOKERLY, StrId::STR_EDSLAB, StrId::STR_ALEGREYA, StrId::STR_GPRO},
+                        {StrId::STR_BOOKERLY, StrId::STR_EDSLAB, StrId::STR_CAECILIA, StrId::STR_GPRO},
                         "fontFamily", StrId::STR_CAT_READER),
       SettingInfo::Enum(StrId::STR_FONT_SIZE, &CrossPointSettings::fontSize,
                         {StrId::STR_SMALL, StrId::STR_MEDIUM, StrId::STR_LARGE, StrId::STR_X_LARGE}, "fontSize",

@@ -128,36 +128,108 @@ ruby -rdigest -e 'puts [
 echo "#define EDSLAB_12_FONT_ID ($(
 ruby -rdigest -e 'puts [
   "./edslab_12_regular.h",
-  "./bookerly_12_bold.h",
-  "./bookerly_12_bolditalic.h",
-  "./bookerly_12_italic.h",
+  "./edslab_12_bold.h",
+  "./edslab_12_bolditalic.h",
+  "./edslab_12_italic.h",
 ].map{|f| Digest::SHA256.hexdigest(File.read(f)).to_i(16) }.sum % (2 ** 32) - (2 ** 31)'
 ))"
 
 echo "#define EDSLAB_14_FONT_ID ($(
 ruby -rdigest -e 'puts [
   "./edslab_14_regular.h",
-  "./bookerly_14_bold.h",
-  "./bookerly_14_bolditalic.h",
-  "./bookerly_14_italic.h",
+  "./edslab_14_bold.h",
+  "./edslab_14_bolditalic.h",
+  "./edslab_14_italic.h",
 ].map{|f| Digest::SHA256.hexdigest(File.read(f)).to_i(16) }.sum % (2 ** 32) - (2 ** 31)'
 ))"
 
 echo "#define EDSLAB_16_FONT_ID ($(
 ruby -rdigest -e 'puts [
   "./edslab_16_regular.h",
-  "./bookerly_16_bold.h",
-  "./bookerly_16_bolditalic.h",
-  "./bookerly_16_italic.h",
+  "./edslab_16_bold.h",
+  "./edslab_16_bolditalic.h",
+  "./edslab_16_italic.h",
 ].map{|f| Digest::SHA256.hexdigest(File.read(f)).to_i(16) }.sum % (2 ** 32) - (2 ** 31)'
 ))"
 
 echo "#define EDSLAB_18_FONT_ID ($(
 ruby -rdigest -e 'puts [
   "./edslab_18_regular.h",
-  "./bookerly_18_bold.h",
-  "./bookerly_18_bolditalic.h",
-  "./bookerly_18_italic.h",
+  "./edslab_18_bold.h",
+  "./edslab_18_bolditalic.h",
+  "./edslab_18_italic.h",
+].map{|f| Digest::SHA256.hexdigest(File.read(f)).to_i(16) }.sum % (2 ** 32) - (2 ** 31)'
+))"
+
+echo "#define CAECILIA_12_FONT_ID ($(
+ruby -rdigest -e 'puts [
+  "./caecilia_12_regular.h",
+  "./edslab_12_bold.h",
+  "./edslab_12_bolditalic.h",
+  "./edslab_12_italic.h",
+].map{|f| Digest::SHA256.hexdigest(File.read(f)).to_i(16) }.sum % (2 ** 32) - (2 ** 31)'
+))"
+
+echo "#define CAECILIA_14_FONT_ID ($(
+ruby -rdigest -e 'puts [
+  "./caecilia_14_regular.h",
+  "./edslab_14_bold.h",
+  "./edslab_14_bolditalic.h",
+  "./edslab_14_italic.h",
+].map{|f| Digest::SHA256.hexdigest(File.read(f)).to_i(16) }.sum % (2 ** 32) - (2 ** 31)'
+))"
+
+echo "#define CAECILIA_16_FONT_ID ($(
+ruby -rdigest -e 'puts [
+  "./caecilia_16_regular.h",
+  "./edslab_16_bold.h",
+  "./edslab_16_bolditalic.h",
+  "./edslab_16_italic.h",
+].map{|f| Digest::SHA256.hexdigest(File.read(f)).to_i(16) }.sum % (2 ** 32) - (2 ** 31)'
+))"
+
+echo "#define CAECILIA_18_FONT_ID ($(
+ruby -rdigest -e 'puts [
+  "./caecilia_18_regular.h",
+  "./edslab_18_bold.h",
+  "./edslab_18_bolditalic.h",
+  "./edslab_18_italic.h",
+].map{|f| Digest::SHA256.hexdigest(File.read(f)).to_i(16) }.sum % (2 ** 32) - (2 ** 31)'
+))"
+
+echo "#define GPRO_12_FONT_ID ($(
+ruby -rdigest -e 'puts [
+  "./gpro_12_regular.h",
+  "./edslab_12_bold.h",
+  "./edslab_12_bolditalic.h",
+  "./edslab_12_italic.h",
+].map{|f| Digest::SHA256.hexdigest(File.read(f)).to_i(16) }.sum % (2 ** 32) - (2 ** 31)'
+))"
+
+echo "#define GPRO_14_FONT_ID ($(
+ruby -rdigest -e 'puts [
+  "./gpro_14_regular.h",
+  "./edslab_14_bold.h",
+  "./edslab_14_bolditalic.h",
+  "./edslab_14_italic.h",
+].map{|f| Digest::SHA256.hexdigest(File.read(f)).to_i(16) }.sum % (2 ** 32) - (2 ** 31)'
+))"
+
+echo "#define GPRO_16_FONT_ID ($(
+ruby -rdigest -e 'puts [
+  "./gpro_16_regular.h",
+  "./edslab_16_bold.h",
+  "./edslab_16_bolditalic.h",
+  "./edslab_16_italic.h",
+].map{|f| Digest::SHA256.hexdigest(File.read(f)).to_i(16) }.sum % (2 ** 32) - (2 ** 31)'
+))"
+
+echo "#define GPRO_18_FONT_ID ($(
+ruby -rdigest -e 'puts [
+  "./gpro_18_regular.h",
+  "./edslab_18_bold.h",
+  "./edslab_18_bolditalic.h",
+  "./edslab_18_italic.h",
 ].map{|f| Digest::SHA256.hexdigest(File.read(f)).to_i(16) }.sum % (2 ** 32) - (2 ** 31)'
 ))"
 
