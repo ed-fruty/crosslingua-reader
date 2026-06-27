@@ -10,3 +10,16 @@ build
 **/__pycache__/
 /compile_commands.json
 /.cache
+
+# Local test books dropped in the repo root (test/epubs/ stays tracked)
+/*.epub
+
+# Local font sources / scratch (EdsLab.ttf is the tracked build input)
+/custom_fonts/*
+!/custom_fonts/EdsLab.ttf
+/caecilia-lt-pro/
+
+# Agent tooling state and local plans
+/.omc/
+/.superpowers/
+/ai-plans/
