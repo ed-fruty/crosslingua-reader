@@ -386,16 +386,24 @@ void EpubReaderActivity::loop() {
   const bool tooltipUsesFront = isTooltipMode && SETTINGS.tooltipButtons == 0;
   const bool tooltipUsesSide = isTooltipMode && SETTINGS.tooltipButtons == 1;
 
+  // Modal mode: the overlay opens on a LONG press of the "next" button (Right for front
+  // buttons, PageForward for side buttons). That button must use release semantics so the
+  // long-press can register — otherwise page-turn-on-press (LP_NONE) preempts activation.
+  // Short press still turns the page (modalOverlay->handleInput declines short presses above).
+  const bool isModalMode = SETTINGS.colorTextStyle == CrossPointSettings::CT_MODAL && modalOverlay;
+  const bool modalNextIsFront = isModalMode && SETTINGS.tooltipButtons == 0;  // Right
+  const bool modalNextIsSide = isModalMode && SETTINGS.tooltipButtons == 1;   // PageForward
+
   // Side buttons for page turn (skip if tooltip hijacks them)
   const bool sidePrev = !tooltipUsesSide && (usePressForPageTurn ? mappedInput.wasPressed(MappedInputManager::Button::PageBack)
                                                                   : mappedInput.wasReleased(MappedInputManager::Button::PageBack));
-  const bool sideNext = !tooltipUsesSide && (usePressForPageTurn ? mappedInput.wasPressed(MappedInputManager::Button::PageForward)
-                                                                  : mappedInput.wasReleased(MappedInputManager::Button::PageForward));
+  const bool sideNext = !tooltipUsesSide && ((usePressForPageTurn && !modalNextIsSide) ? mappedInput.wasPressed(MappedInputManager::Button::PageForward)
+                                                                                       : mappedInput.wasReleased(MappedInputManager::Button::PageForward));
   // Front buttons for page turn (skip if tooltip hijacks them)
   const bool frontPrev = !tooltipUsesFront && (usePressForPageTurn ? mappedInput.wasPressed(MappedInputManager::Button::Left)
                                                                     : mappedInput.wasReleased(MappedInputManager::Button::Left));
-  const bool frontNext = !tooltipUsesFront && (usePressForPageTurn ? mappedInput.wasPressed(MappedInputManager::Button::Right)
-                                                                    : mappedInput.wasReleased(MappedInputManager::Button::Right));
+  const bool frontNext = !tooltipUsesFront && ((usePressForPageTurn && !modalNextIsFront) ? mappedInput.wasPressed(MappedInputManager::Button::Right)
+                                                                                          : mappedInput.wasReleased(MappedInputManager::Button::Right));
 
   const bool powerPageTurn = SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PAGE_TURN &&
                              mappedInput.wasReleased(MappedInputManager::Button::Power);

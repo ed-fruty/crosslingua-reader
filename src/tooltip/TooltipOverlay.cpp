@@ -142,6 +142,14 @@ struct ParseCtx {
   std::string lastOrigText;
   bool hasLastOrig = false;
   int pairCount = 0;
+  // Selective parse (mirrors ModalOverlay): only build index entries for paragraphs the current
+  // page actually shows. Without this the index holds every translated sentence in the chapter,
+  // which exhausts the heap on long chapters and reboots the device.
+  int wantFirst = 0;
+  int wantLast = 0;
+  int paragraphCounter = -1;  // pre-increment on each ORIGINAL block; first original becomes idx 0
+  int lastOrigIdx = -1;       // paragraph index of the most recent original block
+  XML_Parser parser = nullptr;  // for XML_StopParser once we walk past the page
 };
 
 static void XMLCALL chOnStart(void* ud, const XML_Char* name, const XML_Char** atts) {
@@ -177,6 +185,7 @@ static void XMLCALL chOnEnd(void* ud, const XML_Char* name) {
   if (t.empty()) return;
 
   if (ctx->isTranslation) {
+    // hasLastOrig is set only for in-range originals, so this naturally skips out-of-range pairs.
     if (ctx->hasLastOrig) {
       // Process pair immediately — don't accumulate all pairs in memory.
       addPairToIndex(ctx->lastOrigText, t, *ctx->index);
@@ -185,6 +194,23 @@ static void XMLCALL chOnEnd(void* ud, const XML_Char* name) {
       ctx->hasLastOrig = false;
     }
   } else {
+    // Original block: bump the paragraph counter, then decide whether it falls on the page.
+    const int idx = ++ctx->paragraphCounter;
+    ctx->lastOrigIdx = idx;
+    if (idx > ctx->wantLast) {
+      // Past the page (and the prior paragraph's translation has already been processed) — stop
+      // the parser so expat doesn't scan the rest of the chapter. Returns XML_ERROR_ABORTED,
+      // which parseAndBuildIndex treats as the success path.
+      if (ctx->parser) XML_StopParser(ctx->parser, XML_FALSE);
+      ctx->lastOrigText.clear();
+      ctx->hasLastOrig = false;
+      return;
+    }
+    if (idx < ctx->wantFirst) {
+      ctx->lastOrigText.clear();  // before the page — discard, never pairs
+      ctx->hasLastOrig = false;
+      return;
+    }
     ctx->lastOrigText = std::move(t);
     ctx->hasLastOrig = true;
   }
@@ -348,8 +374,10 @@ static void addPairToIndex(const std::string& origText, const std::string& trans
   }
 }
 
-// Parse HTML and build sentence index in one pass — no intermediate storage.
-static std::vector<SentEntry> parseAndBuildIndex(const std::string& path) {
+// Parse HTML and build sentence index in one pass — no intermediate storage. Only paragraphs in
+// [wantFirst, wantLast] (the current page's range) get index entries, so peak RAM is bounded by one
+// page's worth of translations rather than the whole chapter.
+static std::vector<SentEntry> parseAndBuildIndex(const std::string& path, int wantFirst, int wantLast) {
   std::vector<SentEntry> index;
   if (path.empty()) return index;
 
@@ -361,6 +389,9 @@ static std::vector<SentEntry> parseAndBuildIndex(const std::string& path) {
 
   ParseCtx ctx;
   ctx.index = &index;
+  ctx.wantFirst = wantFirst;
+  ctx.wantLast = wantLast;
+  ctx.parser = parser;
   XML_SetUserData(parser, &ctx);
   XML_SetElementHandler(parser, chOnStart, chOnEnd);
   XML_SetCharacterDataHandler(parser, chOnChar);
@@ -368,17 +399,24 @@ static std::vector<SentEntry> parseAndBuildIndex(const std::string& path) {
   char buf[1024];
   const size_t fileSize = f.size();
   size_t totalRead = 0;
+  bool stopped = false;
   while (totalRead < fileSize) {
     const size_t toRead = std::min(fileSize - totalRead, sizeof(buf));
     const int n = f.read(reinterpret_cast<uint8_t*>(buf), toRead);
     if (n <= 0) break;
     totalRead += n;
-    if (XML_Parse(parser, buf, n, (totalRead >= fileSize) ? 1 : 0) == XML_STATUS_ERROR) break;
+    if (XML_Parse(parser, buf, n, (totalRead >= fileSize) ? 1 : 0) == XML_STATUS_ERROR) {
+      // XML_StopParser() (we walked past the page) makes expat return ERROR with code
+      // XML_ERROR_ABORTED — that's our success path, not a parse failure.
+      if (XML_GetErrorCode(parser) == XML_ERROR_ABORTED) stopped = true;
+      break;
+    }
   }
   XML_ParserFree(parser);
   f.close();
 
-  LOG_DBG("TIP", "Index: %d entries from %d pairs", (int)index.size(), ctx.pairCount);
+  LOG_DBG("TIP", "Index: %d entries from %d pairs in [%d..%d]%s", (int)index.size(), ctx.pairCount, wantFirst,
+          wantLast, stopped ? " (early-stop)" : "");
   return index;
 }
 
@@ -413,8 +451,14 @@ void TooltipOverlay::preparePage(const Page& page) {
   }
   LOG_DBG("TIP", "Page: %d words, %d sentences (after merge)", origWordCount, splits.count);
 
-  // 3. Parse HTML and build sentence index in one pass (memory-efficient).
-  auto index = parseAndBuildIndex(translatedHtmlPath);
+  // 3. Parse HTML and build sentence index in one pass (memory-efficient). Restrict to the
+  //    paragraph range this page shows — otherwise the index holds the whole chapter's
+  //    translations and exhausts the heap on long chapters.
+  if (page.firstParagraphIdx < 0 || page.lastParagraphIdx < 0) {
+    LOG_DBG("TIP", "Page has no paragraph indices (old cache?) — skipping tooltip index");
+    return;
+  }
+  auto index = parseAndBuildIndex(translatedHtmlPath, page.firstParagraphIdx, page.lastParagraphIdx);
   if (index.empty()) {
     LOG_DBG("TIP", "No index entries from %s", translatedHtmlPath.c_str());
     return;
@@ -699,12 +743,12 @@ int getTooltipFontId() {
         case CrossPointSettings::LARGE: return EDSLAB_16_FONT_ID;
         case CrossPointSettings::EXTRA_LARGE: return EDSLAB_18_FONT_ID;
       }
-    case CrossPointSettings::ALEGREYA:
+    case CrossPointSettings::CAECILIA:
       switch (sz) {
-        case CrossPointSettings::SMALL: return ALEGREYA_12_FONT_ID;
-        case CrossPointSettings::MEDIUM: default: return ALEGREYA_14_FONT_ID;
-        case CrossPointSettings::LARGE: return ALEGREYA_16_FONT_ID;
-        case CrossPointSettings::EXTRA_LARGE: return ALEGREYA_18_FONT_ID;
+        case CrossPointSettings::SMALL: return CAECILIA_12_FONT_ID;
+        case CrossPointSettings::MEDIUM: default: return CAECILIA_14_FONT_ID;
+        case CrossPointSettings::LARGE: return CAECILIA_16_FONT_ID;
+        case CrossPointSettings::EXTRA_LARGE: return CAECILIA_18_FONT_ID;
       }
     case CrossPointSettings::GPRO:
       switch (sz) {

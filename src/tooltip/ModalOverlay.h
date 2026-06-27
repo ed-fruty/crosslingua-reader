@@ -10,11 +10,14 @@
 class ModalOverlay {
  public:
   // Public because static XML callbacks in the .cpp need access.
+  // Sparse: only paragraphs in the current page's [first..last] range get an entry, and each
+  // carries its real paragraph index — so we iterate by paragraphIdx, not by vector position.
   struct ParagraphPair {
-    std::string origText;       // full original text (temporary, freed after preparePage)
-    std::string translation;    // translated paragraph text (indexed by paragraph position)
-    int16_t origSentenceCount;  // number of sentences in original paragraph
-    int16_t transSentenceCount; // number of sentences in translation
+    int16_t paragraphIdx = -1;        // actual chapter paragraph index this entry represents
+    std::string origText;             // kept ONLY for boundary paragraphs (first/last) — empty otherwise
+    std::string translation;          // translated paragraph text
+    int16_t origSentenceCount = 0;    // number of sentences in original paragraph
+    int16_t transSentenceCount = 0;   // number of sentences in translation
   };
 
   void setTranslatedHtmlPath(const std::string& path);
@@ -44,10 +47,6 @@ class ModalOverlay {
   std::vector<std::string> pageTranslations;
 
   void preparePage(const Page& page);
-
-  static int measureParagraphHeight(GfxRenderer& renderer, int fontId, const char* text, int maxW, int lh, int spW);
-  static int drawParagraph(GfxRenderer& renderer, int fontId, const char* text, int x, int y, int maxW, int lh,
-                           int spW, int clipTop, int clipBottom);
 };
 
 int getModalFontId();
