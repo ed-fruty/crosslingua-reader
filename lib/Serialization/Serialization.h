@@ -36,17 +36,41 @@ static void writeString(FsFile& file, const std::string& s) {
   file.write(reinterpret_cast<const uint8_t*>(s.data()), len);
 }
 
+// Upper bound for a single serialized string. Any length beyond this is treated as
+// corruption rather than honored — resize()-ing to a bogus length throws
+// std::bad_alloc/length_error, and because the throw unwinds through C (FatFs) frames
+// it aborts the whole device into a boot loop instead of failing gracefully.
+constexpr uint32_t kMaxSerializedStringLen = 64u * 1024u;
+
 static void readString(std::istream& is, std::string& s) {
-  uint32_t len;
+  uint32_t len = 0;
   readPod(is, len);
+  if (!is || len > kMaxSerializedStringLen) {
+    s.clear();
+    return;
+  }
   s.resize(len);
-  is.read(&s[0], len);
+  if (len > 0) {
+    is.read(&s[0], len);
+  }
 }
 
 static void readString(FsFile& file, std::string& s) {
-  uint32_t len;
-  readPod(file, len);
+  uint32_t len = 0;
+  if (file.read(reinterpret_cast<uint8_t*>(&len), sizeof(len)) != static_cast<int>(sizeof(len))) {
+    s.clear();
+    return;
+  }
+  // A length longer than what remains in the file (or absurdly large) is garbage from a
+  // truncated/interrupted write. Refuse it instead of throwing inside resize().
+  const int remaining = file.available();
+  if (remaining < 0 || len > static_cast<uint32_t>(remaining) || len > kMaxSerializedStringLen) {
+    s.clear();
+    return;
+  }
   s.resize(len);
-  file.read(&s[0], len);
+  if (len > 0) {
+    file.read(reinterpret_cast<uint8_t*>(&s[0]), len);
+  }
 }
 }  // namespace serialization

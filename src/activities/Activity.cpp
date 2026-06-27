@@ -1,5 +1,7 @@
 #include "Activity.h"
 
+#include <exception>
+
 void Activity::renderTaskTrampoline(void* param) {
   auto* self = static_cast<Activity*>(param);
   self->renderTaskLoop();
@@ -10,7 +12,17 @@ void Activity::renderTaskLoop() {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     {
       RenderLock lock(*this);
-      render(std::move(lock));
+      // A render() must never abort the whole device. Decoding a corrupt/half-written
+      // cover image (e.g. a preview interrupted by power loss) can throw std::bad_alloc
+      // or a parse error; if it escapes the render task it calls std::terminate()/abort()
+      // and the device boot-loops. Swallow it here so the frame is just skipped instead.
+      try {
+        render(std::move(lock));
+      } catch (const std::exception& e) {
+        LOG_ERR("ACT", "render() threw in '%s': %s (frame skipped)", name.c_str(), e.what());
+      } catch (...) {
+        LOG_ERR("ACT", "render() threw unknown exception in '%s' (frame skipped)", name.c_str());
+      }
     }
   }
 }

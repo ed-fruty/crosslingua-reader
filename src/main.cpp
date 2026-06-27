@@ -10,6 +10,9 @@
 #include <builtinFonts/all.h>
 
 #include <cstring>
+#include <exception>
+#include <new>
+#include <stdexcept>
 
 #include "Battery.h"
 #include "CrossPointSettings.h"
@@ -320,6 +323,32 @@ void setup() {
       delay(10);
     }
   }
+
+  // DIAGNOSTIC: log the real type + message of any unhandled C++ exception (and the free heap)
+  // before the device aborts, so the boot log names the actual cause instead of a bare "abort()".
+  std::set_terminate([]() {
+    if (auto e = std::current_exception()) {
+      try {
+        std::rethrow_exception(e);
+      } catch (const std::bad_alloc& ex) {
+        LOG_ERR("FATAL", "Unhandled std::bad_alloc (OUT OF MEMORY): %s", ex.what());
+      } catch (const std::length_error& ex) {
+        LOG_ERR("FATAL", "Unhandled std::length_error: %s", ex.what());
+      } catch (const std::out_of_range& ex) {
+        LOG_ERR("FATAL", "Unhandled std::out_of_range: %s", ex.what());
+      } catch (const std::exception& ex) {
+        LOG_ERR("FATAL", "Unhandled std::exception: %s", ex.what());
+      } catch (...) {
+        LOG_ERR("FATAL", "Unhandled non-standard exception");
+      }
+    } else {
+      LOG_ERR("FATAL", "std::terminate() with no active exception");
+    }
+    LOG_ERR("FATAL", "Free heap at terminate: %d bytes (min ever: %d)", (int)ESP.getFreeHeap(),
+            (int)ESP.getMinFreeHeap());
+    delay(300);
+    abort();
+  });
 
   // SD Card Initialization
   // We need 6 open files concurrently when parsing a new chapter
