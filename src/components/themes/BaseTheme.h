@@ -8,6 +8,10 @@
 class GfxRenderer;
 struct RecentBook;
 
+// Logical icon identifiers for menu/list rows. Themes map these to glyph bitmaps
+// (see iconForName in the theme). Kept in sync with reader-cross-point-1.3.
+enum UIIcon { None = 0, Folder, Text, Image, Book, File, Recent, Settings, Transfer, Library, Wifi, Hotspot, Bookmark };
+
 struct Rect {
   int x;
   int y;
@@ -102,9 +106,12 @@ class BaseTheme {
   virtual void drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn) const;
   virtual void drawList(const GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex,
                         const std::function<std::string(int index)>& rowTitle,
-                        const std::function<std::string(int index)>& rowSubtitle,
-                        const std::function<std::string(int index)>& rowIcon,
-                        const std::function<std::string(int index)>& rowValue) const;
+                        const std::function<std::string(int index)>& rowSubtitle = nullptr,
+                        const std::function<UIIcon(int index)>& rowIcon = nullptr,
+                        const std::function<std::string(int index)>& rowValue = nullptr, bool highlightValue = false,
+                        const std::function<bool(int index)>& rowDimmed = nullptr) const;
+  // Whether this theme renders file-type icons in list rows (Browse Files). Classic themes return false.
+  virtual bool showsFileIcons() const { return false; }
 
   virtual void drawHeader(const GfxRenderer& renderer, Rect rect, const char* title) const;
   virtual void drawTabBar(const GfxRenderer& renderer, Rect rect, const std::vector<TabInfo>& tabs,
@@ -114,7 +121,7 @@ class BaseTheme {
                                    bool& bufferRestored, std::function<bool()> storeCoverBuffer) const;
   virtual void drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                               const std::function<std::string(int index)>& buttonLabel,
-                              const std::function<std::string(int index)>& rowIcon) const;
+                              const std::function<UIIcon(int index)>& rowIcon) const;
   virtual Rect drawPopup(const GfxRenderer& renderer, const char* message) const;
   virtual void fillPopupProgress(const GfxRenderer& renderer, const Rect& layout, const int progress) const;
   virtual void drawReadingProgressBar(const GfxRenderer& renderer, const size_t bookProgress) const;

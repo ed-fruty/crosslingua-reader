@@ -8,6 +8,7 @@
 #include "RecentBooksStore.h"
 #include "components/themes/BaseTheme.h"
 #include "components/themes/lyra/LyraTheme.h"
+#include "util/StringUtils.h"
 
 UITheme UITheme::instance;
 
@@ -60,4 +61,21 @@ std::string UITheme::getCoverThumbPath(std::string coverBmpPath, int coverHeight
     coverBmpPath.replace(pos, 8, std::to_string(coverHeight));
   }
   return coverBmpPath;
+}
+
+UIIcon UITheme::getFileIcon(const std::string& filename) {
+  if (!filename.empty() && filename.back() == '/') {
+    return UIIcon::Folder;
+  }
+  if (StringUtils::checkFileExtension(filename, ".epub") || StringUtils::checkFileExtension(filename, ".xtc") ||
+      StringUtils::checkFileExtension(filename, ".xtch")) {
+    return UIIcon::Book;
+  }
+  if (StringUtils::checkFileExtension(filename, ".txt") || StringUtils::checkFileExtension(filename, ".md")) {
+    return UIIcon::Text;
+  }
+  if (StringUtils::checkFileExtension(filename, ".bmp")) {
+    return UIIcon::Image;
+  }
+  return UIIcon::File;
 }

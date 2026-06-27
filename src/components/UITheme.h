@@ -21,6 +21,8 @@ class UITheme {
   static int getNumberOfItemsPerPage(const GfxRenderer& renderer, bool hasHeader, bool hasTabBar, bool hasButtonHints,
                                      bool hasSubtitle);
   static std::string getCoverThumbPath(std::string coverBmpPath, int coverHeight);
+  // Maps a file/directory name to the list icon used in the file browser.
+  static UIIcon getFileIcon(const std::string& filename);
 
  private:
   const ThemeMetrics* currentMetrics;

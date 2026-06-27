@@ -249,7 +249,8 @@ void SettingsActivity::render(Activity::RenderLock&&) {
           valueText = std::to_string(SETTINGS.*(setting.valuePtr));
         }
         return valueText;
-      });
+      },
+      true);
 
   // Draw version text
   renderer.drawText(SMALL_FONT_ID,

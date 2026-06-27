@@ -234,11 +234,12 @@ void HomeActivity::render(Activity::RenderLock&&) {
   // Build menu items dynamically
   std::vector<const char*> menuItems = {tr(STR_BROWSE_FILES), tr(STR_LIBRARY), tr(STR_MENU_RECENT_BOOKS),
                                         tr(STR_FILE_TRANSFER), tr(STR_SETTINGS_TITLE)};
-  std::vector<const char*> menuIcons = {"folder", "grid", "clock", "transfer", "gear"};
+  // Distinct glyph per item: Browse=Folder, Library=Library, Recent Books=Book, Transfer, Settings.
+  std::vector<UIIcon> menuIcons = {UIIcon::Folder, UIIcon::Library, UIIcon::Book, UIIcon::Transfer, UIIcon::Settings};
   if (hasOpdsUrl) {
     // Insert OPDS Browser after Recent Books
     menuItems.insert(menuItems.begin() + 3, tr(STR_OPDS_BROWSER));
-    menuIcons.insert(menuIcons.begin() + 3, "globe");
+    menuIcons.insert(menuIcons.begin() + 3, UIIcon::Library);
   }
 
   GUI.drawButtonMenu(
@@ -248,7 +249,7 @@ void HomeActivity::render(Activity::RenderLock&&) {
                          metrics.buttonHintsHeight)},
       static_cast<int>(menuItems.size()), selectorIndex - recentBooks.size(),
       [&menuItems](int index) { return std::string(menuItems[index]); },
-      [&menuIcons](int index) { return std::string(menuIcons[index]); });
+      [&menuIcons](int index) { return menuIcons[index]; });
 
   const auto labels = mappedInput.mapLabels("", tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

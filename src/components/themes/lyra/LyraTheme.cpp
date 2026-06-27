@@ -9,6 +9,17 @@
 #include "Battery.h"
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
+#include "components/icons/book.h"
+#include "components/icons/book24.h"
+#include "components/icons/file24.h"
+#include "components/icons/folder.h"
+#include "components/icons/folder24.h"
+#include "components/icons/image24.h"
+#include "components/icons/library.h"
+#include "components/icons/recent.h"
+#include "components/icons/settings2.h"
+#include "components/icons/text24.h"
+#include "components/icons/transfer.h"
 #include "fontIds.h"
 #include "util/StringUtils.h"
 
@@ -18,6 +29,47 @@ constexpr int batteryPercentSpacing = 4;
 constexpr int hPaddingInSelection = 8;
 constexpr int cornerRadius = 6;
 constexpr int topHintButtonY = 345;
+constexpr int mainMenuIconSize = 32;  // glyph bitmaps are 32x32 (see components/icons/*.h)
+constexpr int listIconSize = 24;      // file-list glyph bitmaps are 24x24 (see components/icons/*24.h)
+constexpr int maxListValueWidth = 200;
+
+// Maps a logical UIIcon to its glyph bitmap. Mirrors reader-cross-point-1.3's iconForName.
+const uint8_t* iconForName(UIIcon icon, int size) {
+  if (size == 24) {
+    switch (icon) {
+      case UIIcon::Folder:
+        return Folder24Icon;
+      case UIIcon::Text:
+        return Text24Icon;
+      case UIIcon::Image:
+        return Image24Icon;
+      case UIIcon::Book:
+        return Book24Icon;
+      case UIIcon::File:
+        return File24Icon;
+      default:
+        return nullptr;
+    }
+  } else if (size == 32) {
+    switch (icon) {
+      case UIIcon::Folder:
+        return FolderIcon;
+      case UIIcon::Book:
+        return BookIcon;
+      case UIIcon::Recent:
+        return RecentIcon;
+      case UIIcon::Settings:
+        return Settings2Icon;
+      case UIIcon::Transfer:
+        return TransferIcon;
+      case UIIcon::Library:
+        return LibraryIcon;
+      default:
+        return nullptr;
+    }
+  }
+  return nullptr;
+}
 }  // namespace
 
 void LyraTheme::drawBatteryLeft(const GfxRenderer& renderer, Rect rect, const bool showPercentage) const {
@@ -155,8 +207,9 @@ void LyraTheme::drawTabBar(const GfxRenderer& renderer, Rect rect, const std::ve
 void LyraTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex,
                          const std::function<std::string(int index)>& rowTitle,
                          const std::function<std::string(int index)>& rowSubtitle,
-                         const std::function<std::string(int index)>& rowIcon,
-                         const std::function<std::string(int index)>& rowValue) const {
+                         const std::function<UIIcon(int index)>& rowIcon,
+                         const std::function<std::string(int index)>& rowValue, bool highlightValue,
+                         const std::function<bool(int index)>& rowDimmed) const {
   int rowHeight =
       (rowSubtitle != nullptr) ? LyraMetrics::values.listWithSubtitleRowHeight : LyraMetrics::values.listRowHeight;
   int pageItems = rect.height / rowHeight;
@@ -180,48 +233,77 @@ void LyraTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
       rect.width -
       (totalPages > 1 ? (LyraMetrics::values.scrollBarWidth + LyraMetrics::values.scrollBarRightOffset) : 1);
   if (selectedIndex >= 0) {
-    renderer.fillRoundedRect(LyraMetrics::values.contentSidePadding, rect.y + selectedIndex % pageItems * rowHeight,
-                             contentWidth - LyraMetrics::values.contentSidePadding * 2, rowHeight, cornerRadius,
-                             Color::LightGray);
+    renderer.fillRoundedRect(
+        rect.x + LyraMetrics::values.contentSidePadding, rect.y + selectedIndex % pageItems * rowHeight,
+        contentWidth - LyraMetrics::values.contentSidePadding * 2, rowHeight, cornerRadius, Color::LightGray);
+  }
+
+  int textX = rect.x + LyraMetrics::values.contentSidePadding + hPaddingInSelection;
+  int textWidth = contentWidth - LyraMetrics::values.contentSidePadding * 2 - hPaddingInSelection * 2;
+  int iconSize = 0;
+  if (rowIcon != nullptr) {
+    iconSize = (rowSubtitle != nullptr) ? mainMenuIconSize : listIconSize;
+    textX += iconSize + hPaddingInSelection;
+    textWidth -= iconSize + hPaddingInSelection;
   }
 
   // Draw all items
   const auto pageStartIndex = selectedIndex / pageItems * pageItems;
+  int iconY = (rowSubtitle != nullptr) ? 16 : 10;
   for (int i = pageStartIndex; i < itemCount && i < pageStartIndex + pageItems; i++) {
     const int itemY = rect.y + (i % pageItems) * rowHeight;
+    int rowTextWidth = textWidth;
+
+    // Draw value (right-aligned) first so the title knows how much room is left
+    int valueWidth = 0;
+    std::string valueText = "";
+    if (rowValue != nullptr) {
+      valueText = rowValue(i);
+      valueText = renderer.truncatedText(UI_10_FONT_ID, valueText.c_str(), maxListValueWidth);
+      valueWidth = renderer.getTextWidth(UI_10_FONT_ID, valueText.c_str()) + hPaddingInSelection;
+      rowTextWidth -= valueWidth;
+    }
 
     // Draw name
-    int textWidth = contentWidth - LyraMetrics::values.contentSidePadding * 2 - hPaddingInSelection * 2 -
-                    (rowValue != nullptr ? 60 : 0);  // TODO truncate according to value width?
     auto itemName = rowTitle(i);
-    auto item = renderer.truncatedText(UI_10_FONT_ID, itemName.c_str(), textWidth);
-    renderer.drawText(UI_10_FONT_ID, rect.x + LyraMetrics::values.contentSidePadding + hPaddingInSelection * 2,
-                      itemY + 6, item.c_str(), true);
+    auto item = renderer.truncatedText(UI_10_FONT_ID, itemName.c_str(), rowTextWidth);
+    renderer.drawText(UI_10_FONT_ID, textX, itemY + 7, item.c_str(), true);
+
+    // Apply checkerboard dither to create gray text effect for dimmed items
+    if (rowDimmed && rowDimmed(i) && i != selectedIndex) {
+      const int titleWidth = renderer.getTextWidth(UI_10_FONT_ID, item.c_str());
+      const int lineH = renderer.getLineHeight(UI_10_FONT_ID);
+      for (int py = itemY + 7; py < itemY + 7 + lineH; py++)
+        for (int px = textX; px < textX + titleWidth; px++)
+          if ((px + py) % 2 == 0) renderer.drawPixel(px, py, false);
+    }
+
+    if (rowIcon != nullptr) {
+      const uint8_t* iconBitmap = iconForName(rowIcon(i), iconSize);
+      if (iconBitmap != nullptr) {
+        renderer.drawIcon(iconBitmap, rect.x + LyraMetrics::values.contentSidePadding + hPaddingInSelection,
+                          itemY + iconY, iconSize, iconSize);
+      }
+    }
 
     if (rowSubtitle != nullptr) {
       // Draw subtitle
       std::string subtitleText = rowSubtitle(i);
-      auto subtitle = renderer.truncatedText(SMALL_FONT_ID, subtitleText.c_str(), textWidth);
-      renderer.drawText(SMALL_FONT_ID, rect.x + LyraMetrics::values.contentSidePadding + hPaddingInSelection * 2,
-                        itemY + 30, subtitle.c_str(), true);
+      auto subtitle = renderer.truncatedText(SMALL_FONT_ID, subtitleText.c_str(), rowTextWidth);
+      renderer.drawText(SMALL_FONT_ID, textX, itemY + 30, subtitle.c_str(), true);
     }
 
-    if (rowValue != nullptr) {
-      // Draw value
-      std::string valueText = rowValue(i);
-      if (!valueText.empty()) {
-        const auto valueTextWidth = renderer.getTextWidth(UI_10_FONT_ID, valueText.c_str());
-
-        if (i == selectedIndex) {
-          renderer.fillRoundedRect(
-              contentWidth - LyraMetrics::values.contentSidePadding - hPaddingInSelection * 2 - valueTextWidth, itemY,
-              valueTextWidth + hPaddingInSelection * 2, rowHeight, cornerRadius, Color::Black);
-        }
-
-        renderer.drawText(UI_10_FONT_ID,
-                          contentWidth - LyraMetrics::values.contentSidePadding - hPaddingInSelection - valueTextWidth,
-                          itemY + 6, valueText.c_str(), i != selectedIndex);
+    // Draw value
+    if (!valueText.empty()) {
+      if (i == selectedIndex && highlightValue) {
+        renderer.fillRoundedRect(
+            rect.x + contentWidth - LyraMetrics::values.contentSidePadding - hPaddingInSelection - valueWidth, itemY,
+            valueWidth + hPaddingInSelection, rowHeight, cornerRadius, Color::Black);
       }
+
+      int valueY = (rowSubtitle != nullptr) ? itemY + 16 : itemY + 6;
+      renderer.drawText(UI_10_FONT_ID, rect.x + contentWidth - LyraMetrics::values.contentSidePadding - valueWidth,
+                        valueY, valueText.c_str(), !(i == selectedIndex && highlightValue));
     }
   }
 }
@@ -367,76 +449,11 @@ void LyraTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
   }
 }
 
-namespace {
-void drawMenuIcon(const GfxRenderer& renderer, const std::string& iconName, int x, int y) {
-  constexpr int s = 16;  // icon size
-  if (iconName == "folder") {
-    renderer.drawRect(x, y + 4, s, s - 4);
-    renderer.drawRect(x, y + 2, 8, 4);
-  } else if (iconName == "grid") {
-    constexpr int g = 2;
-    constexpr int c = (s - g) / 2;
-    renderer.fillRect(x, y, c, c);
-    renderer.fillRect(x + c + g, y, c, c);
-    renderer.fillRect(x, y + c + g, c, c);
-    renderer.fillRect(x + c + g, y + c + g, c, c);
-  } else if (iconName == "clock") {
-    constexpr int r = s / 2;
-    constexpr int cx = r;
-    constexpr int cy = r;
-    // Circle outline (octagon approximation)
-    renderer.drawLine(x + cx - r, y + cy - 2, x + cx - r, y + cy + 2);      // left
-    renderer.drawLine(x + cx + r, y + cy - 2, x + cx + r, y + cy + 2);      // right
-    renderer.drawLine(x + cx - 2, y + cy - r, x + cx + 2, y + cy - r);      // top
-    renderer.drawLine(x + cx - 2, y + cy + r, x + cx + 2, y + cy + r);      // bottom
-    renderer.drawLine(x + cx - r, y + cy - 2, x + cx - 2, y + cy - r);      // top-left
-    renderer.drawLine(x + cx + 2, y + cy - r, x + cx + r, y + cy - 2);      // top-right
-    renderer.drawLine(x + cx - r, y + cy + 2, x + cx - 2, y + cy + r);      // bottom-left
-    renderer.drawLine(x + cx + 2, y + cy + r, x + cx + r, y + cy + 2);      // bottom-right
-    // Hands
-    renderer.drawLine(x + cx, y + cy, x + cx, y + cy - r + 3);  // minute (up)
-    renderer.drawLine(x + cx, y + cy, x + cx + r - 4, y + cy);  // hour (right)
-  } else if (iconName == "transfer") {
-    // Up arrow
-    renderer.drawLine(x + 4, y + 2, x + 4, y + 8);
-    renderer.drawLine(x + 4, y + 2, x + 2, y + 4);
-    renderer.drawLine(x + 4, y + 2, x + 6, y + 4);
-    // Down arrow
-    renderer.drawLine(x + 11, y + 7, x + 11, y + 13);
-    renderer.drawLine(x + 11, y + 13, x + 9, y + 11);
-    renderer.drawLine(x + 11, y + 13, x + 13, y + 11);
-  } else if (iconName == "gear") {
-    constexpr int cx = s / 2;
-    constexpr int cy = s / 2;
-    renderer.fillRect(x + cx - 2, y + cy - 2, 5, 5);       // center
-    renderer.drawLine(x + cx, y, x + cx, y + s);            // vertical
-    renderer.drawLine(x, y + cy, x + s, y + cy);            // horizontal
-    renderer.drawLine(x + 2, y + 2, x + s - 2, y + s - 2); // diagonal
-    renderer.drawLine(x + s - 2, y + 2, x + 2, y + s - 2); // diagonal
-  } else if (iconName == "globe") {
-    constexpr int r = s / 2;
-    constexpr int cx = r;
-    constexpr int cy = r;
-    // Circle (octagon)
-    renderer.drawLine(x + cx - r, y + cy - 2, x + cx - r, y + cy + 2);
-    renderer.drawLine(x + cx + r, y + cy - 2, x + cx + r, y + cy + 2);
-    renderer.drawLine(x + cx - 2, y + cy - r, x + cx + 2, y + cy - r);
-    renderer.drawLine(x + cx - 2, y + cy + r, x + cx + 2, y + cy + r);
-    renderer.drawLine(x + cx - r, y + cy - 2, x + cx - 2, y + cy - r);
-    renderer.drawLine(x + cx + 2, y + cy - r, x + cx + r, y + cy - 2);
-    renderer.drawLine(x + cx - r, y + cy + 2, x + cx - 2, y + cy + r);
-    renderer.drawLine(x + cx + 2, y + cy + r, x + cx + r, y + cy + 2);
-    // Horizontal line
-    renderer.drawLine(x, y + cy, x + s, y + cy);
-    // Vertical ellipse
-    renderer.drawLine(x + cx, y, x + cx, y + s);
-  }
-}
-}  // namespace
 
 void LyraTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                                const std::function<std::string(int index)>& buttonLabel,
-                               const std::function<std::string(int index)>& rowIcon) const {
+                               const std::function<UIIcon(int index)>& rowIcon) const {
+  constexpr int iconGap = 8;  // space between icon glyph and label
   for (int i = 0; i < buttonCount; ++i) {
     int tileWidth = (rect.width - LyraMetrics::values.contentSidePadding * 2 - LyraMetrics::values.menuSpacing) / 2;
     Rect tileRect =
@@ -456,8 +473,21 @@ void LyraTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
     const int textWidth = renderer.getTextWidth(EDSLAB_14_FONT_ID, label);
     const int lineHeight = renderer.getLineHeight(EDSLAB_14_FONT_ID);
     const int textY = tileRect.y + (LyraMetrics::values.menuRowHeight - lineHeight) / 2;
-    const int textX = tileRect.x + (tileRect.width - textWidth) / 2;
-    renderer.drawText(EDSLAB_14_FONT_ID, textX, textY, label, true);
+
+    // Center the (icon + gap + label) group within the tile. drawIcon blits on byte
+    // boundaries, so round the icon's x down to a multiple of 8 and place the label after it.
+    const uint8_t* iconBitmap = (rowIcon != nullptr) ? iconForName(rowIcon(i), mainMenuIconSize) : nullptr;
+    const int groupWidth = (iconBitmap != nullptr ? mainMenuIconSize + iconGap : 0) + textWidth;
+    int cursorX = tileRect.x + (tileRect.width - groupWidth) / 2;
+
+    if (iconBitmap != nullptr) {
+      const int iconX = cursorX & ~7;
+      const int iconY = tileRect.y + (LyraMetrics::values.menuRowHeight - mainMenuIconSize) / 2;
+      renderer.drawIcon(iconBitmap, iconX, iconY, mainMenuIconSize, mainMenuIconSize);
+      cursorX = iconX + mainMenuIconSize + iconGap;
+    }
+
+    renderer.drawText(EDSLAB_14_FONT_ID, cursorX, textY, label, true);
   }
 }
 
