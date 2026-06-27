@@ -208,6 +208,8 @@ class CrossPointSettings {
   uint8_t tooltipButtons = 0;
   // Tooltip behavior: 0=loop (wrap around), 1=page turn (turn page at boundary)
   uint8_t tooltipBehavior = 0;
+  // Show dotfiles / hidden entries in the file browser (0=hide, 1=show)
+  uint8_t showHiddenFiles = 0;
 
   ~CrossPointSettings() = default;
 
