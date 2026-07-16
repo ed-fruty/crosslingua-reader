@@ -69,7 +69,7 @@ done
 python fontconvert.py edslab_10_regular 10 "${EDSLAB_FONT_DIR}/EdsLab-Regular.ttf" --2bit > ../builtinFonts/edslab_10_regular.h
 echo "Generated ../builtinFonts/edslab_10_regular.h"
 
-# Caecilia: regular weight only (borrows Bookerly bold/italic at runtime)
+# Caecilia: regular weight only (borrows EdsLab bold/italic at runtime)
 CAECILIA_FONT_SIZES=(12 14 16 18)
 CAECILIA_FONT_PATH="../../../custom_fonts/CaeciliaLTPro55Roman.TTF"
 
@@ -77,6 +77,17 @@ for size in ${CAECILIA_FONT_SIZES[@]}; do
   font_name="caecilia_${size}_regular"
   output_path="../builtinFonts/${font_name}.h"
   python fontconvert.py $font_name $size "$CAECILIA_FONT_PATH" --2bit > $output_path
+  echo "Generated $output_path"
+done
+
+# GPro: regular weight only (borrows EdsLab bold/italic at runtime)
+GPRO_FONT_SIZES=(12 14 16 18)
+GPRO_FONT_PATH="../../../custom_fonts/GPro.otf"
+
+for size in ${GPRO_FONT_SIZES[@]}; do
+  font_name="gpro_${size}_regular"
+  output_path="../builtinFonts/${font_name}.h"
+  python fontconvert.py $font_name $size "$GPRO_FONT_PATH" --2bit > $output_path
   echo "Generated $output_path"
 done
 

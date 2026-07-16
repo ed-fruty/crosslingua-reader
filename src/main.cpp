@@ -273,19 +273,21 @@ void setupDisplayAndFonts() {
   // — which makes them silently disappear. Route misses to the same-size Bookerly (full coverage)
   // so they render instead. Must be set BEFORE insertFont, which copies the family into the map.
   // (EdsLab-10 has no Bookerly-10; it borrows Bookerly-12, the nearest size.)
+  // Chain: EdsLab -> Bookerly. Caecilia/GPro -> EdsLab first, which itself chains on to Bookerly,
+  // so a glyph that EdsLab also lacks still resolves from Bookerly (the last resort).
   edslab10FontFamily.setFallback(&bookerly12FontFamily);
   edslab12FontFamily.setFallback(&bookerly12FontFamily);
   edslab14FontFamily.setFallback(&bookerly14FontFamily);
   edslab16FontFamily.setFallback(&bookerly16FontFamily);
   edslab18FontFamily.setFallback(&bookerly18FontFamily);
-  caecilia12FontFamily.setFallback(&bookerly12FontFamily);
-  caecilia14FontFamily.setFallback(&bookerly14FontFamily);
-  caecilia16FontFamily.setFallback(&bookerly16FontFamily);
-  caecilia18FontFamily.setFallback(&bookerly18FontFamily);
-  gpro12FontFamily.setFallback(&bookerly12FontFamily);
-  gpro14FontFamily.setFallback(&bookerly14FontFamily);
-  gpro16FontFamily.setFallback(&bookerly16FontFamily);
-  gpro18FontFamily.setFallback(&bookerly18FontFamily);
+  caecilia12FontFamily.setFallback(&edslab12FontFamily);
+  caecilia14FontFamily.setFallback(&edslab14FontFamily);
+  caecilia16FontFamily.setFallback(&edslab16FontFamily);
+  caecilia18FontFamily.setFallback(&edslab18FontFamily);
+  gpro12FontFamily.setFallback(&edslab12FontFamily);
+  gpro14FontFamily.setFallback(&edslab14FontFamily);
+  gpro16FontFamily.setFallback(&edslab16FontFamily);
+  gpro18FontFamily.setFallback(&edslab18FontFamily);
 
   renderer.insertFont(EDSLAB_10_FONT_ID, edslab10FontFamily);
   renderer.insertFont(EDSLAB_12_FONT_ID, edslab12FontFamily);

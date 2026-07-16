@@ -62,6 +62,24 @@ intervals = [
     (0x2200, 0x22FF),
     # Arrows
     (0x2190, 0x21FF),
+    ### Letterlike Symbols ###
+    # № (numero — a standard Cyrillic-keyboard key), ™, ℓ, Ω, ℅, ℃, ℉
+    (0x2100, 0x214F),
+    ### Number Forms ###
+    # Vulgar fractions (⅓ ⅔ ⅛ …) and Roman numerals
+    (0x2150, 0x218F),
+    ### Geometric Shapes ###
+    # ■ □ ● ○ ▪ ▸ — used as bullets / scene breaks in books
+    (0x25A0, 0x25FF),
+    ### Miscellaneous Symbols ###
+    # ★ ☆ ♠ ♥ ♦ ♣ ♂ ♀ ☞ …
+    (0x2600, 0x26FF),
+    ### Dingbats ###
+    # ✓ ✗ ✦ ❖ …
+    (0x2700, 0x27BF),
+    ### Supplemental Punctuation ###
+    # ⸺ (two-em dash) and other editorial marks
+    (0x2E00, 0x2E7F),
     ### CJK ###
     # Core Unified Ideographs
     # (0x4E00, 0x9FFF),
