@@ -18,7 +18,32 @@ void HalDisplay::drawImage(const uint8_t* imageData, uint16_t x, uint16_t y, uin
 
 void HalDisplay::drawImageTransparent(const uint8_t* imageData, uint16_t x, uint16_t y, uint16_t w, uint16_t h,
                                       bool fromProgmem) const {
-  einkDisplay.drawImageTransparent(imageData, x, y, w, h, fromProgmem);
+  // AND-blit over the native framebuffer: only black pixels (0 bits) are written; white pixels
+  // (1 bits) leave the existing contents untouched, so icon glyphs draw transparently over any
+  // background (e.g. a selected/inverted menu row). Implemented here rather than in the SDK so the
+  // open-x4-sdk submodule stays pristine — it exposes everything needed publicly.
+  uint8_t* frameBuffer = einkDisplay.getFrameBuffer();
+  if (!frameBuffer) {
+    if (Serial) Serial.printf("[%lu]   ERROR: Frame buffer not allocated!\n", millis());
+    return;
+  }
+
+  // Bytes per image line (icon bitmaps are byte-aligned in width).
+  const uint16_t imageWidthBytes = w / 8;
+
+  for (uint16_t row = 0; row < h; row++) {
+    const uint16_t destY = y + row;
+    if (destY >= DISPLAY_HEIGHT) break;
+
+    const uint32_t destOffset = static_cast<uint32_t>(destY) * DISPLAY_WIDTH_BYTES + (x / 8);
+    const uint16_t srcOffset = row * imageWidthBytes;
+
+    for (uint16_t col = 0; col < imageWidthBytes; col++) {
+      if ((x / 8 + col) >= DISPLAY_WIDTH_BYTES) break;
+      const uint8_t srcByte = fromProgmem ? pgm_read_byte(&imageData[srcOffset + col]) : imageData[srcOffset + col];
+      frameBuffer[destOffset + col] &= srcByte;
+    }
+  }
 }
 
 EInkDisplay::RefreshMode convertRefreshMode(HalDisplay::RefreshMode mode) {
