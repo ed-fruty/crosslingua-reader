@@ -51,23 +51,32 @@ bool isRedirect(int status) {
 // TLS handshakes over wolfSSL are the single biggest heap consumer on this
 // path; translation requests are one-shot (no keep-alive to amortize the cost
 // across requests), so refuse the request up front rather than risk an OOM
-// mid-handshake. Same floor as KOReaderSyncClient's TLS guard
-// (lib/KOReaderSync/KOReaderSyncClient.cpp: MIN_HEAP_FOR_TLS), which checks
-// both total free heap and largest contiguous block so fragmented heap
-// doesn't fall through into a failed TLS allocation.
-// TEMPORARY MEASUREMENT BUILD — revert to 55000 before any release/PR.
-// Lowered so the handshake is actually attempted at the translator's current
-// ~36 KB free / ~30 KB max-block: either it succeeds (guard was too
-// conservative — recalibrate) or WolfSslAllocDiag logs the exact failing
-// allocation size ([WSSL] XMALLOC FAIL: req=...), giving ground truth.
-constexpr uint32_t MIN_HEAP_FOR_TLS = 28000;
+// mid-handshake.
+//
+// Thresholds are evidence-based from on-device WolfSslAllocDiag capture, not
+// guesses: the handshake starts at ~37 KB free, churns ~24 KB across many
+// small allocations, then makes ONE request for 10,460 bytes while the
+// largest contiguous hole is only 6,644 bytes -> MEMORY_E. A TLS1.2 fallback
+// retry compounds this: it starts at 5,252 bytes free and fails at a 2,092
+// byte request, and each failed attempt further degrades maxAlloc (observed
+// 30,708 -> 19,444 across retries). So the real requirement is twofold:
+//   1. Enough TOTAL headroom to absorb the ~24 KB of handshake churn on top
+//      of the worst-case single block (10,460 B measured, up to ~16.4 KB for
+//      larger TLS records) -> freeHeap floor.
+//   2. A single contiguous block large enough for that worst-case TLS record
+//      allocation to actually succeed even if freeHeap looks sufficient but
+//      is fragmented -> maxAllocHeap floor.
+// Both floors carry margin above the measured numbers so we refuse before
+// hitting the wall, not after.
+constexpr uint32_t MIN_FREE_HEAP_FOR_TLS = 45000;
+constexpr uint32_t MIN_MAX_ALLOC_FOR_TLS = 20000;
 
 bool insufficientHeapForTls() {
   const uint32_t freeHeap = ESP.getFreeHeap();
   const uint32_t maxAllocHeap = ESP.getMaxAllocHeap();
-  if (freeHeap < MIN_HEAP_FOR_TLS || maxAllocHeap < MIN_HEAP_FOR_TLS) {
-    LOG_ERR("HTTP", "Insufficient heap for TLS handshake: %u bytes free, %u max alloc (need %u)", freeHeap,
-            maxAllocHeap, MIN_HEAP_FOR_TLS);
+  if (freeHeap < MIN_FREE_HEAP_FOR_TLS || maxAllocHeap < MIN_MAX_ALLOC_FOR_TLS) {
+    LOG_ERR("HTTP", "Insufficient heap for TLS handshake: %u bytes free (need %u), %u max alloc block (need %u)",
+            freeHeap, MIN_FREE_HEAP_FOR_TLS, maxAllocHeap, MIN_MAX_ALLOC_FOR_TLS);
     return true;
   }
   return false;
