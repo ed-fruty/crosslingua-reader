@@ -289,6 +289,21 @@ class GfxRenderer {
   bool restoreFrameBufferAfterBuild();
   bool hasFrameBuffer() const { return frameBuffer != nullptr; }
 
+  // FREE the 48 KB framebuffer to the heap for a memory-hungry NETWORK phase
+  // (the translation TLS handshake). Unlike releaseFrameBufferForBuild(), which
+  // LENDS the bytes without freeing them (a loan cannot help malloc-based TLS),
+  // this actually returns the allocation to the heap so the TLS allocator can
+  // use the hole. Between release and a successful restore NOTHING may draw or
+  // display — hasFrameBuffer() reports false and the caller (translator
+  // render()) must suppress all drawing; the panel keeps its last refreshed
+  // image. restore reallocates and returns the buffer WHITE, so the caller must
+  // fully redraw. release returns false if the buffer is absent (already
+  // released or lent to a build); restore returns false if the realloc fails
+  // (out of memory — the caller must recover, e.g. free transients + retry,
+  // then restart as a last resort).
+  bool releaseFrameBufferForNetwork();
+  bool restoreFrameBufferAfterNetwork();
+
   // RAII form of the loan above, for blocking build regions with early-return
   // error paths: restores on scope exit (or explicitly via end()). Display the
   // popup/screen the panel should hold BEFORE constructing one. Constructing

@@ -151,6 +151,35 @@ bool GfxRenderer::restoreFrameBufferAfterBuild() {
   return frameBuffer != nullptr;
 }
 
+bool GfxRenderer::releaseFrameBufferForNetwork() {
+  // FREE (not lend) the framebuffer so the TLS handshake's allocator can use
+  // the ~48 KB hole. Mirror the loan flow's renderer bookkeeping: null out
+  // frameBuffer so hasFrameBuffer() reports false and the coarse draw/display
+  // entry points below become safe no-ops while the buffer is gone. HalDisplay
+  // refuses (returns false) if the buffer is already released or lent to a
+  // build, in which case we leave frameBuffer untouched.
+  if (!display.releaseFrameBufferStorageForNetwork()) {
+    LOG_ERR("GFX", "releaseFrameBufferForNetwork: HAL refused (released or lent)");
+    return false;
+  }
+  frameBuffer = nullptr;
+  return true;
+}
+
+bool GfxRenderer::restoreFrameBufferAfterNetwork() {
+  // Reallocate the freed framebuffer. Unlike the loan restore, this CAN fail
+  // (a real malloc): on failure frameBuffer stays null and the caller must
+  // recover (free transients + retry, then restart as a last resort).
+  if (!display.reallocFrameBufferStorage()) {
+    LOG_ERR("GFX", "restoreFrameBufferAfterNetwork: realloc failed (OOM)");
+    frameBuffer = nullptr;
+    return false;
+  }
+  // Buffer came back white; caller must fully redraw (same contract as the loan).
+  frameBuffer = display.getFrameBuffer();
+  return frameBuffer != nullptr;
+}
+
 GfxRenderer::FrameBufferLoan::FrameBufferLoan(GfxRenderer& renderer) : renderer_(renderer) {
   // Nesting guard: if the framebuffer is already lent out (an outer loan),
   // stay inert so this end() cannot return storage the outer loan still owns.
@@ -1533,6 +1562,17 @@ void GfxRenderer::clearScreen(const uint8_t color) const {
     memset(_stripBuf, color, static_cast<size_t>(panelWidthBytes) * _stripRows);
     return;
   }
+  // Guard: the SDK clearScreen memset()s the raw framebuffer with no null check,
+  // so this would crash while the buffer is released for a network phase. The
+  // primary guard is the translator render() no-op; this is defense-in-depth.
+  if (!frameBuffer) {
+    static bool logged = false;
+    if (!logged) {
+      LOG_ERR("GFX", "clearScreen while framebuffer released - no-op");
+      logged = true;
+    }
+    return;
+  }
   display.clearScreen(color);
 }
 
@@ -1576,12 +1616,31 @@ void GfxRenderer::invertScreen() const {
 }
 
 void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode) const {
+  // Guard: the SDK hands the raw framebuffer pointer to the panel driver with no
+  // null check, so pushing while the buffer is released (network phase) crashes.
+  // Primary guard is the translator render() no-op; this is defense-in-depth.
+  if (!frameBuffer) {
+    static bool logged = false;
+    if (!logged) {
+      LOG_ERR("GFX", "displayBuffer while framebuffer released - no-op");
+      logged = true;
+    }
+    return;
+  }
   auto elapsed = millis() - start_ms;
   LOG_DBG("GFX", "Time = %lu ms from clearScreen to displayBuffer", elapsed);
   display.displayBuffer(refreshMode, fadingFix);
 }
 
 void GfxRenderer::displayBufferAsync(const HalDisplay::RefreshMode refreshMode) const {
+  if (!frameBuffer) {
+    static bool logged = false;
+    if (!logged) {
+      LOG_ERR("GFX", "displayBufferAsync while framebuffer released - no-op");
+      logged = true;
+    }
+    return;
+  }
   // The async path has no turn-off-screen hook, which the sunlight fading fix
   // relies on; keep those users on the blocking path.
   if (fadingFix) {

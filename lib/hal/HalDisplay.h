@@ -66,6 +66,24 @@ class HalDisplay {
   uint8_t* lendFrameBufferStorage(uint32_t* sizeOut);
   void returnFrameBufferStorage();
 
+  // FREE the ~48 KB framebuffer back to the heap for a memory-hungry NETWORK
+  // phase (the translation TLS handshake needs ~35 KB headroom incl. a
+  // >=10.5 KB contiguous record and cannot fit alongside a live framebuffer).
+  // DISTINCT from lendFrameBufferStorage(): that hands out the bytes without
+  // freeing them (malloc cannot draw on lent bytes, so a loan does not help
+  // TLS); this actually free()s the block so the TLS allocator can use the
+  // hole. The panel keeps its last refreshed image (E-ink retains with no
+  // buffer). No display/draw calls are valid until reallocFrameBufferStorage()
+  // succeeds. Returns false (and does NOT free) if the framebuffer is currently
+  // absent — either already released or LENT to a build — since free()ing a
+  // lent block would be a use-after-free for the borrower.
+  bool releaseFrameBufferStorageForNetwork();
+  // Reallocate the framebuffer after releaseFrameBufferStorageForNetwork().
+  // The buffer comes back WHITE (0xFF), so the caller must fully redraw before
+  // the next display call. Returns false if the heap cannot supply the buffer
+  // (display then unusable — the caller must recover, e.g. retry then restart).
+  bool reallocFrameBufferStorage();
+
   // X3 grayscale preconditioning (OEM "AA-pre-BW(mid)" settle pass), windowed
   // to the gray region in physical panel coordinates (no-arg = full frame).
   // Call after the BW base frame is displayed and before the grayscale planes
