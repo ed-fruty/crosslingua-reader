@@ -1,5 +1,6 @@
 #include "BookTranslatorActivity.h"
 
+#include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
@@ -39,7 +40,14 @@ bool BookTranslatorActivity::ensureEpubLoaded() {
   return true;
 }
 
-void BookTranslatorActivity::returnToReader() { activityManager.goToReader(epubPath); }
+void BookTranslatorActivity::returnToCaller() {
+  if (returnTarget == TranslatorReturnTarget::FILE_BROWSER) {
+    // Started from the file browser (no reader was open) — return to the book's folder.
+    activityManager.goToFileBrowser(FsHelpers::extractFolderPath(epubPath));
+    return;
+  }
+  activityManager.goToReader(epubPath);
+}
 
 // ─── lifecycle ────────────────────────────────────────────────────────────────
 
@@ -76,6 +84,14 @@ void BookTranslatorActivity::onExit() {
   delay(100);
   WiFi.mode(WIFI_OFF);
   delay(100);
+
+  // Always hand the framebuffer back before leaving: returnToCaller() relaunches an
+  // activity that renders immediately. onExit() runs while ActivityManager holds the
+  // RenderLock, so restore without taking it again. Idempotent — a no-op if we never
+  // released or already restored. cancelFlag (set above) has already broken any
+  // boundary spin, so the worker is not holding the run open. Done after the WiFi
+  // teardown so the realloc has the most free heap available.
+  restoreFramebuffer(/*alreadyLocked=*/true);
 }
 
 // ─── language pickers ─────────────────────────────────────────────────────────
@@ -91,7 +107,7 @@ void BookTranslatorActivity::launchSourcePicker() {
                                                                   /*customTitle=*/tr(STR_SOURCE_LANGUAGE)),
                          [this](const ActivityResult& result) {
                            if (result.isCancelled) {
-                             returnToReader();
+                             returnToCaller();
                              return;
                            }
                            const auto& menu = std::get<MenuResult>(result.data);
@@ -110,7 +126,7 @@ void BookTranslatorActivity::launchTargetPicker() {
                                                                   /*customTitle=*/tr(STR_TARGET_LANGUAGE)),
                          [this](const ActivityResult& result) {
                            if (result.isCancelled) {
-                             returnToReader();
+                             returnToCaller();
                              return;
                            }
                            const auto& menu = std::get<MenuResult>(result.data);
@@ -141,7 +157,7 @@ void BookTranslatorActivity::onTargetLangSelected(uint8_t resultIndex) {
   if (resultIndex >= LanguagePickerActivity::NUM_LANGUAGES) {
     // Defensive: out-of-range. Cancel rather than translate to an unknown code.
     LOG_ERR("BKT", "Target language out of range: %d", resultIndex);
-    returnToReader();
+    returnToCaller();
     return;
   }
   targetLangCode = LanguagePickerActivity::LANGUAGES[resultIndex].code;
@@ -217,15 +233,73 @@ void BookTranslatorActivity::startTranslation() {
   progressTotal = 0;
   lastProgressUpdate = 0;
   statusMsg[0] = '\0';
-  requestUpdate();
+  boundaryPending = false;
+  boundaryAck = false;
+
+  // Flush the initial "Translating..." screen to the panel BEFORE freeing the
+  // framebuffer (blocks until drawn+displayed). Safe here: startTranslation() runs on
+  // the main task from a result handler, which does not hold the RenderLock.
+  requestUpdateAndWait();
 
   LOG_DBG("BKT", "State -> TRANSLATING: %d chapters, lang=%s, engine=%d", totalChapters, targetLangCode.c_str(),
           SETTINGS.translationEngine);
+  LOG_DBG("MEM", "BKT pre-task (wifi up): free=%u max=%u", (unsigned)ESP.getFreeHeap(),
+          (unsigned)ESP.getMaxAllocHeap());
+
+  // Free the 48 KB framebuffer for the first chapter's TLS handshake. Restored and
+  // re-released at each subsequent chapter boundary; finally restored in loop()'s
+  // completion path (and unconditionally in onExit()).
+  releaseFramebuffer();
 
   // 10 KB stack matches ChapterTranslator: ParagraphTranslator can spike to ~6-8 KB
   // during HTTP + JSON parse on the larger engines. Priority 1 keeps it below the
   // render task.
   xTaskCreate(translationTask, "bookTranslate", 10240, this, 1, &taskHandle);
+}
+
+// ─── framebuffer lifecycle (main task only) ────────────────────────────────────
+
+void BookTranslatorActivity::releaseFramebuffer() {
+  // RenderLock serialises against the render task: freeing the buffer mid-draw would
+  // be a use-after-free.
+  RenderLock lock;
+  if (!renderer.hasFrameBuffer()) return;  // already released
+  if (!renderer.releaseFrameBufferForNetwork()) {
+    LOG_ERR("BKT", "Framebuffer release failed");
+    return;
+  }
+  LOG_DBG("MEM", "BKT post-release: free=%u max=%u", (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
+}
+
+void BookTranslatorActivity::restoreFramebuffer(bool alreadyLocked) {
+  if (renderer.hasFrameBuffer()) return;  // idempotent: nothing to restore
+
+  for (int attempt = 0; attempt < 5; attempt++) {
+    bool ok;
+    if (alreadyLocked) {
+      // onExit() already holds the RenderLock via exitActivity(); taking the
+      // non-recursive mutex again on the same task would deadlock.
+      ok = renderer.restoreFrameBufferAfterNetwork();
+    } else {
+      RenderLock lock;
+      if (renderer.hasFrameBuffer()) return;  // re-check under the lock
+      ok = renderer.restoreFrameBufferAfterNetwork();
+    }
+    if (ok) {
+      LOG_DBG("MEM", "BKT post-restore: free=%u max=%u", (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
+      return;
+    }
+    LOG_ERR("BKT", "Framebuffer realloc failed (attempt %d/5)", attempt + 1);
+    delay(100);
+  }
+
+  // Practically unreachable: restore runs only after the previous chapter's
+  // rewriter/HTTP/expat transients (~35+ KB) have been freed, so a clean 48 KB hole
+  // is available. If it still fails the device has no buffer to draw on; restart to
+  // recover. Finished chapters are already committed to SD and the reader re-reads
+  // them on relaunch.
+  LOG_ERR("BKT", "Framebuffer realloc permanently failed; restarting");
+  ESP.restart();
 }
 
 void BookTranslatorActivity::translationTask(void* param) {
@@ -266,12 +340,32 @@ void BookTranslatorActivity::runTranslation() {
 
     const std::string translatedPath = cachePath + "/sections/" + std::to_string(si) + ".translated.html";
 
-    // Skip if already translated and user chose "Skip Translated".
+    // Skip if already translated and user chose "Skip Translated". Skipped chapters do
+    // no network work, so they need no framebuffer cycle or repaint (which would cost
+    // a slow E-ink refresh each) — just advance the overall counter and move on.
     if (skipTranslated && Storage.exists(translatedPath.c_str())) {
       chaptersCompleted = chaptersCompleted + 1;  // ++ on volatile is deprecated in C++20
       LOG_DBG("BKT", "Chapter %d/%d: skipped (already translated)", si + 1, totalChapters);
       continue;
     }
+
+    // Chapter boundary: for every chapter except the one the initial startTranslation()
+    // screen already shows (chapter 0 with nothing completed), ask the main task to
+    // restore the framebuffer, repaint progress, and free it again before this
+    // chapter's network work. The worker owns no framebuffer/render state — it only
+    // raises boundaryPending and waits — so the restore/redraw/release can never race
+    // the render task or onExit()'s teardown. The spin also exits on cancelFlag so
+    // onExit() never blocks waiting for us. The freed transients from the previous
+    // iteration (rewriter/HalFiles went out of scope) guarantee a clean 48 KB hole.
+    if (currentChapter != 0 || chaptersCompleted != 0) {
+      boundaryAck = false;
+      boundaryPending = true;
+      while (!boundaryAck && !cancelFlag) {
+        delay(5);
+      }
+      boundaryPending = false;
+    }
+    if (cancelFlag) break;
 
     // Re-translate path: remove the stale output BEFORE we start so a mid-flight
     // cancel cannot leave behind a half-stale file mixed with the previous run.
@@ -399,23 +493,43 @@ void BookTranslatorActivity::loop() {
       return;
     }
     if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-      returnToReader();
+      returnToCaller();
       return;
     }
     return;
   }
 
-  // TRANSLATING: poll task status with throttled repaint.
+  // TRANSLATING: service chapter boundaries, then poll task status.
   if (state == TRANSLATING) {
+    // The worker is paused at a chapter boundary: restore the buffer, draw the updated
+    // progress synchronously, free it again, then release the worker. All of this runs
+    // on the main task, so it never races the render task; and because onExit() runs on
+    // this same task it can never overlap this sequence. Claim boundaryPending up front
+    // so a second loop() pass cannot re-run the cycle.
+    if (boundaryPending) {
+      boundaryPending = false;
+      restoreFramebuffer();
+      requestUpdateAndWait();
+      releaseFramebuffer();
+      boundaryAck = true;
+      return;
+    }
+
     if (taskDone) {
+      restoreFramebuffer();  // bring the buffer back BEFORE the result screen draws
       state = cancelFlag ? CANCELLED : DONE;
       requestUpdate();
     } else if (taskFailed) {
+      restoreFramebuffer();
       state = FAILED;
       requestUpdate();
     } else {
+      // The framebuffer is released during each chapter's network run, so
+      // hasFrameBuffer() is false and no repaints are issued — progress advances only
+      // at chapter boundaries by design. Gate on the buffer so we resume normal
+      // throttled repaints if a release ever failed.
       const unsigned long now = millis();
-      if (now - lastProgressUpdate >= 3000) {
+      if (renderer.hasFrameBuffer() && now - lastProgressUpdate >= 3000) {
         lastProgressUpdate = now;
         requestUpdate();
       }
@@ -427,7 +541,7 @@ void BookTranslatorActivity::loop() {
   if (state == DONE || state == FAILED || state == CANCELLED) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
         mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-      returnToReader();
+      returnToCaller();
       return;
     }
   }
@@ -440,6 +554,11 @@ void BookTranslatorActivity::loop() {
 }
 
 void BookTranslatorActivity::render(RenderLock&&) {
+  // Backstop for the loop()-level suppression: while the framebuffer is freed for a
+  // chapter's network run there is nothing to draw on (drawing would be a
+  // use-after-free). The panel retains its last flushed image until the next boundary.
+  if (!renderer.hasFrameBuffer()) return;
+
   renderer.clearScreen();
   const int pageWidth = renderer.getScreenWidth();
 

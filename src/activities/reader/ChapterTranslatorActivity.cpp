@@ -1,5 +1,6 @@
 #include "ChapterTranslatorActivity.h"
 
+#include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
@@ -39,7 +40,14 @@ bool ChapterTranslatorActivity::ensureEpubLoaded() {
   return true;
 }
 
-void ChapterTranslatorActivity::returnToReader() { activityManager.goToReader(epubPath); }
+void ChapterTranslatorActivity::returnToCaller() {
+  if (returnTarget == TranslatorReturnTarget::FILE_BROWSER) {
+    // Started from the file browser (no reader was open) — return to the book's folder.
+    activityManager.goToFileBrowser(FsHelpers::extractFolderPath(epubPath));
+    return;
+  }
+  activityManager.goToReader(epubPath);
+}
 
 // ─── lifecycle ────────────────────────────────────────────────────────────────
 
@@ -85,6 +93,13 @@ void ChapterTranslatorActivity::onExit() {
   delay(100);
   WiFi.mode(WIFI_OFF);
   delay(100);
+
+  // Always hand the framebuffer back before leaving: returnToCaller() relaunches an
+  // activity that renders immediately. onExit() runs while ActivityManager holds the
+  // RenderLock, so restore without taking it again. Idempotent — a no-op if we never
+  // released or already restored in the completion path. Done after the WiFi teardown
+  // so the realloc has the most free heap available.
+  restoreFramebuffer(/*alreadyLocked=*/true);
 }
 
 // ─── language pickers ─────────────────────────────────────────────────────────
@@ -100,7 +115,7 @@ void ChapterTranslatorActivity::launchSourcePicker() {
                                                                   /*customTitle=*/tr(STR_SOURCE_LANGUAGE)),
                          [this](const ActivityResult& result) {
                            if (result.isCancelled) {
-                             returnToReader();
+                             returnToCaller();
                              return;
                            }
                            const auto& menu = std::get<MenuResult>(result.data);
@@ -119,7 +134,7 @@ void ChapterTranslatorActivity::launchTargetPicker() {
                                                                   /*customTitle=*/tr(STR_TARGET_LANGUAGE)),
                          [this](const ActivityResult& result) {
                            if (result.isCancelled) {
-                             returnToReader();
+                             returnToCaller();
                              return;
                            }
                            const auto& menu = std::get<MenuResult>(result.data);
@@ -150,7 +165,7 @@ void ChapterTranslatorActivity::onTargetLangSelected(uint8_t resultIndex) {
   if (resultIndex >= LanguagePickerActivity::NUM_LANGUAGES) {
     // Defensive: out-of-range. Cancel rather than translate to an unknown code.
     LOG_ERR("CHT", "Target language out of range: %d", resultIndex);
-    returnToReader();
+    returnToCaller();
     return;
   }
   targetLangCode = LanguagePickerActivity::LANGUAGES[resultIndex].code;
@@ -199,14 +214,70 @@ void ChapterTranslatorActivity::startTranslation() {
   progressCurrent = 0;
   progressTotal = 0;
   lastProgressUpdate = 0;
-  requestUpdate();
+
+  // Flush the "Translating..." status screen to the panel BEFORE freeing the
+  // framebuffer. requestUpdateAndWait() blocks until the render task has drawn and
+  // displayed it; E-ink then retains that image with no buffer for the whole run.
+  // Safe here: startTranslation() runs on the main task from a result handler, which
+  // does not hold the RenderLock.
+  requestUpdateAndWait();
 
   LOG_DBG("CHT", "State -> TRANSLATING, lang=%s, engine=%d", targetLangCode.c_str(), SETTINGS.translationEngine);
   LOG_DBG("MEM", "CT pre-task (wifi up): free=%u max=%u", (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
 
+  // Free the 48 KB heap framebuffer so the TLS handshake has the contiguous headroom
+  // it needs. Released for the entire chapter run; restored in the loop() completion
+  // path (and unconditionally in onExit()) before anything draws again.
+  releaseFramebuffer();
+
   // 10 KB stack: ParagraphTranslator can spike to ~6-8 KB during HTTP + JSON parse on
   // the larger engines (Gemini, OpenAI). Priority 1 keeps it below the render task.
   xTaskCreate(translationTask, "chTranslate", 10240, this, 1, &taskHandle);
+}
+
+// ─── framebuffer lifecycle ─────────────────────────────────────────────────────
+
+void ChapterTranslatorActivity::releaseFramebuffer() {
+  // RenderLock serialises against the render task: freeing the buffer while render()
+  // is mid-draw would be a use-after-free. Both this and render() run on separate
+  // tasks, so the lock is the guard even though render() also null-checks up front.
+  RenderLock lock;
+  if (!renderer.hasFrameBuffer()) return;  // already released
+  if (!renderer.releaseFrameBufferForNetwork()) {
+    LOG_ERR("CHT", "Framebuffer release failed");
+    return;
+  }
+  LOG_DBG("MEM", "CT post-release: free=%u max=%u", (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
+}
+
+void ChapterTranslatorActivity::restoreFramebuffer(bool alreadyLocked) {
+  if (renderer.hasFrameBuffer()) return;  // idempotent: nothing to restore
+
+  for (int attempt = 0; attempt < 5; attempt++) {
+    bool ok;
+    if (alreadyLocked) {
+      // onExit() already holds the RenderLock via exitActivity(); taking the
+      // non-recursive mutex again on the same task would deadlock.
+      ok = renderer.restoreFrameBufferAfterNetwork();
+    } else {
+      RenderLock lock;
+      if (renderer.hasFrameBuffer()) return;  // re-check under the lock
+      ok = renderer.restoreFrameBufferAfterNetwork();
+    }
+    if (ok) {
+      LOG_DBG("MEM", "CT post-restore: free=%u max=%u", (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
+      return;
+    }
+    LOG_ERR("CHT", "Framebuffer realloc failed (attempt %d/5)", attempt + 1);
+    delay(100);
+  }
+
+  // Practically unreachable: restore runs only after the rewriter/HTTP/expat
+  // transients (~35+ KB) have been freed, so a clean 48 KB hole is available. If it
+  // still fails the device has no buffer to draw on; restart to recover. The
+  // translated HTML is already committed to SD and the reader re-reads it on relaunch.
+  LOG_ERR("CHT", "Framebuffer realloc permanently failed; restarting");
+  ESP.restart();
 }
 
 void ChapterTranslatorActivity::translationTask(void* param) {
@@ -352,7 +423,7 @@ void ChapterTranslatorActivity::loop() {
       return;
     }
     if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-      returnToReader();
+      returnToCaller();
       return;
     }
     return;
@@ -360,15 +431,20 @@ void ChapterTranslatorActivity::loop() {
 
   if (state == TRANSLATING) {
     if (taskDone) {
+      restoreFramebuffer();  // bring the buffer back BEFORE the result screen draws
       state = (cancelFlag || lastResult.cancelled) ? CANCELLED : DONE;
       requestUpdate();
     } else if (taskFailed) {
+      restoreFramebuffer();
       state = FAILED;
       requestUpdate();
     } else {
-      // E-ink refresh is expensive (FAST_REFRESH ~300ms) — throttle progress repaints.
+      // The framebuffer is released for the whole run, so hasFrameBuffer() is false
+      // and no progress repaints are issued — the network run stays silent by design
+      // (a request here would be a no-op render anyway). Gate on the buffer so we
+      // resume normal throttled repaints if release ever failed.
       const unsigned long now = millis();
-      if (now - lastProgressUpdate >= 3000) {
+      if (renderer.hasFrameBuffer() && now - lastProgressUpdate >= 3000) {
         lastProgressUpdate = now;
         requestUpdate();
       }
@@ -380,7 +456,7 @@ void ChapterTranslatorActivity::loop() {
   if (state == DONE || state == FAILED || state == CANCELLED) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
         mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-      returnToReader();
+      returnToCaller();
       return;
     }
   }
@@ -392,6 +468,11 @@ void ChapterTranslatorActivity::loop() {
 }
 
 void ChapterTranslatorActivity::render(RenderLock&&) {
+  // Backstop for the loop()-level suppression: while the framebuffer is freed for the
+  // network run there is nothing to draw on (drawing would be a use-after-free). The
+  // panel retains the last flushed "Translating..." image until restore.
+  if (!renderer.hasFrameBuffer()) return;
+
   renderer.clearScreen();
   const int pageWidth = renderer.getScreenWidth();
 

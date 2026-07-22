@@ -7,6 +7,7 @@
 #include <string>
 
 #include "activities/Activity.h"
+#include "activities/reader/TranslatorReturnTarget.h"
 #include "translator/TranslatingHtmlRewriter.h"
 
 /**
@@ -42,12 +43,14 @@ class ChapterTranslatorActivity final : public Activity {
   };
 
   explicit ChapterTranslatorActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string epubPath,
-                                     int spineIndex, std::string translatedHtmlPath, bool alreadyTranslated)
+                                     int spineIndex, std::string translatedHtmlPath, bool alreadyTranslated,
+                                     TranslatorReturnTarget returnTarget = TranslatorReturnTarget::READER)
       : Activity("ChapterTranslator", renderer, mappedInput),
         epubPath(std::move(epubPath)),
         spineIndex(spineIndex),
         translatedHtmlPath(std::move(translatedHtmlPath)),
-        alreadyTranslated(alreadyTranslated) {}
+        alreadyTranslated(alreadyTranslated),
+        returnTarget(returnTarget) {}
 
   void onEnter() override;
   void onExit() override;
@@ -61,6 +64,7 @@ class ChapterTranslatorActivity final : public Activity {
   int spineIndex;
   std::string translatedHtmlPath;
   bool alreadyTranslated;
+  TranslatorReturnTarget returnTarget;
 
   // Language selection state. sourceLangCode "auto" => engine-side auto-detect.
   std::string sourceLangCode = "auto";
@@ -86,9 +90,12 @@ class ChapterTranslatorActivity final : public Activity {
   // Reopens a lean, metadata-only Epub from epubPath (the reader released its own before
   // this activity launched). Idempotent; returns false + LOG_ERR if the load fails.
   bool ensureEpubLoaded();
-  // Tears this activity down and relaunches the reader from disk (the stack was cleared
-  // when the reader replaced itself with this activity, so finish() cannot return there).
-  void returnToReader();
+  // Tears this activity down and hands control back to whoever launched translation
+  // (the stack was cleared when the caller replaced itself with this activity, so
+  // finish() cannot return there). returnTarget picks the destination: READER
+  // relaunches the reader from disk via goToReader(epubPath); FILE_BROWSER returns to
+  // the file browser at the book's parent directory via goToFileBrowser(dir).
+  void returnToCaller();
 
   void launchSourcePicker();
   void launchTargetPicker();
@@ -99,6 +106,18 @@ class ChapterTranslatorActivity final : public Activity {
   void startTranslation();
   static void translationTask(void* param);
   void runTranslation();
+
+  // ─── Framebuffer lifecycle around the network run ──────────────────────────
+  // The TLS handshake needs a >=10.5 KB contiguous block plus ~24 KB of churn, and
+  // the translator context only has ~37 KB free otherwise, so the 48 KB heap
+  // framebuffer is freed for the duration of the network run. Both helpers run ONLY
+  // on the main task; while released the panel keeps showing the last flushed image
+  // and render() is a no-op. See the shared design notes for the on-device numbers.
+  void releaseFramebuffer();
+  // Reallocates the framebuffer with retry, restarting as a last resort if it can
+  // never be reclaimed. Idempotent. alreadyLocked=true when called from onExit(),
+  // which already holds the RenderLock (the mutex is non-recursive).
+  void restoreFramebuffer(bool alreadyLocked = false);
 
   // Display name for the current translation engine (e.g. "Google (Free) - New").
   const char* getEngineName() const;
