@@ -399,7 +399,7 @@ STR_UPDATE_AVAILABLE: "Güncelle"
 STR_VALIDATING_FIRMWARE: "Firmware doğrulanıyor..."
 STR_XTC_STATUS_BAR: "XTC Durum Çubuğu"
 
-STR_PRE_TRANSLATION: "Ön Çeviri"
+STR_PRE_TRANSLATION: "Bilingua"
 STR_DISPLAY_MODE: "Görüntü Modu"
 STR_DELETE_TRANSLATIONS: "Çevirileri Sil"
 

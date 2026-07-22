@@ -392,7 +392,7 @@ STR_FIRMWARE_UPDATE_DO_NOT_POWER_OFF: "Ne isključuj napajanje!"
 STR_RECOVERY_MODE: "Način oporavka"
 STR_RECOVERY_MODE_HINT: "Stavi firmware.bin u korijenski direktorij SD kartice i odaberi ga"
 
-STR_PRE_TRANSLATION: "Prijevod unaprijed"
+STR_PRE_TRANSLATION: "Bilingua"
 STR_DISPLAY_MODE: "Način prikaza"
 STR_DELETE_TRANSLATIONS: "Izbriši prijevode"
 

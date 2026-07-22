@@ -391,7 +391,7 @@ STR_RECOVERY_MODE_HINT: "Lege firmware.bin im SD-Kartenwurzelverzeichnis ab und 
 STR_ADD_HIDDEN_NETWORK: "Verstecktes Netzwerk hinzufügen..."
 STR_ENTER_WIFI_SSID: "Netzwerknamen eingeben (SSID)"
 
-STR_PRE_TRANSLATION: "Vorübersetzung"
+STR_PRE_TRANSLATION: "Bilingua"
 STR_DISPLAY_MODE: "Anzeigemodus"
 STR_DELETE_TRANSLATIONS: "Übersetzungen löschen"
 

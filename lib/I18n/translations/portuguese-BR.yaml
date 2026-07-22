@@ -393,7 +393,7 @@ STR_RECOVERY_MODE_HINT: "Coloque o arquivo firmware.bin na raiz do cartão SD e 
 STR_ADD_HIDDEN_NETWORK: "Adicionar rede oculta..."
 STR_ENTER_WIFI_SSID: "Insira o nome da rede (SSID)"
 
-STR_PRE_TRANSLATION: "Pré-tradução"
+STR_PRE_TRANSLATION: "Bilingua"
 STR_DISPLAY_MODE: "Modo de exibição"
 STR_DELETE_TRANSLATIONS: "Excluir traduções"
 

@@ -390,7 +390,7 @@ STR_RECOVERY_MODE_HINT: "Помістіть firmware.bin у корінь SD-ка
 STR_ADD_HIDDEN_NETWORK: "Додати приховану мережу..."
 STR_ENTER_WIFI_SSID: "Введіть назву мережі (SSID)"
 
-STR_PRE_TRANSLATION: "Передпереклад"
+STR_PRE_TRANSLATION: "Bilingua"
 STR_DISPLAY_MODE: "Режим відображення"
 STR_DELETE_TRANSLATIONS: "Видалити переклади"
 
