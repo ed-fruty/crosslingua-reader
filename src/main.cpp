@@ -32,6 +32,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "images/LoadingIcon.h"
+#include "network/WolfSslAllocDiag.h"
 #include "util/ButtonNavigator.h"
 #include "util/ScreenshotUtil.h"
 
@@ -286,6 +287,10 @@ void setup() {
 #endif
 
   HalSystem::begin();
+
+  // Diagnostic-only wolfSSL allocator hook; install before any activity can
+  // trigger a TLS handshake (OPDS, OTA, KOSync, translation).
+  installWolfSslAllocDiag();
 
   // Read-and-clear so a panic later in setup() doesn't loop into silent reboot.
   // Bound the target range too — RTC_NOINIT memory is uninitialized on cold boot.
