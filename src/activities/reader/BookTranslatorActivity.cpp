@@ -232,7 +232,7 @@ void BookTranslatorActivity::runTranslation() {
 
     // Skip if already translated and user chose "Skip Translated".
     if (skipTranslated && Storage.exists(translatedPath.c_str())) {
-      chaptersCompleted++;
+      chaptersCompleted = chaptersCompleted + 1;  // ++ on volatile is deprecated in C++20
       LOG_DBG("BKT", "Chapter %d/%d: skipped (already translated)", si + 1, totalChapters);
       continue;
     }
@@ -306,7 +306,7 @@ void BookTranslatorActivity::runTranslation() {
       return;
     }
 
-    chaptersCompleted++;
+    chaptersCompleted = chaptersCompleted + 1;  // ++ on volatile is deprecated in C++20
     LOG_DBG("BKT", "Ch %d/%d: done (%d translated, %d skipped), free=%d", si + 1, totalChapters,
             result.paragraphsTranslated, result.paragraphsSkipped, (int)ESP.getFreeHeap());
 
