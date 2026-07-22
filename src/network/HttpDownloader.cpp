@@ -48,11 +48,33 @@ bool isRedirect(int status) {
 }
 
 #if defined(FREEINK_NET_WOLFSSL)
+// TLS handshakes over wolfSSL are the single biggest heap consumer on this
+// path; translation requests are one-shot (no keep-alive to amortize the cost
+// across requests), so refuse the request up front rather than risk an OOM
+// mid-handshake. Same floor as KOReaderSyncClient's TLS guard
+// (lib/KOReaderSync/KOReaderSyncClient.cpp: MIN_HEAP_FOR_TLS), which checks
+// both total free heap and largest contiguous block so fragmented heap
+// doesn't fall through into a failed TLS allocation.
+constexpr uint32_t MIN_HEAP_FOR_TLS = 55000;
+
+bool insufficientHeapForTls() {
+  const uint32_t freeHeap = ESP.getFreeHeap();
+  const uint32_t maxAllocHeap = ESP.getMaxAllocHeap();
+  if (freeHeap < MIN_HEAP_FOR_TLS || maxAllocHeap < MIN_HEAP_FOR_TLS) {
+    LOG_ERR("HTTP", "Insufficient heap for TLS handshake: %u bytes free, %u max alloc (need %u)", freeHeap,
+            maxAllocHeap, MIN_HEAP_FOR_TLS);
+    return true;
+  }
+  return false;
+}
+
 HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std::string& username,
                                          const std::string& password, Sink& sink) {
   std::string url = startUrl;
 
   for (int hop = 0; hop <= MAX_REDIRECTS; ++hop) {
+    if (insufficientHeapForTls()) return HttpDownloader::HTTP_ERROR;
+
     freeink::SecureHttpClient http;
     http.setTimeout(HTTP_TIMEOUT_MS);
     http.setInsecure();
@@ -108,26 +130,6 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
   }
   LOG_ERR("HTTP", "too many redirects");
   return HttpDownloader::HTTP_ERROR;
-}
-
-// TLS handshakes over wolfSSL are the single biggest heap consumer on this
-// path; translation POSTs are one-shot (no keep-alive to amortize the cost
-// across requests), so refuse the request up front rather than risk an OOM
-// mid-handshake. Same floor as KOReaderSyncClient's TLS guard
-// (lib/KOReaderSync/KOReaderSyncClient.cpp: MIN_HEAP_FOR_TLS), which checks
-// both total free heap and largest contiguous block so fragmented heap
-// doesn't fall through into a failed TLS allocation.
-constexpr uint32_t MIN_HEAP_FOR_TLS = 55000;
-
-bool insufficientHeapForTls() {
-  const uint32_t freeHeap = ESP.getFreeHeap();
-  const uint32_t maxAllocHeap = ESP.getMaxAllocHeap();
-  if (freeHeap < MIN_HEAP_FOR_TLS || maxAllocHeap < MIN_HEAP_FOR_TLS) {
-    LOG_ERR("HTTP", "Insufficient heap for TLS handshake: %u bytes free, %u max alloc (need %u)", freeHeap,
-            maxAllocHeap, MIN_HEAP_FOR_TLS);
-    return true;
-  }
-  return false;
 }
 
 // POST a body and buffer the response over wolfSSL. Translation engine
