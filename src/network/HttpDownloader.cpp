@@ -17,6 +17,8 @@ extern "C" void wolfSSL_Arduino_Serial_Print(const char* const msg) { LOG_DBG("W
 #include <esp_http_client.h>
 #endif
 
+int HttpDownloader::lastHttpCode = 0;
+
 namespace {
 #if !defined(FREEINK_NET_WOLFSSL)
 // RX holds the response headers. Smaller buffers leave enough contiguous heap
@@ -106,6 +108,77 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
   }
   LOG_ERR("HTTP", "too many redirects");
   return HttpDownloader::HTTP_ERROR;
+}
+
+// TLS handshakes over wolfSSL are the single biggest heap consumer on this
+// path; translation POSTs are one-shot (no keep-alive to amortize the cost
+// across requests), so refuse the request up front rather than risk an OOM
+// mid-handshake. Same floor as KOReaderSyncClient's TLS guard
+// (lib/KOReaderSync/KOReaderSyncClient.cpp: MIN_HEAP_FOR_TLS), which checks
+// both total free heap and largest contiguous block so fragmented heap
+// doesn't fall through into a failed TLS allocation.
+constexpr uint32_t MIN_HEAP_FOR_TLS = 55000;
+
+bool insufficientHeapForTls() {
+  const uint32_t freeHeap = ESP.getFreeHeap();
+  const uint32_t maxAllocHeap = ESP.getMaxAllocHeap();
+  if (freeHeap < MIN_HEAP_FOR_TLS || maxAllocHeap < MIN_HEAP_FOR_TLS) {
+    LOG_ERR("HTTP", "Insufficient heap for TLS handshake: %u bytes free, %u max alloc (need %u)", freeHeap,
+            maxAllocHeap, MIN_HEAP_FOR_TLS);
+    return true;
+  }
+  return false;
+}
+
+// POST a body and buffer the response over wolfSSL. Translation engine
+// responses are small (~KB range), so buffering via SecureHttpClient's
+// internal getString() is fine — no need for the streaming sink used by GET.
+// Sets HttpDownloader::lastHttpCode on every exit path, including
+// connection-level failures (negative codes), so ParagraphTranslator can
+// surface engine-specific errors.
+bool runPostWolf(const std::string& url, const std::string& body, const char* contentType, const char* extraHeaderName,
+                 const char* extraHeaderValue, std::string& outContent) {
+  outContent.clear();
+
+  if (insufficientHeapForTls()) {
+    HttpDownloader::lastHttpCode = -1;
+    return false;
+  }
+
+  freeink::SecureHttpClient http;
+  http.setTimeout(HTTP_TIMEOUT_MS);
+  http.setInsecure();
+  if (!http.begin(url)) {
+    LOG_ERR("HTTP", "wolfSSL bad URL: %s", url.c_str());
+    HttpDownloader::lastHttpCode = -1;
+    return false;
+  }
+  // setUserAgent replaces SecureHttpClient's built-in UA; addHeader would
+  // append a second User-Agent header, which strict servers reject (aiohttp
+  // answers 400 "Duplicate 'User-Agent' header found").
+  http.setUserAgent("CrossPoint-ESP32-" CROSSPOINT_VERSION);
+  if (contentType && *contentType) {
+    http.addHeader("Content-Type", contentType);
+  }
+  if (extraHeaderName && extraHeaderValue) {
+    http.addHeader(extraHeaderName, extraHeaderValue);
+  }
+
+  LOG_DBG("HTTP", "wolfSSL POST: %s (body=%u bytes)", url.c_str(), (unsigned)body.size());
+  const int status = http.sendRequest("POST", body);
+  HttpDownloader::lastHttpCode = status;
+  if (status < 0) {
+    LOG_ERR("HTTP", "wolfSSL POST failed: %s", url.c_str());
+    return false;
+  }
+  // getString() holds the buffered response body for the lifetime of `http`;
+  // copy it out before http goes out of scope.
+  outContent = http.getString();
+  if (status != 200) {
+    LOG_ERR("HTTP", "wolfSSL POST unexpected status: %d (%u byte body)", status, (unsigned)outContent.size());
+    return false;
+  }
+  return true;
 }
 #endif
 
@@ -214,6 +287,79 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
   }
   return HttpDownloader::OK;
 }
+
+// POST a body and buffer the response. Uses esp_http_client_perform() since
+// translation engine response bodies are small (~KB range) and we don't need
+// to stream. Sets HttpDownloader::lastHttpCode on every exit path.
+bool runPost(const std::string& url, const std::string& body, const char* contentType, const char* extraHeaderName,
+             const char* extraHeaderValue, std::string& outContent) {
+  outContent.clear();
+
+  esp_http_client_config_t config = {};
+  config.url = url.c_str();
+  config.method = HTTP_METHOD_POST;
+  config.buffer_size = HTTP_RX_BUF;
+  config.buffer_size_tx = HTTP_TX_BUF;
+  config.timeout_ms = HTTP_TIMEOUT_MS;
+  config.crt_bundle_attach = esp_crt_bundle_attach;
+  // Don't keep-alive: translation POSTs are one-shot, and dropping the
+  // connection lets the TLS session free its buffers immediately.
+  config.keep_alive_enable = false;
+
+  esp_http_client_handle_t client = esp_http_client_init(&config);
+  if (!client) {
+    LOG_ERR("HTTP", "POST client init failed");
+    HttpDownloader::lastHttpCode = -1;
+    return false;
+  }
+
+  esp_http_client_set_header(client, "User-Agent", "CrossPoint-ESP32-" CROSSPOINT_VERSION);
+  if (contentType && *contentType) {
+    esp_http_client_set_header(client, "Content-Type", contentType);
+  }
+  if (extraHeaderName && extraHeaderValue) {
+    esp_http_client_set_header(client, extraHeaderName, extraHeaderValue);
+  }
+  if (!body.empty()) {
+    esp_http_client_set_post_field(client, body.c_str(), static_cast<int>(body.size()));
+  }
+
+  esp_err_t err = esp_http_client_perform(client);
+  if (err != ESP_OK) {
+    LOG_ERR("HTTP", "POST perform failed: %s", esp_err_to_name(err));
+    HttpDownloader::lastHttpCode = -1;
+    esp_http_client_cleanup(client);
+    return false;
+  }
+
+  const int status = esp_http_client_get_status_code(client);
+  HttpDownloader::lastHttpCode = status;
+
+  // Drain the response body. esp_http_client_perform() buffers the body
+  // internally when no event callback is set; read it out via
+  // esp_http_client_read_response().
+  const int64_t contentLength = esp_http_client_get_content_length(client);
+  auto readBuf = makeUniqueNoThrow<char[]>(READ_CHUNK);
+  if (!readBuf) {
+    LOG_ERR("HTTP", "OOM: POST read buffer");
+    esp_http_client_cleanup(client);
+    return false;
+  }
+  outContent.reserve(contentLength > 0 ? static_cast<size_t>(contentLength) : 1024);
+  while (true) {
+    const int read = esp_http_client_read_response(client, readBuf.get(), READ_CHUNK);
+    if (read <= 0) break;
+    outContent.append(readBuf.get(), read);
+  }
+
+  esp_http_client_cleanup(client);
+
+  if (status != 200) {
+    LOG_ERR("HTTP", "POST status %d (%u byte body)", status, (unsigned)outContent.size());
+    return false;
+  }
+  return true;
+}
 #endif  // !FREEINK_NET_WOLFSSL
 
 // All HTTP(S) fetches go through wolfSSL when it is the active TLS stack: it
@@ -226,6 +372,16 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::st
   return runGetWolf(url, username, password, sink);
 #else
   return runGet(url, username, password, sink);
+#endif
+}
+
+// Same wolfSSL-vs-esp_http_client split as runGetSecure, for POST requests.
+bool runPostSecure(const std::string& url, const std::string& body, const char* contentType,
+                   const char* extraHeaderName, const char* extraHeaderValue, std::string& outContent) {
+#if defined(FREEINK_NET_WOLFSSL)
+  return runPostWolf(url, body, contentType, extraHeaderName, extraHeaderValue, outContent);
+#else
+  return runPost(url, body, contentType, extraHeaderName, extraHeaderValue, outContent);
 #endif
 }
 }  // namespace
@@ -256,6 +412,19 @@ bool HttpDownloader::fetchUrl(const std::string& url, const DataCallback& onData
   Sink sink;
   sink.write = onData;
   return runGetSecure(url, username, password, sink) == OK;
+}
+
+bool HttpDownloader::post(const std::string& url, const std::string& body, const char* contentType,
+                          const char* extraHeaderName, const char* extraHeaderValue, std::string& outContent) {
+  LOG_DBG("HTTP", "POST: %s (body=%u bytes)", url.c_str(), (unsigned)body.size());
+  return runPostSecure(url, body, contentType, extraHeaderName, extraHeaderValue, outContent);
+}
+
+bool HttpDownloader::postJson(const std::string& url, const std::string& jsonBody, const std::string& authHeader,
+                              std::string& outContent) {
+  const char* authName = authHeader.empty() ? nullptr : "Authorization";
+  const char* authValue = authHeader.empty() ? nullptr : authHeader.c_str();
+  return runPostSecure(url, jsonBody, "application/json", authName, authValue, outContent);
 }
 
 HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& url, const std::string& destPath,
