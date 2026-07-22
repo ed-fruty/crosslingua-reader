@@ -38,11 +38,20 @@ class TranslatingHtmlRewriter {
                  uint8_t engine, const char* apiKey, volatile const bool* cancelled,
                  volatile int* progressOut = nullptr);
 
+  // Invoked at every batch boundary (after a batch's translations are written and
+  // progressOut is updated, with the batch's TLS/HTTP transients already torn down).
+  // Runs on the calling task. Lets a caller repaint progress at a point where the heap
+  // has a clean hole. C-style pointer + context to avoid std::function heap/bloat.
+  using BatchBoundaryCb = void (*)(void* ctx);
+
   // Rewrite HTML from a file on SD card into `out`, reading in 1KB chunks.
   // This avoids loading the entire chapter HTML into memory.
+  // Optional boundaryCb fires between batches (see BatchBoundaryCb); pass nullptr to
+  // opt out (whole-file/book callers that repaint only at their own boundaries).
   Result rewriteFromFile(const std::string& inputPath, Print& out, const char* sourceLang, const char* targetLang,
                          uint8_t engine, const char* apiKey, volatile const bool* cancelled,
-                         volatile int* progressOut = nullptr);
+                         volatile int* progressOut = nullptr, BatchBoundaryCb boundaryCb = nullptr,
+                         void* boundaryCtx = nullptr);
 
  private:
   Print* out = nullptr;
@@ -52,6 +61,8 @@ class TranslatingHtmlRewriter {
   const char* apiKey = nullptr;
   volatile const bool* cancelled = nullptr;
   volatile int* progressOut = nullptr;
+  BatchBoundaryCb onBatchBoundary = nullptr;  // between-batch repaint hook; null = disabled
+  void* batchBoundaryCtx = nullptr;
 
   int depth = 0;
   int blockDepth = -1;  // depth where current block element began; -1 = not in block

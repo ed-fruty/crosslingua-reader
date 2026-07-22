@@ -87,6 +87,23 @@ class ChapterTranslatorActivity final : public Activity {
   volatile int progressTotal = 0;
   unsigned long lastProgressUpdate = 0;
 
+  // ─── Batch-boundary framebuffer handshake (periodic progress repaint) ──────
+  // The framebuffer is freed for the whole chapter's network run, so progress would
+  // otherwise be frozen the entire time. To repaint periodically we borrow
+  // BookTranslator's worker/UI handshake: the rewriter invokes onBatchBoundary() on the
+  // worker (chTranslate) task at each batch boundary (transients freed, progress
+  // updated); when the repaint cadence is due the worker raises boundaryPending and
+  // spins until the main task's loop() has restored the buffer, drawn progress, freed it
+  // again, and set boundaryAck. All framebuffer/render work stays on the main task, so it
+  // never races the render task or onExit(). The spin breaks on cancelFlag so onExit()
+  // never blocks on it.
+  volatile bool boundaryPending = false;
+  volatile bool boundaryAck = false;
+  // Worker-only cadence bookkeeping (touched solely in serviceBatchBoundary after the
+  // main task seeds them in startTranslation; no cross-task sharing beyond that seed).
+  int lastRepaintProgress = 0;
+  unsigned long lastRepaintMillis = 0;
+
   // Reopens a lean, metadata-only Epub from epubPath (the reader released its own before
   // this activity launched). Idempotent; returns false + LOG_ERR if the load fails.
   bool ensureEpubLoaded();
@@ -106,6 +123,13 @@ class ChapterTranslatorActivity final : public Activity {
   void startTranslation();
   static void translationTask(void* param);
   void runTranslation();
+
+  // Batch-boundary repaint hook passed to the rewriter. The trampoline forwards the
+  // rewriter's void* context to the instance method. serviceBatchBoundary() runs on the
+  // worker task: it evaluates the repaint cadence and, when due, performs the
+  // boundaryPending/boundaryAck handshake with the main task's loop().
+  static void batchBoundaryTrampoline(void* ctx);
+  void serviceBatchBoundary();
 
   // ─── Framebuffer lifecycle around the network run ──────────────────────────
   // The TLS handshake needs a >=10.5 KB contiguous block plus ~24 KB of churn, and

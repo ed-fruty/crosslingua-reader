@@ -267,6 +267,13 @@ void TranslatingHtmlRewriter::flushBatch() {
   delay(consecutiveFailures > 0 ? 2000 : 100);  // longer delay after errors to let heap recover
   batch.clear();
   batchTextBytes = 0;
+
+  // Between-batch boundary: this batch's HTTP/TLS transients are freed and progressOut
+  // reflects the blocks just written, so the heap has a clean hole. Let the caller
+  // repaint here if it wants to (ChapterTranslator uses this for periodic progress
+  // updates during a single chapter). No-op when no callback was registered. Skipped on
+  // the cancelled/aborted fast-path above, which returns before reaching here.
+  if (onBatchBoundary) onBatchBoundary(batchBoundaryCtx);
 }
 
 void XMLCALL TranslatingHtmlRewriter::onStart(void* ud, const XML_Char* name, const XML_Char** atts) {
@@ -456,6 +463,8 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewrite(const char* inp
   apiKey = key;
   cancelled = cancelFlag;
   progressOut = progress;
+  onBatchBoundary = nullptr;  // buffer path has no between-batch repaint hook
+  batchBoundaryCtx = nullptr;
   depth = 0;
   blockDepth = -1;
   insideHead = false;
@@ -521,11 +530,10 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewrite(const char* inp
 
 // ─── rewriteFromFile ────────────────────────────────────────────────────────
 
-TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewriteFromFile(const std::string& inputPath, Print& outPrint,
-                                                                         const char* srcLang, const char* tgtLang,
-                                                                         uint8_t eng, const char* key,
-                                                                         volatile const bool* cancelFlag,
-                                                                         volatile int* progress) {
+TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewriteFromFile(
+    const std::string& inputPath, Print& outPrint, const char* srcLang, const char* tgtLang, uint8_t eng,
+    const char* key, volatile const bool* cancelFlag, volatile int* progress, BatchBoundaryCb boundaryCb,
+    void* boundaryCtx) {
   out = &outPrint;
   sourceLang = srcLang;
   targetLang = tgtLang;
@@ -533,6 +541,8 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewriteFromFile(const s
   apiKey = key;
   cancelled = cancelFlag;
   progressOut = progress;
+  onBatchBoundary = boundaryCb;
+  batchBoundaryCtx = boundaryCtx;
   depth = 0;
   blockDepth = -1;
   insideHead = false;

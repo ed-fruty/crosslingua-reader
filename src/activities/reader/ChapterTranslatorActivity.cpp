@@ -78,8 +78,11 @@ void ChapterTranslatorActivity::onExit() {
   Activity::onExit();
 
   // Signal the worker to bail at the next batch boundary and wait briefly for it.
-  // The 5-second cap is enough for a partially-translated chapter to abort cleanly;
-  // longer waits would block UI navigation.
+  // Setting cancelFlag also breaks any in-progress repaint spin in serviceBatchBoundary,
+  // so the worker never stays parked waiting for a boundaryAck that loop() will no longer
+  // deliver (loop() does not run while we are here on the same main task). The 5-second
+  // cap is enough for a partially-translated chapter to abort cleanly; longer waits would
+  // block UI navigation.
   cancelFlag = true;
   if (taskHandle) {
     for (int i = 0; i < 50 && !taskDone && !taskFailed; i++) {
@@ -214,6 +217,12 @@ void ChapterTranslatorActivity::startTranslation() {
   progressCurrent = 0;
   progressTotal = 0;
   lastProgressUpdate = 0;
+  boundaryPending = false;
+  boundaryAck = false;
+  lastRepaintProgress = 0;
+  // Seed the 20 s repaint clock at run start so the first time-based repaint fires ~20 s
+  // in, not immediately at the first boundary.
+  lastRepaintMillis = millis();
 
   // Flush the "Translating..." status screen to the panel BEFORE freeing the
   // framebuffer. requestUpdateAndWait() blocks until the render task has drawn and
@@ -352,7 +361,8 @@ void ChapterTranslatorActivity::runTranslation() {
 
   TranslatingHtmlRewriter rewriter;
   lastResult = rewriter.rewriteFromFile(tmpPath, outFile, srcLang, targetLangCode.c_str(), SETTINGS.translationEngine,
-                                        SETTINGS.translateApiKey, &cancelFlag, &progressCurrent);
+                                        SETTINGS.translateApiKey, &cancelFlag, &progressCurrent,
+                                        &ChapterTranslatorActivity::batchBoundaryTrampoline, this);
   outFile.close();  // Flush and release before the rename/delete dance below.
 
   Storage.remove(tmpPath.c_str());
@@ -386,6 +396,44 @@ void ChapterTranslatorActivity::runTranslation() {
   LOG_DBG("CHT", "Translation done: %d translated, %d skipped", lastResult.paragraphsTranslated,
           lastResult.paragraphsSkipped);
   taskDone = true;
+}
+
+// ─── periodic progress repaint (worker-side cadence + UI handshake) ────────────
+
+void ChapterTranslatorActivity::batchBoundaryTrampoline(void* ctx) {
+  static_cast<ChapterTranslatorActivity*>(ctx)->serviceBatchBoundary();
+}
+
+void ChapterTranslatorActivity::serviceBatchBoundary() {
+  // Runs on the worker (chTranslate) task between batches: transients are freed and
+  // progressCurrent is up to date. Bail immediately if we're cancelling so onExit()
+  // (which sets cancelFlag then waits for the task to finish) never blocks on a spin.
+  if (cancelFlag) return;
+
+  const int current = progressCurrent;
+  const int total = progressTotal;
+  // Repaint every max(5, total/10) blocks -> ~10-15 repaints across a chapter.
+  const int blockThreshold = (total / 10) > 5 ? (total / 10) : 5;
+  const unsigned long now = millis();
+  const bool progressHit = (current - lastRepaintProgress) >= blockThreshold;
+  const bool timeHit = (now - lastRepaintMillis) >= 20000UL;  // millis(); no Date APIs
+  if (!progressHit && !timeHit) return;
+
+  // Hand off to the main task: its loop() restores the framebuffer, draws the updated
+  // progress synchronously, frees it again, then sets boundaryAck. We own no
+  // framebuffer/render state here, so the restore/redraw/release can never race the
+  // render task or onExit()'s teardown. The spin also exits on cancelFlag.
+  boundaryAck = false;
+  boundaryPending = true;
+  while (!boundaryAck && !cancelFlag) {
+    delay(5);
+  }
+  boundaryPending = false;
+
+  // Advance the cadence baselines even if a cancel broke the spin — the next boundary
+  // (if any) then re-evaluates from here rather than firing again instantly.
+  lastRepaintProgress = current;
+  lastRepaintMillis = now;
 }
 
 // ─── engine name helper ──────────────────────────────────────────────────────
@@ -430,6 +478,20 @@ void ChapterTranslatorActivity::loop() {
   }
 
   if (state == TRANSLATING) {
+    // The worker is paused at a batch boundary asking for a progress repaint: restore
+    // the buffer, draw the updated progress synchronously, free it again, then release
+    // the worker. All on the main task, so it never races the render task; and since
+    // onExit() runs on this same task it can never overlap this sequence. Claim
+    // boundaryPending up front so a second loop() pass cannot re-run the cycle.
+    if (boundaryPending) {
+      boundaryPending = false;
+      restoreFramebuffer();
+      requestUpdateAndWait();
+      releaseFramebuffer();
+      boundaryAck = true;
+      return;
+    }
+
     if (taskDone) {
       restoreFramebuffer();  // bring the buffer back BEFORE the result screen draws
       state = (cancelFlag || lastResult.cancelled) ? CANCELLED : DONE;
