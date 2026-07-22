@@ -13,12 +13,8 @@
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
-#include "activities/ActivityManager.h"
 #include "activities/ActivityResult.h"
-#include "activities/reader/BookTranslatorActivity.h"
-#include "activities/reader/ChapterTranslatorActivity.h"
 #include "activities/reader/ReaderUtils.h"
-#include "activities/reader/TranslatorReturnTarget.h"
 #include "activities/translator/LanguagePickerActivity.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
@@ -38,108 +34,14 @@ PreTranslationSubmenuActivity::PreTranslationSubmenuActivity(GfxRenderer& render
       epub(std::move(epub)),
       currentSpineIndex(currentSpineIndex) {}
 
-PreTranslationSubmenuActivity::PreTranslationSubmenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                                             std::string epubPath)
-    : Activity("PreTranslationSubmenu", renderer, mappedInput),
-      currentSpineIndex(0),
-      epubPath(std::move(epubPath)),
-      pathMode(true) {}
-
 // ─── lifecycle ────────────────────────────────────────────────────────────────
 
 void PreTranslationSubmenuActivity::onEnter() {
   Activity::onEnter();
-
-  // Path mode has no reader-supplied Epub: load a lean, metadata-only one and derive
-  // the resume spine index from saved progress before scanning translation state.
-  if (pathMode) {
-    LOG_DBG("MEM", "PTSUB onEnter (path): free=%u max=%u", (unsigned)ESP.getFreeHeap(),
-            (unsigned)ESP.getMaxAllocHeap());
-    if (!ensureEpubLoaded()) {
-      epubLoadFailed = true;
-      requestUpdate();
-      return;
-    }
-    currentSpineIndex = loadSavedSpineIndex();
-  }
-
   rebuildAfterReturn();
 }
 
 void PreTranslationSubmenuActivity::onExit() { Activity::onExit(); }
-
-// ─── path-mode epub (re)loading ─────────────────────────────────────────────────
-
-bool PreTranslationSubmenuActivity::ensureEpubLoaded() {
-  if (epub) return true;
-  LOG_DBG("PTSUB", "Loading lean epub (heap: %u)", (unsigned)ESP.getFreeHeap());
-  epub = std::make_shared<Epub>(epubPath, "/.crosspoint");
-  epub->setupCacheDir();
-  // Metadata only: no CSS, and don't rebuild the cache if it is missing.
-  if (!epub->load(false, true)) {
-    // Diagnostic for "invalid book" reports where the cache was reportedly built
-    // minutes earlier: load(false, true) fails only when BookMetadataCache::load()
-    // can't open <cachePath>/book.bin (wrong hash / never built for this exact path
-    // string) or the cached version doesn't match BOOK_CACHE_VERSION. Print every
-    // fact needed to tell those apart from the next device log: the exact path we
-    // hashed, whether the source file itself is even found at that path, the
-    // computed (std::hash-based) cache directory, and whether book.bin exists
-    // there. A path-string mismatch between whatever opened the book originally
-    // and this path-mode reopen would show epubExists=1 but book.bin exists=0 at
-    // a cachePath that looks "off".
-    const bool epubExists = Storage.exists(epubPath.c_str());
-    const std::string cachePath = epub->getCachePath();
-    const bool bookBinExists = Storage.exists((cachePath + "/book.bin").c_str());
-    LOG_ERR("PTSUB", "Failed to load epub: path=%s epubExists=%d cachePath=%s book.bin exists=%d", epubPath.c_str(),
-            (int)epubExists, cachePath.c_str(), (int)bookBinExists);
-    epub.reset();
-    return false;
-  }
-  LOG_DBG("PTSUB", "Lean epub loaded (heap: %u)", (unsigned)ESP.getFreeHeap());
-  return true;
-}
-
-int PreTranslationSubmenuActivity::loadSavedSpineIndex() {
-  // Mirror EpubReaderActivity::onEnter()'s progress.bin decode: bytes [0..1] are the
-  // little-endian spine index. 4- and 6-byte payloads are both valid (the 6-byte form
-  // adds a cached page count we don't need here).
-  int spineIndex = 0;
-  HalFile f;
-  if (Storage.openFileForRead("PTSUB", epub->getCachePath() + "/progress.bin", f)) {
-    uint8_t data[6];
-    const int dataSize = f.read(data, 6);
-    if (dataSize == 4 || dataSize == 6) {
-      spineIndex = data[0] + (data[1] << 8);
-    }
-  }
-  // Clamp to a real chapter: the saved index can be the end-of-book sentinel
-  // (== spine count) or stale after the book changed.
-  const int count = epub->getSpineItemsCount();
-  if (count <= 0) return 0;
-  if (spineIndex >= count) spineIndex = count - 1;
-  if (spineIndex < 0) spineIndex = 0;
-  LOG_DBG("PTSUB", "Path-mode resume spine index: %d / %d", spineIndex, count);
-  return spineIndex;
-}
-
-void PreTranslationSubmenuActivity::launchTranslatorFromPath(Action a) {
-  if (!epub) return;
-  // replaceActivity() clears the whole stack (this submenu and its lean Epub included);
-  // the translator reopens its own lean Epub from epubPath. No teardown is needed here
-  // because no reader/Section is resident in the browser context.
-  if (a == Action::TRANSLATE_BOOK) {
-    activityManager.replaceActivity(std::make_unique<BookTranslatorActivity>(renderer, mappedInput, epubPath,
-                                                                             TranslatorReturnTarget::FILE_BROWSER));
-    return;
-  }
-  // TRANSLATE_CHAPTER: compute the same PODs EpubReaderActivity::launchTranslation does.
-  const std::string translatedHtmlPath =
-      epub->getCachePath() + "/sections/" + std::to_string(currentSpineIndex) + ".translated.html";
-  const bool alreadyTranslated = Storage.exists(translatedHtmlPath.c_str());
-  activityManager.replaceActivity(std::make_unique<ChapterTranslatorActivity>(
-      renderer, mappedInput, epubPath, currentSpineIndex, translatedHtmlPath, alreadyTranslated,
-      TranslatorReturnTarget::FILE_BROWSER));
-}
 
 // ─── state scan + menu build ──────────────────────────────────────────────────
 
@@ -257,16 +159,9 @@ void PreTranslationSubmenuActivity::onActionSelected(Action a) {
 
     case Action::TRANSLATE_CHAPTER: {
       if (!epub) return;
-      // Path mode: no reader exists, so launch the translator directly (it returns to
-      // the file browser afterwards). The submenu's own lean Epub dies when
-      // replaceActivity() clears the stack.
-      if (pathMode) {
-        launchTranslatorFromPath(a);
-        return;
-      }
-      // Reader mode: hand the request back to the reader rather than launching the
-      // translator here. The reader must release its Epub + Section (freeing ~65KB)
-      // before the TLS handshake, and replaceActivity() clears the whole stack, so the
+      // Hand the request back to the reader rather than launching the translator
+      // here: the reader must release its Epub + Section (freeing ~65KB) before
+      // the TLS handshake, and replaceActivity() clears the whole stack, so the
       // teardown has to run while the reader is the current activity.
       ActivityResult result;
       result.data = MenuResult{static_cast<int>(PreTranslationResult::TRANSLATE_CHAPTER)};
@@ -277,10 +172,6 @@ void PreTranslationSubmenuActivity::onActionSelected(Action a) {
 
     case Action::TRANSLATE_BOOK: {
       if (!epub) return;
-      if (pathMode) {
-        launchTranslatorFromPath(a);
-        return;
-      }
       ActivityResult result;
       result.data = MenuResult{static_cast<int>(PreTranslationResult::TRANSLATE_BOOK)};
       setResult(std::move(result));
@@ -449,16 +340,6 @@ void PreTranslationSubmenuActivity::render(RenderLock&&) {
 
   GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
                  tr(STR_PRE_TRANSLATION));
-
-  // Path-mode load failure: show a message and let Back leave (handled in loop()).
-  if (epubLoadFailed) {
-    renderer.drawCenteredText(UI_12_FONT_ID, screen.y + screen.height / 2, tr(STR_INDEX_FAILED), true,
-                              EpdFontFamily::BOLD);
-    const auto errLabels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
-    GUI.drawButtonHints(renderer, errLabels.btn1, errLabels.btn2, errLabels.btn3, errLabels.btn4);
-    renderer.displayBuffer();
-    return;
-  }
 
   const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   const int contentHeight = screen.height - contentTop - metrics.verticalSpacing;

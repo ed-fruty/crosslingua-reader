@@ -18,11 +18,6 @@ class FileBrowserActivity final : public Activity {
   // Deletion
   bool removeDirFile(const std::string& fullPath);
 
-  // Long-press context menu actions (Books mode). Both push a child activity via
-  // startActivityForResult and re-apply the swallow-release locks on return.
-  void startDeleteConfirmation(const std::string& fullPath, const std::string& entry);
-  void openPreTranslation(const std::string& fullPath);
-
   ButtonNavigator buttonNavigator;
 
   size_t selectorIndex = 0;

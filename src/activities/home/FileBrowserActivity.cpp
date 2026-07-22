@@ -9,9 +9,7 @@
 #include <algorithm>
 
 #include "CrossPointSettings.h"
-#include "FileContextMenuActivity.h"
 #include "MappedInputManager.h"
-#include "activities/reader/PreTranslationSubmenuActivity.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -188,51 +186,6 @@ bool FileBrowserActivity::removeDirFile(const std::string& fullPath) {
   return true;
 }
 
-void FileBrowserActivity::startDeleteConfirmation(const std::string& fullPath, const std::string& entry) {
-  auto handler = [this, fullPath](const ActivityResult& res) {
-    // The confirmation popup acts on button press; if that button is still
-    // held when we resume, swallow its release so it doesn't also act here
-    // (Back would go up a directory, Confirm would open the selection).
-    lockLongPressBack = mappedInput.isPressed(MappedInputManager::Button::Back);
-    lockNextConfirmRelease = mappedInput.isPressed(MappedInputManager::Button::Confirm);
-    if (!res.isCancelled) {
-      LOG_DBG("FileBrowser", "Attempting to delete: %s", fullPath.c_str());
-      if (removeDirFile(fullPath)) {
-        LOG_DBG("FileBrowser", "Deleted successfully");
-        loadFiles();
-        if (files.empty()) {
-          selectorIndex = 0;
-        } else if (selectorIndex >= files.size()) {
-          // Move selection to the new "last" item
-          selectorIndex = files.size() - 1;
-        }
-
-        requestUpdate(true);
-      } else {
-        LOG_ERR("FileBrowser", "Failed to delete: %s", fullPath.c_str());
-      }
-    } else {
-      LOG_DBG("FileBrowser", "Delete cancelled by user");
-    }
-  };
-
-  std::string heading = tr(STR_DELETE) + std::string("? ");
-
-  startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, heading, entry), handler);
-}
-
-void FileBrowserActivity::openPreTranslation(const std::string& fullPath) {
-  auto handler = [this](const ActivityResult&) {
-    // If the submenu launched a translator, it replaced this activity (stack cleared)
-    // and this handler never runs. On a plain Back-out, just refresh the listing.
-    lockLongPressBack = mappedInput.isPressed(MappedInputManager::Button::Back);
-    lockNextConfirmRelease = mappedInput.isPressed(MappedInputManager::Button::Confirm);
-    requestUpdate(true);
-  };
-
-  startActivityForResult(std::make_unique<PreTranslationSubmenuActivity>(renderer, mappedInput, fullPath), handler);
-}
-
 void FileBrowserActivity::loop() {
   // Long press BACK (1s+) goes to root folder (Books mode only).
   // In firmware-pick mode we keep navigation simple: short Back = up dir / cancel.
@@ -279,44 +232,41 @@ void FileBrowserActivity::loop() {
     }
 
     if (mode == Mode::Books && mappedInput.getHeldTime() >= GO_HOME_MS) {
+      // --- LONG PRESS ACTION: DELETE FILE OR DIRECTORY ---
       std::string cleanBasePath = basepath;
       if (cleanBasePath.back() != '/') cleanBasePath += "/";
       const std::string fullPath = cleanBasePath + entry;
 
-      // Directories keep the pre-menu behavior: long-press goes straight to the
-      // delete confirmation (Pre-Translation is meaningless for a folder).
-      if (isDirectory) {
-        startDeleteConfirmation(fullPath, entry);
-        return;
-      }
-
-      // --- LONG PRESS ACTION (FILE): OPEN CONTEXT MENU ---
-      // Entries: Delete (always) and Pre-Translation (EPUB files only).
-      const bool isEpub = FsHelpers::hasEpubExtension(entry);
-
-      auto handler = [this, fullPath, entry](const ActivityResult& res) {
-        // The context-menu popup acts on button press; if that button is still
+      auto handler = [this, fullPath](const ActivityResult& res) {
+        // The confirmation popup acts on button press; if that button is still
         // held when we resume, swallow its release so it doesn't also act here
         // (Back would go up a directory, Confirm would open the selection).
         lockLongPressBack = mappedInput.isPressed(MappedInputManager::Button::Back);
         lockNextConfirmRelease = mappedInput.isPressed(MappedInputManager::Button::Confirm);
-        if (res.isCancelled) {
-          LOG_DBG("FileBrowser", "Context menu dismissed");
-          return;
-        }
-        const auto* mr = std::get_if<MenuResult>(&res.data);
-        if (!mr) return;
-        switch (static_cast<FileContextMenuActivity::Choice>(mr->action)) {
-          case FileContextMenuActivity::Choice::DELETE:
-            startDeleteConfirmation(fullPath, entry);
-            break;
-          case FileContextMenuActivity::Choice::PRE_TRANSLATION:
-            openPreTranslation(fullPath);
-            break;
+        if (!res.isCancelled) {
+          LOG_DBG("FileBrowser", "Attempting to delete: %s", fullPath.c_str());
+          if (removeDirFile(fullPath)) {
+            LOG_DBG("FileBrowser", "Deleted successfully");
+            loadFiles();
+            if (files.empty()) {
+              selectorIndex = 0;
+            } else if (selectorIndex >= files.size()) {
+              // Move selection to the new "last" item
+              selectorIndex = files.size() - 1;
+            }
+
+            requestUpdate(true);
+          } else {
+            LOG_ERR("FileBrowser", "Failed to delete: %s", fullPath.c_str());
+          }
+        } else {
+          LOG_DBG("FileBrowser", "Delete cancelled by user");
         }
       };
 
-      startActivityForResult(std::make_unique<FileContextMenuActivity>(renderer, mappedInput, entry, isEpub), handler);
+      std::string heading = tr(STR_DELETE) + std::string("? ");
+
+      startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, heading, entry), handler);
       return;
     } else {
       // --- SHORT PRESS ACTION: OPEN/NAVIGATE ---
