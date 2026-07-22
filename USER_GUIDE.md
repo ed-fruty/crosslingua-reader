@@ -47,6 +47,7 @@ Welcome to the **CrossPoint** firmware. This guide outlines the hardware control
   - [5. Reader Menu](#5-reader-menu)
     - [5.1 Chapter Selection](#51-chapter-selection)
     - [5.2 Bookmarks](#52-bookmarks)
+    - [5.3 Pre-Translation](#53-pre-translation)
   - [6. Current Limitations \& Roadmap](#6-current-limitations--roadmap)
   - [7. Troubleshooting Issues \& Escaping Bootloop](#7-troubleshooting-issues--escaping-bootloop)
 
@@ -270,6 +271,7 @@ The Settings screen allows you to configure the device's behavior. There are a f
 - **Images**: Whether to display embedded images (JPG/PNG) found in EPUB files; options are "ON" (default) or "OFF".
 
 - **Focus Reading**: Bolds the first part of each word to create visual fixation points, similar to Bionic Reading. This can help improve reading speed and focus; options are "ON" or "OFF" (default).
+- **Pre-Translation**: Translate EPUBs on-device using Google, DeepL, OpenAI, DeepSeek, Gemini, or other engines. Pick a display mode (Normal, Dark, Light, Original Only, Translation Only, Side by Side, Modal). See [Pre-Translation](./docs/pre-translation.md).
 
 #### 3.6.3 Controls
 
@@ -639,6 +641,21 @@ To create a bookmark, hold **Confirm** for about half a second while inside a bo
 To open bookmarks, press **Confirm** while inside a book. Then navigate to the **Bookmarks** menu. Bookmarks can be opened by navigating to them and pressing **Confirm**, which will redirect you to that place in the book. You can delete bookmarks by holding **Confirm** for about 0.7 seconds, and then pressing **Confirm** again to confirm deletion, or **Back** to cancel.
 
 Bookmarks are stored in the `.crosspoint/bookmarks` folder in the JSON format.
+
+### 5.3 Pre-Translation
+
+While reading, open the Reader Menu and select **Pre-Translation** to translate the current chapter or whole book, switch between display modes, and configure engine/language settings.
+
+Available display modes:
+
+- **Normal** — original and translation interleaved
+- **Dark / Light** — same as Normal but with translated paragraphs rendered in gray
+- **Original Only** — drops translated paragraphs
+- **Translation Only** — drops original paragraphs
+- **Side by Side** — paired layout with no spacing between original and its translation
+- **Modal** — shows only original text on page; long-press either side button to open a modal overlay with translations for paragraphs visible on the current page
+
+For full instructions including all display modes, engine setup, and storage location, see the standalone [Pre-Translation guide](./docs/pre-translation.md).
 
 ## 6. Current Limitations & Roadmap
 
