@@ -90,11 +90,19 @@ if (parsedSize != fileSize) {
 
 ## `section.bin`
 
-### Version 32
+### Version 33
 
 Each file in `sections/*.bin` stores one laid-out spine section. The header is
 also the cache-busting key: if any layout-affecting setting differs from the
 current reader settings, the section is discarded and rebuilt.
+
+Version 33 is binary-identical to version 32 in layout; it was bumped because
+per-block hyphenation changed the cached line breaks. Translated blocks (a
+`lang=` attribute differing from the book language) now hyphenate with their own
+script's rules instead of the single book-wide hyphenator, so a bilingual book
+(e.g. an en->uk translation) finally breaks its translated words. Hyphenated
+splits are baked into the serialized pages, so sections cached under v32 stored
+English-only splits on Cyrillic text and must be regenerated.
 
 Version 32 adds the Pre-Translation feature: a `translationMode` byte in the
 header (part of the cache key), a per-line `paragraphIdx`, and a per-page

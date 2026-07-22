@@ -33,11 +33,23 @@ class Hyphenator {
   //   4. Fallback every-N-chars splitting (only when includeFallback is true AND no
   //      pattern breaks were found). Used as a last resort to prevent a single oversized
   //      word from overflowing the page width.
-  static std::vector<BreakInfo> breakOffsets(const std::string& word, bool includeFallback);
+  //
+  // When `translated` is true the translated-language hyphenator (see setTranslatedLanguage)
+  // is used instead of the primary one. This lets a bilingual (e.g. en->uk translated) book
+  // hyphenate each block in its own script: a single book-wide hyphenator built for the
+  // original language rejects every word in the other script, so those words never break.
+  // Falls back to the primary hyphenator when no translated language has been set.
+  static std::vector<BreakInfo> breakOffsets(const std::string& word, bool includeFallback, bool translated = false);
 
   // Provide a publication-level language hint (e.g. "en", "en-US", "ru") used to select hyphenation rules.
   static void setPreferredLanguage(const std::string& lang);
 
+  // Provide the language of translated blocks (words carrying EpdFontFamily::TRANSLATED), used to
+  // select hyphenation rules for those words. Pass an empty string to clear the slot (e.g. at the
+  // start of each section build so it never leaks across books). Independent of setPreferredLanguage.
+  static void setTranslatedLanguage(const std::string& lang);
+
  private:
   static const LanguageHyphenator* cachedHyphenator_;
+  static const LanguageHyphenator* cachedTranslated_;
 };

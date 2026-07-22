@@ -62,6 +62,7 @@ class ChapterHtmlSlimParser {
   bool currentBlockIsTranslated =
       false;                    // True when the currently-open outermost block has lang= differing from bookPrimaryLang
   std::string bookPrimaryLang;  // Book's content.opf language; a differing lang= marks a translated block
+  std::string translatedHyphenLang;  // Last lang= applied to the Hyphenator's translated slot; avoids re-resolving
 
   // Style tracking (replaces depth-based approach)
   struct StyleStackEntry {

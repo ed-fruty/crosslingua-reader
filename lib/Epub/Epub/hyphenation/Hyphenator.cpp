@@ -11,6 +11,7 @@
 #include "LanguageRegistry.h"
 
 const LanguageHyphenator* Hyphenator::cachedHyphenator_ = nullptr;
+const LanguageHyphenator* Hyphenator::cachedTranslated_ = nullptr;
 
 namespace {
 
@@ -172,7 +173,8 @@ void sortAndDedupeBreakInfos(std::vector<Hyphenator::BreakInfo>& infos) {
 
 }  // namespace
 
-std::vector<Hyphenator::BreakInfo> Hyphenator::breakOffsets(const std::string& word, const bool includeFallback) {
+std::vector<Hyphenator::BreakInfo> Hyphenator::breakOffsets(const std::string& word, const bool includeFallback,
+                                                            const bool translated) {
   if (word.empty()) {
     return {};
   }
@@ -180,7 +182,9 @@ std::vector<Hyphenator::BreakInfo> Hyphenator::breakOffsets(const std::string& w
   // Convert to codepoints and normalize word boundaries.
   auto cps = collectCodepoints(word);
   trimSurroundingPunctuationAndFootnote(cps);
-  const auto* hyphenator = cachedHyphenator_;
+  // Translated words (a differing lang= block) use the translated-language hyphenator so a
+  // bilingual book breaks each script correctly; fall back to the primary one when unset.
+  const auto* hyphenator = (translated && cachedTranslated_) ? cachedTranslated_ : cachedHyphenator_;
 
   // Detect apostrophe-like separators early; used by both branches below.
   bool hasApostropheLikeSeparator = false;
@@ -273,3 +277,5 @@ std::vector<Hyphenator::BreakInfo> Hyphenator::breakOffsets(const std::string& w
 }
 
 void Hyphenator::setPreferredLanguage(const std::string& lang) { cachedHyphenator_ = hyphenatorForLanguage(lang); }
+
+void Hyphenator::setTranslatedLanguage(const std::string& lang) { cachedTranslated_ = hyphenatorForLanguage(lang); }

@@ -20,7 +20,12 @@ namespace {
 // v31: word continuation preserved when splitting CJK text on MAX_WORD_SIZE.
 // v32: Pre-Translation — translationMode byte added to the header (cache key), and a
 //      per-line paragraphIdx + per-page paragraph range added to Page serialization.
-constexpr uint8_t SECTION_FILE_VERSION = 32;
+// v33: Per-block hyphenation language. Translated blocks (lang= differing from the book
+//      language) now hyphenate with their own script's rules instead of the book-wide one,
+//      so a bilingual (e.g. en->uk) book's translated text finally breaks. Hyphenated splits
+//      are baked into the serialized pages, so sections cached under v32 (English-only splits
+//      on Cyrillic text) must be regenerated.
+constexpr uint8_t SECTION_FILE_VERSION = 33;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
@@ -431,6 +436,9 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   }
 
   Hyphenator::setPreferredLanguage(epub->getLanguage());
+  // Clear any translated-language slot left by a previous build; the slim parser repopulates it
+  // from each translated block's lang= as it parses, so it never leaks across books/sections.
+  Hyphenator::setTranslatedLanguage("");
   build_ = std::move(ctx);
 
   if (!build_->parser->beginParse()) {

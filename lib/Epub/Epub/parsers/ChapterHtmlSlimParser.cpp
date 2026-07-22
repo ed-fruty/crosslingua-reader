@@ -17,6 +17,7 @@
 #include "Epub/converters/ImageDecoderFactory.h"
 #include "Epub/converters/ImageToFramebufferDecoder.h"
 #include "Epub/htmlEntities.h"
+#include "Epub/hyphenation/Hyphenator.h"
 
 // Minimum file size (in bytes) to show indexing popup - smaller chapters don't benefit from it
 constexpr size_t MIN_SIZE_FOR_POPUP = 10 * 1024;  // 10KB
@@ -442,6 +443,15 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                                     strcmp(langAttr, self->bookPrimaryLang.c_str()) != 0;
   const bool inheritedTranslated = !self->inlineStyleStack.empty() && self->inlineStyleStack.back().isTranslatedBlock;
   const bool currentIsTranslated = isExplicitTranslated || inheritedTranslated;
+
+  // Point the Hyphenator's translated slot at this block's language so its words hyphenate with
+  // their own script's rules (the primary/book hyphenator rejects every word in the other script).
+  // Baked into section.bin at layout time; the lang= here is the one TranslatingHtmlRewriter emits.
+  // Set at block-open (before this block's words lay out); guarded so it re-resolves only on change.
+  if (isExplicitTranslated && self->translatedHyphenLang != langAttr) {
+    self->translatedHyphenLang = langAttr;
+    Hyphenator::setTranslatedLanguage(langAttr);
+  }
 
   auto centeredBlockStyle = BlockStyle();
   centeredBlockStyle.textAlignDefined = true;

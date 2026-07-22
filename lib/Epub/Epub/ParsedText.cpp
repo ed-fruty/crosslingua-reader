@@ -750,7 +750,10 @@ bool ParsedText::hyphenateWordAtIndex(const size_t wordIndex, const int availabl
   const auto style = wordStyles[wordIndex];
 
   // Collect candidate breakpoints (byte offsets and hyphen requirements).
-  auto breakInfos = Hyphenator::breakOffsets(word, allowFallbackBreaks);
+  // Translated words (carrying the TRANSLATED style bit from a differing lang= block) hyphenate
+  // with the translated-language rules so a bilingual book breaks each script in its own language.
+  const bool isTranslated = (static_cast<uint8_t>(style) & EpdFontFamily::TRANSLATED) != 0;
+  auto breakInfos = Hyphenator::breakOffsets(word, allowFallbackBreaks, isTranslated);
   if (breakInfos.empty()) {
     return false;
   }
