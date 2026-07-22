@@ -865,9 +865,14 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       break;
     }
     case EpubReaderMenuActivity::MenuAction::PRE_TRANSLATION: {
+      // Remember the layout-affecting display mode as it was before opening the submenu.
+      // The submenu can change SETTINGS.translationDisplayMode live (cycle mode / delete
+      // translations), and translationMode is part of the ReaderRenderSpec cache key, so a
+      // change means the in-RAM Section now holds a stale layout that must be rebuilt.
+      const uint8_t modeBeforeSubmenu = SETTINGS.translationDisplayMode;
       startActivityForResult(
           std::make_unique<PreTranslationSubmenuActivity>(renderer, mappedInput, epub, currentSpineIndex),
-          [this](const ActivityResult& result) {
+          [this, modeBeforeSubmenu](const ActivityResult& result) {
             // The submenu hands back a typed request (encoded in MenuResult::action).
             // TRANSLATE_* means "tear down the reader and run the translator"; anything
             // else (a plain Back, or an in-submenu setting change) is just a re-render:
@@ -882,6 +887,28 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
             if (kind != PreTranslationResult::NONE) {
               launchTranslation(kind);
             } else {
+              // Display mode changed inside the submenu: force a section re-layout the same
+              // way applyOrientation() does after an orientation change. Preserve the reading
+              // position, drop the Section, and let render() rebuild against the new spec --
+              // the translationMode cache key makes the rebuild reuse the right cached layout
+              // (or build it), and applyDeferredReposition() remaps the page once the new page
+              // count is known. The renderer's translation gray level tracks
+              // SETTINGS.translationDisplayMode in main.cpp's loop() every tick, so it stays
+              // consistent without extra wiring here.
+              if (SETTINGS.translationDisplayMode != modeBeforeSubmenu) {
+                RenderLock lock(*this);
+                if (section) {
+                  cachedSpineIndex = currentSpineIndex;
+                  cachedChapterTotalPageCount = section->pageCount;
+                  nextPageNumber = section->currentPage;
+                  // Mark this as a deliberate reposition (not a plain resume): the new mode's layout
+                  // is a different section.bin cache key, so render() must preserve the cached page
+                  // count past its cacheLoaded reset and force a full build, so applyDeferredReposition()
+                  // remaps the page against the final count in both the cache-complete and cache-miss cases.
+                  pendingModeReposition = true;
+                }
+                section.reset();
+              }
               requestUpdate();
             }
           });
@@ -1154,11 +1181,16 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     // out the rest -- it re-parses from the top in the background (HTML already cached,
     // pages are deterministic) and finalizes, so the partial machinery retires itself.
     const bool cacheLoaded = section->loadSectionFile(renderSpec);
-    if (cacheLoaded) {
+    if (cacheLoaded && !pendingModeReposition) {
       // Matching render params means identical pagination, so the saved page number is valid
       // as-is: consume any pending settings-change reposition. Without this, a chapter total
       // saved while the section was still building (i.e. a watermark, not the real count)
       // would remap the resume page against the finalized count and teleport the reader.
+      //
+      // A mode change is the exception: the new translationMode is a different section.bin cache
+      // key, so a cache HIT here loads a DIFFERENTLY paginated layout. Keeping the pre-switch page
+      // count alive lets applyDeferredReposition() remap the old page number onto the new count --
+      // without this guard a cache-complete re-switch lands on the old raw page under new pagination.
       cachedChapterTotalPageCount = 0;
     }
     const bool cacheComplete = cacheLoaded && !section->isPartial();
@@ -1186,7 +1218,10 @@ void EpubReaderActivity::render(RenderLock&& lock) {
       // page count). Anchor jumps (TOC / chapter select / footnotes) resolve incrementally below --
       // the anchor is recorded as its page is laid out, so a chapter-top anchor lands on page 0
       // without indexing the whole chapter.
-      const bool needsFullBuild = pendingPercentJump;
+      // A mode-change reposition also needs the whole chapter up front: the windowed build never
+      // finalizes early, so a remap gated on build completion (applyDeferredReposition) would
+      // silently die. Force the full build so the final page count is known in this same render().
+      const bool needsFullBuild = pendingPercentJump || pendingModeReposition;
       if (needsFullBuild) {
         GUI.drawPopup(renderer, tr(STR_INDEXING));
         // The popup's own refresh is a plain FAST, so force the page that replaces it onto the HALF
@@ -1321,6 +1356,12 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     // section is loaded. onSectionChanged() clears any prior cached page parse.
     modalOverlay.setTranslatedHtmlPath(section->getTranslatedHtmlPath());
     modalOverlay.onSectionChanged();
+
+    // A mode-change reposition has served its purpose for this load: it kept cachedChapterTotalPageCount
+    // alive past the cacheLoaded reset above and (on a cache miss) forced the full build, so the page
+    // count below is final and applyDeferredReposition() can remap. Clear it so a later plain resume
+    // isn't mistaken for a reposition. cachedChapterTotalPageCount is consumed separately by that remap.
+    pendingModeReposition = false;
   }
 
   // Extend the build to the requested page if needed (for partials and in-progress builds).
@@ -1481,7 +1522,9 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   }
 
   if (showingAutoFallbackToast) {
-    GUI.drawPopup(renderer, tr(STR_NO_TRANSLATION_SWITCH_NORMAL));
+    // This message is long in most languages (German/Ukrainian etc.); GUI.drawPopup sizes a
+    // single-line box to the full string width and overflows the screen, so wrap it instead.
+    GUI.drawWrappedPopup(renderer, tr(STR_NO_TRANSLATION_SWITCH_NORMAL));
   }
 }
 

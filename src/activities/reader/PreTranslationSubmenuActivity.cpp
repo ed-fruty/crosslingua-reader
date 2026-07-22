@@ -380,7 +380,9 @@ void PreTranslationSubmenuActivity::render(RenderLock&&) {
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   if (showingToast && toastMessage) {
-    GUI.drawPopup(renderer, toastMessage);
+    // Toasts here include STR_NO_TRANSLATION_SWITCH_NORMAL, which is long in many languages and
+    // overflows GUI.drawPopup's single-line box; wrap it to the viewable area instead.
+    GUI.drawWrappedPopup(renderer, toastMessage);
   }
 
   renderer.displayBuffer();

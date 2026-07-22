@@ -210,6 +210,12 @@ class BaseTheme {
                               const std::function<std::string(int index)>& buttonLabel,
                               const std::function<UIIcon(int index)>& rowIcon) const;
   virtual Rect drawPopup(const GfxRenderer& renderer, const char* message) const;
+  // Like drawPopup, but the message word-wraps to fit the oriented viewable area (inside the bezel)
+  // instead of sizing a single-line box to the full string width. Use for messages that can be long
+  // in some languages (e.g. translated toasts), which would otherwise overflow the screen. Wraps on
+  // spaces, hard-clips unbreakable words, grows in height up to a small line cap, centered, and works
+  // in all 4 orientations by construction (renderer dimensions only). Sizes and flushes like drawPopup.
+  virtual void drawWrappedPopup(const GfxRenderer& renderer, const char* message) const;
   virtual void drawOptionPopup(const GfxRenderer& renderer, const char* title, const std::vector<std::string>& options,
                                int selectedIndex) const;
   virtual void fillPopupProgress(const GfxRenderer& renderer, const Rect& layout, const int progress) const;

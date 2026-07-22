@@ -35,6 +35,14 @@ class EpubReaderActivity final : public Activity {
   bool pendingPercentJump = false;
   // Normalized 0.0-1.0 progress within the target spine item, computed from book percentage.
   float pendingSpineProgress = 0.0f;
+  // Set when the Pre-Translation submenu changed SETTINGS.translationDisplayMode: the section must
+  // re-layout under the new ReaderRenderSpec (translationMode is part of the section.bin cache key)
+  // and the reader must land on the proportionally-equivalent page. It keeps the cached page count
+  // alive past render()'s cacheLoaded reset (so a cache-complete re-switch still remaps) and forces
+  // a full (blocking) build (so a cache-miss first switch remaps against the final count) -- a
+  // windowed build can finalize after applyDeferredReposition()'s window, silently dropping the
+  // reposition. See the PRE_TRANSLATION submenu-return handler and render().
+  bool pendingModeReposition = false;
   bool pendingScreenshot = false;
   bool pendingSyncSaveError = false;
   // Consecutive page-load failures. Each failure drops the section and rebuilds on the next render,
