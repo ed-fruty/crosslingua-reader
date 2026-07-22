@@ -136,6 +136,13 @@ enum class BootResume : uint8_t {
 // startDeepSleep() does not return, so a set latch only ends at the wakeup reset.
 static bool deepSleepInProgress = false;
 
+// Pre-Translation: map the 7-mode display setting to the renderer's 3-level
+// gray value (PT_DARK->1, PT_LIGHT->2, everything else->0). constexpr keeps
+// this as a compile-time lookup with zero runtime/flash overhead.
+static constexpr uint8_t modeToGray(uint8_t mode) {
+  return (mode == CrossPointSettings::PT_DARK) ? 1 : (mode == CrossPointSettings::PT_LIGHT) ? 2 : 0;
+}
+
 void silentRestart() {
   if (deepSleepInProgress) return;  // sleeping supersedes the heap-defrag reboot
   silentRebootTarget = SILENT_REBOOT_TARGET_HOME;
@@ -454,6 +461,7 @@ void loop() {
   halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.orientation, activityManager.isReaderActivity());
 
   renderer.setFadingFix(SETTINGS.fadingFix);
+  renderer.setTranslationGrayLevel(modeToGray(SETTINGS.translationDisplayMode));
 
   if (Serial && millis() - lastMemPrint >= 10000) {
     LOG_INF("MEM", "Free: %d bytes, Total: %d bytes, Min Free: %d bytes, MaxAlloc: %d bytes", ESP.getFreeHeap(),

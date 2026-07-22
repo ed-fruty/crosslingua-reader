@@ -10,6 +10,7 @@
 #include "EpubReaderMenuActivity.h"
 #include "ProgressMapper.h"
 #include "activities/Activity.h"
+#include "translator/ModalOverlay.h"
 
 class EpubReaderActivity final : public Activity {
   std::shared_ptr<Epub> epub;
@@ -43,6 +44,16 @@ class EpubReaderActivity final : public Activity {
   bool showDictionaryMessage = false;
   unsigned long dictionaryMessageTime = 0UL;
   bool ignoreNextConfirmRelease = false;
+  // Pre-Translation modal overlay: opened by longpress on either side button (PT_MODAL mode).
+  // ignoreNextSideRelease suppresses the page-turn that would otherwise fire on the matching
+  // release, mirroring the ignoreNextConfirmRelease pattern used by the bookmark longpress.
+  ModalOverlay modalOverlay;
+  bool ignoreNextSideRelease = false;
+  // Pre-Translation: shown when the current chapter has no translated HTML
+  // but the user picked a non-Normal display mode. Section auto-falls-back to
+  // Normal and triggers this toast via the autoFallbackFn callback.
+  bool showingAutoFallbackToast = false;
+  unsigned long autoFallbackToastTime = 0UL;
   bool currentPageBookmarked = false;
   bool bookmarkRemoved = false;  // true when last toggle removed (controls popup text)
   std::vector<BookmarkEntry> cachedBookmarks;
@@ -81,8 +92,8 @@ class EpubReaderActivity final : public Activity {
   int lastSavedPage = -1;
   int lastSavedPageCount = -1;
 
-  void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
-                      int orientedMarginBottom, int orientedMarginLeft);
+  void renderContents(Page& page, int orientedMarginTop, int orientedMarginRight, int orientedMarginBottom,
+                      int orientedMarginLeft);
   void renderStatusBar() const;
   // Pages laid out per incremental-build pump: on the render path (catching up to the page
   // being shown) and per loop() tick (background build of a large chapter). Kept small so a
@@ -136,6 +147,10 @@ class EpubReaderActivity final : public Activity {
   // Footnote navigation
   void navigateToHref(const std::string& href, bool savePosition = false);
   void restoreSavedPosition();
+
+  // Pre-Translation: triggered by Section when a chapter has no translation
+  // but mode is non-Normal. Resets the global mode and queues a toast.
+  void showAutoFallbackToast();
 
  public:
   explicit EpubReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Epub> epub)

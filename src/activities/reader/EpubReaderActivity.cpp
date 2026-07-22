@@ -29,6 +29,7 @@
 #include "KOReaderCredentialStore.h"
 #include "KOReaderSyncActivity.h"
 #include "MappedInputManager.h"
+#include "PreTranslationSubmenuActivity.h"
 #include "ProgressMapper.h"
 #include "QrDisplayActivity.h"
 #include "ReaderUtils.h"
@@ -342,6 +343,14 @@ void EpubReaderActivity::loop() {
     }
   }
 
+  // Pre-Translation Modal overlay: when active, the overlay consumes side-button
+  // releases for scroll/close and the Back release to dismiss. Inactive overlays
+  // pass-through (return false) so normal reader input continues.
+  if (modalOverlay.handleInput(mappedInput)) {
+    requestUpdate();
+    return;
+  }
+
   // End-of-Book screen reached (currentSpineIndex == spine count) means the book is
   // finished. Two independent finished-book features key off this same condition.
   const bool atEndOfBook = currentSpineIndex > 0 && currentSpineIndex >= epub->getSpineItemsCount();
@@ -406,6 +415,11 @@ void EpubReaderActivity::loop() {
 
   if (showDictionaryMessage && (millis() - dictionaryMessageTime) >= ReaderUtils::BOOKMARK_MESSAGE_DURATION_MS) {
     showDictionaryMessage = false;
+    requestUpdate();
+  }
+
+  if (showingAutoFallbackToast && (millis() - autoFallbackToastTime) >= ReaderUtils::BOOKMARK_MESSAGE_DURATION_MS) {
+    showingAutoFallbackToast = false;
     requestUpdate();
   }
 
@@ -524,10 +538,46 @@ void EpubReaderActivity::loop() {
     return;
   }
 
+  // Pre-Translation Modal: longpress either side button opens the overlay (PT_MODAL mode only).
+  // ignoreNextSideRelease suppresses the page-turn that would otherwise fire on the matching
+  // release — mirrors the ignoreNextConfirmRelease pattern used for the bookmark longpress.
+  // Gated on PT_MODAL so it only repurposes the side-button longpress when the user has opted
+  // into modal translation display; every other mode keeps develop's chapter-skip / orientation
+  // long-press behavior below unchanged.
+  if (SETTINGS.translationDisplayMode == CrossPointSettings::PT_MODAL && !modalOverlay.isActive()) {
+    const bool sideHeld = mappedInput.isPressed(MappedInputManager::Button::PageForward) ||
+                          mappedInput.isPressed(MappedInputManager::Button::PageBack);
+    constexpr unsigned long MODAL_HOLD_MS = 500;
+    if (sideHeld && mappedInput.getHeldTime() >= MODAL_HOLD_MS) {
+      modalOverlay.open();
+      ignoreNextSideRelease = true;
+      requestUpdate();
+      return;
+    }
+  }
+
   auto [prevTriggered, nextTriggered, fromTilt] = ReaderUtils::detectPageTurn(mappedInput);
-  prevTriggered = prevTriggered || touch.prev;
-  nextTriggered = nextTriggered || touch.next;
+  // While the Pre-Translation modal overlay is displayed it covers the page; a touch on the
+  // hidden reader underneath must not turn the page (side-button releases are already consumed
+  // by modalOverlay.handleInput() above). Develop-era touch input did not exist on the old branch.
+  prevTriggered = prevTriggered || (touch.prev && !modalOverlay.isActive());
+  nextTriggered = nextTriggered || (touch.next && !modalOverlay.isActive());
   if (!prevTriggered && !nextTriggered) {
+    // Consume the residual side-button release after a modal-open longpress so the
+    // flag doesn't leak across to a later, unrelated press. Only the release of the
+    // longpress-held side button should clear it.
+    if (ignoreNextSideRelease && (mappedInput.wasReleased(MappedInputManager::Button::PageForward) ||
+                                  mappedInput.wasReleased(MappedInputManager::Button::PageBack))) {
+      ignoreNextSideRelease = false;
+    }
+    return;
+  }
+
+  // If a modal-open longpress just fired, suppress the matching page-turn from the
+  // side-button release (and the chapter-skip / orientation-change long-press branches
+  // that key off the same release).
+  if (ignoreNextSideRelease) {
+    ignoreNextSideRelease = false;
     return;
   }
 
@@ -812,6 +862,16 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       addBookmark();
       break;
     }
+    case EpubReaderMenuActivity::MenuAction::PRE_TRANSLATION: {
+      startActivityForResult(
+          std::make_unique<PreTranslationSubmenuActivity>(renderer, mappedInput, epub, currentSpineIndex),
+          [this](const ActivityResult& /* result */) {
+            // After return, mode may have changed; re-render.
+            // Section will detect any new .translated.html files on next load.
+            requestUpdate();
+          });
+      break;
+    }
   }
 }
 
@@ -924,6 +984,7 @@ void EpubReaderActivity::pageTurn(bool isForwardTurn) {
     // the live pageCount alone would mistake the build watermark for the end of a giant spine.
     if (section->currentPage < section->pageCount - 1 || section->isBuilding()) {
       section->currentPage++;
+      modalOverlay.onPageChanged();
     } else {
       // We don't want to delete the section mid-render, so grab the semaphore
       {
@@ -936,6 +997,7 @@ void EpubReaderActivity::pageTurn(bool isForwardTurn) {
   } else {
     if (section->currentPage > 0) {
       section->currentPage--;
+      modalOverlay.onPageChanged();
     } else if (currentSpineIndex > 0) {
       // We don't want to delete the section mid-render, so grab the semaphore
       {
@@ -1050,6 +1112,11 @@ void EpubReaderActivity::render(RenderLock&& lock) {
         LOG_DBG("ERS", "Cache not found, building...");
       }
 
+      // Pre-Translation: Section calls this when the chapter has no translated HTML but a
+      // non-Normal display mode is selected -- it resets the mode to Normal and queues a toast.
+      // Only the user-facing build entries below pass it; background/continuation builds don't.
+      const auto autoFallbackFn = [this]() { showAutoFallbackToast(); };
+
       // Jumps that need the final pagination or the anchor map -- explicit page jumps,
       // fragment anchors, percent jumps, and cross-setting progress repositioning -- can't
       // resolve their landing page until the whole chapter is laid out, so they take the full
@@ -1076,7 +1143,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
         // Lend the framebuffer's 48 KB to the blocking full build; restored
         // (white) at scope exit, and the page render below redraws everything.
         GfxRenderer::FrameBufferLoan loan(renderer);
-        if (!section->createSectionFile(renderSpec, popupFn)) {
+        if (!section->createSectionFile(renderSpec, popupFn, autoFallbackFn)) {
           LOG_ERR("ERS", "Failed to persist page data to SD");
           section.reset();
           loan.end();  // restore before anything draws
@@ -1134,7 +1201,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
           // background buildSomeMore chunks in loop() do NOT get the loan: they
           // deliberately interleave with page renders. Restored before render.
           GfxRenderer::FrameBufferLoan loan(renderer);
-          if (!section->startBuild(renderSpec)) {
+          if (!section->startBuild(renderSpec, nullptr, autoFallbackFn)) {
             LOG_ERR("ERS", "Failed to start section build");
             section.reset();
             loan.end();  // restore before anything draws (showBuildError renders a popup)
@@ -1192,6 +1259,11 @@ void EpubReaderActivity::render(RenderLock&& lock) {
       section->currentPage = newPage;
       pendingPercentJump = false;
     }
+
+    // Pre-Translation Modal: refresh the overlay's chapter binding now that a new
+    // section is loaded. onSectionChanged() clears any prior cached page parse.
+    modalOverlay.setTranslatedHtmlPath(section->getTranslatedHtmlPath());
+    modalOverlay.onSectionChanged();
   }
 
   // Extend the build to the requested page if needed (for partials and in-progress builds).
@@ -1309,8 +1381,20 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     currentPageFootnotes = std::move(p->footnotes);
 
     const auto start = millis();
-    renderContents(std::move(p), orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
+    renderContents(*p, orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
     LOG_DBG("ERS", "Rendered page in %dms", millis() - start);
+
+    // Pre-Translation Modal overlay: drawn over the rendered page when active.
+    // preparePage() runs the selective SAX parse (~5 KB peak heap) the first time
+    // the overlay is rendered for this page; subsequent renders are cached.
+    // The overlay paints fillRect + drawText onto the BW framebuffer, so we push
+    // a second displayBuffer() to flush it. This only fires when the user opens
+    // the modal via longpress, so the extra refresh is not a per-page cost.
+    if (modalOverlay.isActive()) {
+      modalOverlay.render(renderer, *p, SETTINGS.getReaderFontId(), getModalFontId(), orientedMarginLeft,
+                          orientedMarginTop, viewportWidth, viewportHeight);
+      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    }
   }
   // Only persist when the position actually changed. render() also runs on menu,
   // bookmark and screenshot re-renders, and writeAtomic is several FAT ops for 6 bytes.
@@ -1337,6 +1421,10 @@ void EpubReaderActivity::render(RenderLock&& lock) {
 
   if (showDictionaryMessage) {
     GUI.drawPopup(renderer, tr(STR_DICT_NO_DICT_SET));
+  }
+
+  if (showingAutoFallbackToast) {
+    GUI.drawPopup(renderer, tr(STR_NO_TRANSLATION_SWITCH_NORMAL));
   }
 }
 
@@ -1367,21 +1455,20 @@ bool EpubReaderActivity::applyDeferredReposition() {
 bool EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageCount) {
   return EpubReaderUtils::saveProgress(*epub, spineIndex, currentPage, pageCount);
 }
-void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int orientedMarginTop,
-                                        const int orientedMarginRight, const int orientedMarginBottom,
-                                        const int orientedMarginLeft) {
+void EpubReaderActivity::renderContents(Page& page, const int orientedMarginTop, const int orientedMarginRight,
+                                        const int orientedMarginBottom, const int orientedMarginLeft) {
   const auto t0 = millis();
   const int fontId = SETTINGS.getReaderFontId();
 
   // Font prewarm: scan pass accumulates text, then prewarm, then real render
   auto* fcm = renderer.getFontCacheManager();
   auto scope = fcm->createPrewarmScope();
-  page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);  // scan pass
+  page.render(renderer, fontId, orientedMarginLeft, orientedMarginTop);  // scan pass
   scope.endScanAndPrewarm();
   const auto tPrewarm = millis();
 
-  const bool pageHasImages = page->hasImages();
-  const bool pageHasImagesNeedingDecode = pageHasImages && page->hasImagesNeedingDecode();
+  const bool pageHasImages = page.hasImages();
+  const bool pageHasImagesNeedingDecode = pageHasImages && page.hasImagesNeedingDecode();
   const bool needsTextGrayscale = SETTINGS.textAntiAliasing;
   const bool needsAnyGrayscale = needsTextGrayscale || pageHasImages;
   const bool tiledGrayscale = needsAnyGrayscale && renderer.supportsStripGrayscale();
@@ -1391,20 +1478,20 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   const bool overlapRefresh = tiledGrayscale && renderer.supportsAsyncRefresh();
   auto renderGrayscalePass = [&]() {
     if (needsTextGrayscale) {
-      page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+      page.render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
     } else {
-      page->renderImages(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+      page.renderImages(renderer, fontId, orientedMarginLeft, orientedMarginTop);
     }
   };
 
   if (pageHasImagesNeedingDecode) {
-    page->renderWithImagePlaceholders(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+    page.renderWithImagePlaceholders(renderer, fontId, orientedMarginLeft, orientedMarginTop);
     renderStatusBar();
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     renderer.clearScreen();
   }
 
-  page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+  page.render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
   renderStatusBar();
   const auto tBwRender = millis();
 
@@ -1415,13 +1502,13 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     // Step 1: Display page with image area blanked (text appears, image area white)
     // Step 2: Re-render with images and display again (images appear clean)
     int16_t imgX, imgY, imgW, imgH;
-    if (page->getImageBoundingBox(imgX, imgY, imgW, imgH)) {
+    if (page.getImageBoundingBox(imgX, imgY, imgW, imgH)) {
       renderer.fillRect(imgX + orientedMarginLeft, imgY + orientedMarginTop, imgW, imgH, false);
       renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 
       // Re-render page content to restore images into the blanked area
       // Status bar is not re-rendered here to avoid reading stale dynamic values (e.g. battery %)
-      page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+      page.render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
       renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     } else {
       renderer.displayBuffer(HalDisplay::HALF_REFRESH);
@@ -1783,6 +1870,17 @@ void EpubReaderActivity::updateBookmarkFlag() {
   currentPageBookmarked = std::any_of(cachedBookmarks.begin(), cachedBookmarks.end(), [&](const BookmarkEntry& b) {
     return bookmarkMatchesProgress(b, currentSpineIndex, section->currentPage, pageCount, pageRange);
   });
+}
+
+void EpubReaderActivity::showAutoFallbackToast() {
+  // Called by Section when the chapter has no translated HTML but mode != PT_NORMAL.
+  // Persist the fallback so subsequent chapters don't repeat the toast, and queue
+  // a brief on-screen notification.
+  SETTINGS.translationDisplayMode = CrossPointSettings::PT_NORMAL;
+  SETTINGS.saveToFile();
+  showingAutoFallbackToast = true;
+  autoFallbackToastTime = millis();
+  requestUpdate();
 }
 
 ScreenshotInfo EpubReaderActivity::getScreenshotInfo() const {
