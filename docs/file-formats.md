@@ -90,12 +90,20 @@ if (parsedSize != fileSize) {
 
 ## `section.bin`
 
-### Version 30
+### Version 32
 
 Each file in `sections/*.bin` stores one laid-out spine section. The header is
 also the cache-busting key: if any layout-affecting setting differs from the
 current reader settings, the section is discarded and rebuilt.
 
+Version 32 adds the Pre-Translation feature: a `translationMode` byte in the
+header (part of the cache key), a per-line `paragraphIdx`, and a per-page
+paragraph range (`firstParagraphIdx` / `lastParagraphIdx`). These let the
+reader map rendered lines back to their originating source paragraphs and
+dim/pair translated text according to the selected display mode.
+
+Version 31 is binary-identical to version 30; it was bumped because CJK word
+continuation across `MAX_WORD_SIZE` splits changed cached word grouping.
 Version 30 is binary-identical to version 29. The version was bumped because
 Arabic contextual shaping changed text measurement (`getTextAdvanceX` now
 measures the shaped visual text), so word positions cached by v29 no longer
@@ -125,7 +133,7 @@ import std.mem;
 import std.string;
 import std.core;
 
-#define EXPECTED_VERSION 30
+#define EXPECTED_VERSION 32
 #define MAX_STRING_LENGTH 65535
 #define FOOTNOTE_NUMBER_LEN 32
 #define FOOTNOTE_HREF_LEN 96
@@ -156,7 +164,8 @@ enum WordStyle : u8 {
     UNDERLINE = 4,
     STRIKETHROUGH = 8,
     SUP = 16,
-    SUB = 32
+    SUB = 32,
+    TRANSLATED = 64
 };
 
 enum TextAlign : u8 {
@@ -215,6 +224,7 @@ struct PageLine {
     s16 xPos;
     s16 yPos;
     TextBlock block;
+    s16 paragraphIdx [[comment("Pre-Translation: source paragraph index; -1 = unset")]];
 };
 
 struct PageImage {
@@ -254,6 +264,9 @@ struct Page {
 
     u16 footnoteCount;
     FootnoteEntry footnotes[footnoteCount];
+
+    s16 firstParagraphIdx [[comment("Pre-Translation: first source paragraph on this page; -1 = none")]];
+    s16 lastParagraphIdx [[comment("Pre-Translation: last source paragraph on this page; -1 = none")]];
 };
 
 struct AnchorEntry {
@@ -285,6 +298,7 @@ struct SectionBin {
     u16 viewportHeight;
     bool hyphenationEnabled;
     bool embeddedStyle;
+    u8 translationMode [[comment("Pre-Translation display mode; part of the cache key")]];
     u8 imageRendering;
     bool focusReadingEnabled;
 

@@ -33,6 +33,10 @@ class PageLine final : public PageElement {
   std::shared_ptr<TextBlock> block;
 
  public:
+  // Pre-Translation: index of the original paragraph this line belongs to (for the Modal
+  // display mode's line->paragraph mapping). -1 = unset.
+  int16_t paragraphIdx = -1;
+
   PageLine(std::shared_ptr<TextBlock> block, const int16_t xPos, const int16_t yPos)
       : PageElement(xPos, yPos), block(std::move(block)) {}
   const std::shared_ptr<TextBlock>& getBlock() const { return block; }
@@ -77,6 +81,10 @@ class Page {
   std::vector<std::shared_ptr<PageElement>> elements;
   std::vector<FootnoteEntry> footnotes;
   static constexpr uint16_t MAX_FOOTNOTES_PER_PAGE = 16;
+  // Pre-Translation: range of original paragraph indices contributing to this page (for
+  // the Modal overlay to know what to surface for the current page). -1 = none/unset.
+  int16_t firstParagraphIdx = -1;
+  int16_t lastParagraphIdx = -1;
 
   void addFootnote(const char* number, const char* href) {
     if (footnotes.size() >= MAX_FOOTNOTES_PER_PAGE) return;  // Cap per-page footnotes

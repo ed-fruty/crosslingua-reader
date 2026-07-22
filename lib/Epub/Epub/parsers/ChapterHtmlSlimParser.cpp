@@ -212,6 +212,27 @@ void ChapterHtmlSlimParser::flushPendingAnchor() {
 
 // flush the contents of partWordBuffer to currentTextBlock
 void ChapterHtmlSlimParser::flushPartWordBuffer() {
+  // Pre-Translation: the top of the inline style stack carries whether the word being flushed
+  // belongs to a translated block (block-opening and inline tags stamp isTranslatedBlock onto
+  // their StyleStackEntry, and children inherit it through nesting).
+  const bool inTranslatedBlock = !inlineStyleStack.empty() && inlineStyleStack.back().isTranslatedBlock;
+
+  // Mode-based filtering: drop the word entirely so it never reaches the layout engine.
+  //   Modes 0 (Normal), 1 (Dark), 2 (Light), 5 (SideBySide) emit everything.
+  //   Mode 3 (OriginalOnly) drops translated text.
+  //   Mode 4 (TranslationOnly) drops untranslated text.
+  //   Mode 6 (Modal) renders only original content in the main flow; translations are surfaced
+  //   through a popup at view time, so they are filtered here too.
+  // Reset continuation on drop: a dropped word must not attach to the next (this also keeps the
+  // CJK MAX_WORD_SIZE split intact, since both halves of a split word carry the same block state
+  // and are filtered identically).
+  if ((translationMode == 3 && inTranslatedBlock) || (translationMode == 4 && !inTranslatedBlock) ||
+      (translationMode == 6 && inTranslatedBlock)) {
+    partWordBufferIndex = 0;
+    nextWordContinues = false;
+    return;
+  }
+
   // Determine font style from depth-based tracking and CSS effective style
   const bool isBold = boldUntilDepth < depth || effectiveBold;
   const bool isItalic = italicUntilDepth < depth || effectiveItalic;
@@ -229,6 +250,11 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
     fontStyle = static_cast<EpdFontFamily::Style>(fontStyle | EpdFontFamily::SUP);
   } else if (effectiveSub) {
     fontStyle = static_cast<EpdFontFamily::Style>(fontStyle | EpdFontFamily::SUB);
+  }
+  // Pre-Translation: tag translated words so the renderer can apply gray-level dimming in
+  // Dark/Light modes. The TRANSLATED bit (64) composes with the existing style bits.
+  if (inTranslatedBlock) {
+    fontStyle = static_cast<EpdFontFamily::Style>(fontStyle | EpdFontFamily::TRANSLATED);
   }
 
   // flush the buffer
@@ -365,10 +391,13 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     self->xpathListItemIndex++;
   }
 
-  // Extract class, style, id, and dir attributes for CSS/RTL processing
+  // Extract class, style, id, dir, and lang attributes for CSS/RTL/Pre-Translation processing.
+  // langAttr detects translated paragraphs (Calibre and CrossPoint emit translated blocks with a
+  // lang= / xml:lang= attribute differing from the book's primary language declared in content.opf).
   std::string classAttr;
   std::string styleAttr;
   std::string dirAttr;
+  const char* langAttr = nullptr;
   if (atts != nullptr) {
     for (int i = 0; atts[i]; i += 2) {
       if (strcmp(atts[i], "class") == 0) {
@@ -399,9 +428,20 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
         }
       } else if (strcmp(atts[i], "dir") == 0) {
         dirAttr = atts[i + 1];
+      } else if (strcmp(atts[i], "lang") == 0 || strcmp(atts[i], "xml:lang") == 0) {
+        langAttr = atts[i + 1];
       }
     }
   }
+
+  // Pre-Translation: determine whether this element introduces (or sits inside) a translated block.
+  // Skip html/body to avoid false-positives from a document-level lang (e.g. <html lang="en">).
+  const bool langTagAllowed = strcmp(name, "html") != 0 && strcmp(name, "body") != 0;
+  const bool isExplicitTranslated = langTagAllowed && langAttr != nullptr && langAttr[0] != '\0' &&
+                                    !self->bookPrimaryLang.empty() &&
+                                    strcmp(langAttr, self->bookPrimaryLang.c_str()) != 0;
+  const bool inheritedTranslated = !self->inlineStyleStack.empty() && self->inlineStyleStack.back().isTranslatedBlock;
+  const bool currentIsTranslated = isExplicitTranslated || inheritedTranslated;
 
   auto centeredBlockStyle = BlockStyle();
   centeredBlockStyle.textAlignDefined = true;
@@ -490,6 +530,8 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     headerStyle.bold = false;
     headerStyle.hasItalic = true;
     headerStyle.italic = true;
+    // Pre-Translation: this synthetic "Tab Row N, Cell M:" label is UI text, not book content,
+    // so it is intentionally left unmarked (isTranslatedBlock stays false).
     self->inlineStyleStack.push_back(headerStyle);
     self->updateEffectiveInlineStyle();
     const CssTextDecoration savedTextDecoration = self->effectiveTextDecoration;
@@ -834,6 +876,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       entry.depth = self->depth;
       entry.hasTextDecoration = true;
       entry.textDecoration = CssTextDecoration::Underline;
+      entry.isTranslatedBlock = currentIsTranslated;  // Pre-Translation: inherit from enclosing block
       applyDirectionToEntry(entry, cssStyle);
       self->inlineStyleStack.push_back(entry);
       self->updateEffectiveInlineStyle();
@@ -874,12 +917,35 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     if (self->embeddedStyle && cssStyle.hasTextAlign()) {
       headerBlockStyle.alignment = cssStyle.textAlign;
     }
+    // Pre-Translation: detect the outermost transition BEFORE the blockStyleStack push
+    // (size()==1 means "root only", no open block ancestors).
+    const bool isOutermostBlock = (self->blockStyleStack.size() == 1);
+    // Pre-Translation: push a no-op inline-style marker so child inline tags inherit
+    // isTranslatedBlock through nesting. It carries no style bits, so it does not affect
+    // effective styles; it is popped by the generic inline-pop in endElement.
+    StyleStackEntry translationEntry;
+    translationEntry.depth = self->depth;
+    translationEntry.isTranslatedBlock = currentIsTranslated;
+    self->inlineStyleStack.push_back(translationEntry);
     const auto accumulated =
         self->blockStyleStack.back().getCombinedBlockStyle(headerBlockStyle, BlockStyle::CombineAxis::Horizontal);
     self->blockStyleStack.push_back(accumulated);
     self->startNewTextBlock(accumulated.withoutBottom());
     self->boldUntilDepth = std::min(self->boldUntilDepth, self->depth);
     self->updateEffectiveInlineStyle();
+    // Pre-Translation: stamp the paragraph index AFTER startNewTextBlock so the previous block
+    // is flushed under the previous translation state. A translated outermost block pairs with
+    // the most recent original paragraph (paragraphCounter - 1); an original one advances the
+    // counter.
+    if (isOutermostBlock) {
+      if (currentIsTranslated) {
+        self->currentBlockParagraphIdx = static_cast<int16_t>(self->paragraphCounter - 1);
+      } else {
+        self->currentBlockParagraphIdx = self->paragraphCounter;
+        self->paragraphCounter++;
+      }
+      self->currentBlockIsTranslated = currentIsTranslated;
+    }
   } else if (matches(name, BLOCK_TAGS, std::size(BLOCK_TAGS))) {
     if (strcmp(name, "br") == 0) {
       if (self->partWordBufferIndex > 0) {
@@ -896,11 +962,29 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       self->startNewTextBlock(brStyle);
     } else {
       self->currentCssStyle = cssStyle;
+      // Pre-Translation: detect outermost transition BEFORE the blockStyleStack push.
+      const bool isOutermostBlock = (self->blockStyleStack.size() == 1);
+      // Pre-Translation: push a no-op inline-style marker for isTranslatedBlock propagation.
+      StyleStackEntry translationEntry;
+      translationEntry.depth = self->depth;
+      translationEntry.isTranslatedBlock = currentIsTranslated;
+      self->inlineStyleStack.push_back(translationEntry);
       const auto accumulated = self->blockStyleStack.back().getCombinedBlockStyle(userAlignmentBlockStyle,
                                                                                   BlockStyle::CombineAxis::Horizontal);
       self->blockStyleStack.push_back(accumulated);
       self->startNewTextBlock(accumulated.withoutBottom());
       self->updateEffectiveInlineStyle();
+      // Pre-Translation: stamp the paragraph index AFTER startNewTextBlock so the previous block
+      // flushed inside it uses the previous translation state.
+      if (isOutermostBlock) {
+        if (currentIsTranslated) {
+          self->currentBlockParagraphIdx = static_cast<int16_t>(self->paragraphCounter - 1);
+        } else {
+          self->currentBlockParagraphIdx = self->paragraphCounter;
+          self->paragraphCounter++;
+        }
+        self->currentBlockIsTranslated = currentIsTranslated;
+      }
 
       if (strcmp(name, "li") == 0) {
         self->currentTextBlock->addWord("\xe2\x80\xa2", EpdFontFamily::REGULAR);
@@ -914,6 +998,8 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       self->nextWordContinues = true;
     }
     self->pushDecorationStyleEntry(CssTextDecoration::Underline, cssStyle);
+    // Pre-Translation: inherit translated state (the helper does not know about it).
+    self->inlineStyleStack.back().isTranslatedBlock = currentIsTranslated;
   } else if (matches(name, LINETHROUGH_TAGS, std::size(LINETHROUGH_TAGS))) {
     // Flush buffer before style change so preceding text gets current style
     if (self->partWordBufferIndex > 0) {
@@ -921,6 +1007,8 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       self->nextWordContinues = true;
     }
     self->pushDecorationStyleEntry(CssTextDecoration::LineThrough, cssStyle);
+    // Pre-Translation: inherit translated state (the helper does not know about it).
+    self->inlineStyleStack.back().isTranslatedBlock = currentIsTranslated;
   } else if (matches(name, BOLD_TAGS, std::size(BOLD_TAGS))) {
     // Flush buffer before style change so preceding text gets current style
     if (self->partWordBufferIndex > 0) {
@@ -933,6 +1021,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     entry.depth = self->depth;  // Track depth for matching pop
     entry.hasBold = true;
     entry.bold = true;
+    entry.isTranslatedBlock = currentIsTranslated;  // Pre-Translation: inherit from enclosing block
     if (cssStyle.hasFontStyle()) {
       entry.hasItalic = true;
       entry.italic = cssStyle.fontStyle == CssFontStyle::Italic;
@@ -953,6 +1042,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     entry.depth = self->depth;  // Track depth for matching pop
     entry.hasItalic = true;
     entry.italic = true;
+    entry.isTranslatedBlock = currentIsTranslated;  // Pre-Translation: inherit from enclosing block
     if (cssStyle.hasFontWeight()) {
       entry.hasBold = true;
       entry.bold = cssStyle.fontWeight == CssFontWeight::Bold;
@@ -968,6 +1058,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     }
     StyleStackEntry entry;
     entry.depth = self->depth;
+    entry.isTranslatedBlock = currentIsTranslated;  // Pre-Translation: inherit from enclosing block
     if (strcmp(name, "sup") == 0) {
       entry.hasSup = true;
       entry.sup = true;
@@ -978,16 +1069,20 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     self->inlineStyleStack.push_back(entry);
     self->updateEffectiveInlineStyle();
   } else if (strcmp(name, "span") == 0 || !isHeaderOrBlock(name)) {
-    // Handle span and other inline elements for CSS styling
-    if (cssStyle.hasFontWeight() || cssStyle.hasFontStyle() || cssStyle.hasTextDecoration() ||
-        cssStyle.hasDirection() || cssStyle.hasVerticalAlign()) {
+    // Handle span and other inline elements for CSS styling. Also push an entry when this element
+    // introduces an explicit translated marker (lang=) so it propagates to children, even without
+    // any CSS styling.
+    const bool hasCssStyle = cssStyle.hasFontWeight() || cssStyle.hasFontStyle() || cssStyle.hasTextDecoration() ||
+                             cssStyle.hasDirection() || cssStyle.hasVerticalAlign();
+    if (hasCssStyle || isExplicitTranslated) {
       // Flush buffer before style change so preceding text gets current style
       if (self->partWordBufferIndex > 0) {
         self->flushPartWordBuffer();
         self->nextWordContinues = true;
       }
       StyleStackEntry entry;
-      entry.depth = self->depth;  // Track depth for matching pop
+      entry.depth = self->depth;                      // Track depth for matching pop
+      entry.isTranslatedBlock = currentIsTranslated;  // Pre-Translation: inherit or set
       if (cssStyle.hasFontWeight()) {
         entry.hasBold = true;
         entry.bold = cssStyle.fontWeight == CssFontWeight::Bold;
@@ -1314,6 +1409,10 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
         self->currentTextBlock->setBlockStyle(style.addBottom(self->blockStyleStack.back()));
       }
       self->blockStyleStack.pop_back();
+      // Pre-Translation: intentionally NOT clearing currentBlockParagraphIdx /
+      // currentBlockIsTranslated here. The EOF flush in finishParse() runs makePages() after all
+      // endElement callbacks fire and still needs the last opened block's paragraph index/state.
+      // The next outermost block-open overwrites both, so they stay meaningful between blocks.
     }
 
     // </li> closes: if the bullet never got inline text (empty <li> or <li> with only
@@ -1477,7 +1576,20 @@ void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line) {
 
   // Apply horizontal left inset (margin + padding) as x position offset
   const int16_t xOffset = line->getBlockStyle().leftInset();
-  currentPage->elements.push_back(std::make_shared<PageLine>(line, xOffset, currentPageNextY));
+  auto pageLine = std::make_shared<PageLine>(line, xOffset, currentPageNextY);
+  // Pre-Translation: stamp the line with its originating paragraph index so the renderer (and the
+  // Modal overlay) can map rendered lines back to original paragraphs.
+  pageLine->paragraphIdx = currentBlockParagraphIdx;
+  // Pre-Translation: track which original paragraph indices contribute to this page. Translated
+  // blocks share their original's index (via the pairing logic in startElement), so the range
+  // still represents original paragraphs.
+  if (currentBlockParagraphIdx >= 0) {
+    if (currentPage->firstParagraphIdx < 0) {
+      currentPage->firstParagraphIdx = currentBlockParagraphIdx;
+    }
+    currentPage->lastParagraphIdx = currentBlockParagraphIdx;
+  }
+  currentPage->elements.push_back(std::move(pageLine));
   currentPageNextY += lineHeight;
 }
 
@@ -1530,8 +1642,13 @@ void ChapterHtmlSlimParser::makePages() {
     currentPageNextY += blockStyle.paddingBottom;
   }
 
+  // Pre-Translation: in SideBySide mode (5), suppress the extra spacing AFTER a translated
+  // outermost paragraph so it visually pairs with the original above. currentBlockIsTranslated
+  // reflects the most-recently-opened outermost block — the one being flushed here.
+  const bool suppressExtraSpacing = (translationMode == 5) && currentBlockIsTranslated;
+
   // Extra paragraph spacing if enabled (default behavior)
-  if (extraParagraphSpacing) {
+  if (extraParagraphSpacing && !suppressExtraSpacing) {
     currentPageNextY += lineHeight / 2;
   }
 }

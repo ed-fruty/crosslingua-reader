@@ -17,7 +17,10 @@ namespace {
 // v30: Arabic shaping changed both drawing and measurement (getTextAdvanceX now
 //      measures the shaped visual text); cached word positions from v29 no longer
 //      match what drawText renders.
-constexpr uint8_t SECTION_FILE_VERSION = 31;
+// v31: word continuation preserved when splitting CJK text on MAX_WORD_SIZE.
+// v32: Pre-Translation — translationMode byte added to the header (cache key), and a
+//      per-line paragraphIdx + per-page paragraph range added to Page serialization.
+constexpr uint8_t SECTION_FILE_VERSION = 32;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
@@ -35,10 +38,11 @@ constexpr uint8_t SECTION_FILE_INCOMPLETE_VERSION = 0;
 // only fails (noisily, via the block-decode error path) when a page is loaded.
 // Derived so the pairing can't be forgotten: 0xFE for v28, 0xFD for v29, ...
 constexpr uint8_t SECTION_FILE_PARTIAL_VERSION = 0xFE - (SECTION_FILE_VERSION - 28);
+// The extra sizeof(uint8_t) after the two bools is the Pre-Translation translationMode byte.
 constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) + sizeof(int) + sizeof(float) + sizeof(bool) + sizeof(uint8_t) +
                                  sizeof(uint16_t) + sizeof(uint16_t) + sizeof(uint16_t) + sizeof(bool) + sizeof(bool) +
-                                 sizeof(uint8_t) + sizeof(bool) + sizeof(uint32_t) + sizeof(uint32_t) +
-                                 sizeof(uint32_t) + sizeof(uint32_t);
+                                 sizeof(uint8_t) + sizeof(uint8_t) + sizeof(bool) + sizeof(uint32_t) +
+                                 sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t);
 }  // namespace
 
 // Out-of-line so the unique_ptr<ChapterHtmlSlimParser> in BuildContext can be
@@ -85,8 +89,9 @@ void Section::writeSectionFileHeader(const ReaderRenderSpec& spec) {
                                    sizeof(spec.extraParagraphSpacing) + sizeof(spec.paragraphAlignment) +
                                    sizeof(spec.viewportWidth) + sizeof(spec.viewportHeight) + sizeof(pageCount) +
                                    sizeof(spec.hyphenationEnabled) + sizeof(spec.embeddedStyle) +
-                                   sizeof(spec.imageRendering) + sizeof(spec.focusReadingEnabled) + sizeof(uint32_t) +
-                                   sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t),
+                                   sizeof(spec.translationMode) + sizeof(spec.imageRendering) +
+                                   sizeof(spec.focusReadingEnabled) + sizeof(uint32_t) + sizeof(uint32_t) +
+                                   sizeof(uint32_t) + sizeof(uint32_t),
                 "Header size mismatch");
   // Written as the incomplete sentinel; finalizeBuild() patches it to
   // SECTION_FILE_VERSION as the last step, committing the file.
@@ -99,6 +104,7 @@ void Section::writeSectionFileHeader(const ReaderRenderSpec& spec) {
   serialization::writePod(file, spec.viewportHeight);
   serialization::writePod(file, spec.hyphenationEnabled);
   serialization::writePod(file, spec.embeddedStyle);
+  serialization::writePod(file, spec.translationMode);  // Pre-Translation display mode (cache key)
   serialization::writePod(file, spec.imageRendering);
   serialization::writePod(file, spec.focusReadingEnabled);
   serialization::writePod(file, pageCount);  // Placeholder for page count (will be initially 0, patched later)
@@ -134,6 +140,7 @@ bool Section::loadSectionFile(const ReaderRenderSpec& spec) {
     uint8_t fileParagraphAlignment;
     bool fileHyphenationEnabled;
     bool fileEmbeddedStyle;
+    uint8_t fileTranslationMode;
     uint8_t fileImageRendering;
     bool fileFocusReadingEnabled;
     serialization::readPod(file, fileFontId);
@@ -144,6 +151,7 @@ bool Section::loadSectionFile(const ReaderRenderSpec& spec) {
     serialization::readPod(file, fileViewportHeight);
     serialization::readPod(file, fileHyphenationEnabled);
     serialization::readPod(file, fileEmbeddedStyle);
+    serialization::readPod(file, fileTranslationMode);
     serialization::readPod(file, fileImageRendering);
     serialization::readPod(file, fileFocusReadingEnabled);
 
@@ -151,7 +159,8 @@ bool Section::loadSectionFile(const ReaderRenderSpec& spec) {
         spec.extraParagraphSpacing != fileExtraParagraphSpacing || spec.paragraphAlignment != fileParagraphAlignment ||
         spec.viewportWidth != fileViewportWidth || spec.viewportHeight != fileViewportHeight ||
         spec.hyphenationEnabled != fileHyphenationEnabled || spec.embeddedStyle != fileEmbeddedStyle ||
-        spec.imageRendering != fileImageRendering || spec.focusReadingEnabled != fileFocusReadingEnabled) {
+        spec.translationMode != fileTranslationMode || spec.imageRendering != fileImageRendering ||
+        spec.focusReadingEnabled != fileFocusReadingEnabled) {
       file.close();
       LOG_ERR("SCT", "Deserialization failed: Parameters do not match");
       clearCache();
@@ -210,9 +219,16 @@ bool Section::clearCache() const {
   return true;
 }
 
-bool Section::createSectionFile(const ReaderRenderSpec& spec, const std::function<void()>& popupFn) {
+std::string Section::getTranslatedHtmlPath() const {
+  return epub->getCachePath() + "/sections/" + std::to_string(spineIndex) + ".translated.html";
+}
+
+bool Section::hasTranslatedHtml() const { return Storage.exists(getTranslatedHtmlPath().c_str()); }
+
+bool Section::createSectionFile(const ReaderRenderSpec& spec, const std::function<void()>& popupFn,
+                                const std::function<void()>& autoFallbackFn) {
   // One-shot build: start, then lay out the whole section in a single pass.
-  if (!startBuild(spec, popupFn)) {
+  if (!startBuild(spec, popupFn, autoFallbackFn)) {
     return false;
   }
   if (!buildSomeMore(0)) {  // 0 = build to completion
@@ -221,7 +237,8 @@ bool Section::createSectionFile(const ReaderRenderSpec& spec, const std::functio
   return buildComplete_;
 }
 
-bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void()>& popupFn) {
+bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void()>& popupFn,
+                         const std::function<void()>& autoFallbackFn) {
   if (build_) {
     LOG_ERR("SCT", "startBuild called while a build is already active");
     return false;
@@ -251,15 +268,41 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
     Storage.mkdir(sectionsDir.c_str());
   }
 
+  // Pre-Translation: prefer the persisted bilingual HTML when the translator subsystem has
+  // produced one for this spine. It survives layout-cache invalidation (font/size/mode only
+  // invalidate the .bin) and is parsed directly instead of the unzipped chapter HTML.
+  const auto translatedPath = getTranslatedHtmlPath();
+  const bool usingTranslatedSource = Storage.exists(translatedPath.c_str());
+
+  // Auto-fallback: a non-Normal display mode with no translated HTML would filter for
+  // translated words that do not exist and render a blank chapter. Fall back to Normal so the
+  // chapter still renders, and notify the caller so it can update settings + toast the user.
+  uint8_t effectiveMode = spec.translationMode;
+  if (!usingTranslatedSource && effectiveMode != 0 /* Normal */) {
+    LOG_DBG("SCT", "No translation for spine %d; falling back to Normal mode", spineIndex);
+    effectiveMode = 0;
+    if (autoFallbackFn) {
+      autoFallbackFn();
+    }
+  }
+  // The header cache-key and the parser both key on the effective (post-fallback) mode.
+  ReaderRenderSpec effectiveSpec = spec;
+  effectiveSpec.translationMode = effectiveMode;
+
   // Reuse the previously unzipped HTML if we already have it. The unzipped HTML is keyed only on the
   // book (it lives in the per-book cache dir), not on render settings, so it survives the invalidation
   // that wipes the layout (.bin) caches when font/margin/orientation change -- rebuilds then skip zip
   // inflation entirely. It's promoted by an atomic rename as soon as the inflate succeeds (below), so
   // even a window-only giant spine -- whose .bin never finalizes -- still caches its HTML, letting a
   // reopen skip the multi-second inflate. If htmlPath exists it is known-complete.
-  const bool reusedHtml = Storage.exists(htmlPath.c_str());
+  // reusedHtml also stays true for a translated source: it means "the parse source is a
+  // persistent file the build lifecycle must never promote or delete", which holds for both
+  // the cached unzipped HTML and the translator-owned .translated.html.
+  const bool reusedHtml = usingTranslatedSource || Storage.exists(htmlPath.c_str());
   bool htmlCached = reusedHtml;
-  if (reusedHtml) {
+  if (usingTranslatedSource) {
+    LOG_DBG("SCT", "Using translated HTML: %s", translatedPath.c_str());
+  } else if (reusedHtml) {
     LOG_DBG("SCT", "Reusing cached HTML %s", htmlPath.c_str());
   } else {
     Storage.mkdir(htmlDir.c_str());
@@ -313,13 +356,16 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
       LOG_DBG("SCT", "Failed to promote HTML cache; parsing from temp");
     }
   }
+  // Bind (no copy) to whichever source the parser will read.
+  const std::string& parseSource = usingTranslatedSource ? translatedPath : (htmlCached ? htmlPath : tmpHtmlPath);
 
   if (!Storage.openFileForWrite("SCT", binTmpPath(), file)) {
     if (!reusedHtml) Storage.remove(tmpHtmlPath.c_str());
     return false;
   }
-  // Header is written with the incomplete-version sentinel; finalizeBuild() commits it.
-  writeSectionFileHeader(spec);
+  // Header is written with the incomplete-version sentinel; finalizeBuild() commits it. The
+  // effective (post-fallback) translation mode is what actually shaped this layout.
+  writeSectionFileHeader(effectiveSpec);
 
   auto ctx = makeUniqueNoThrow<BuildContext>();
   if (!ctx) {
@@ -334,7 +380,7 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   ctx->reusedHtml = htmlCached;
   ctx->htmlPath = htmlPath;
   ctx->tmpHtmlPath = tmpHtmlPath;
-  ctx->parsePath = htmlCached ? htmlPath : tmpHtmlPath;
+  ctx->parsePath = parseSource;
 
   // Derive the content base directory and image cache path prefix for the parser
   const size_t lastSlash = localPath.find_last_of('/');
@@ -374,7 +420,7 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
         ctxPtr->lut.push_back({this->onPageComplete(std::move(page)), paragraphIndex, listItemIndex});
       },
       spec.embeddedStyle, ctxPtr->contentBase, ctxPtr->imageBasePath, spec.imageRendering, std::move(tocAnchors),
-      popupFn, ctxPtr->cssParser);
+      popupFn, ctxPtr->cssParser, effectiveMode, epub->getLanguage());
   if (!ctx->parser) {
     LOG_ERR("SCT", "OOM: ChapterHtmlSlimParser");
     if (ctx->cssParser) ctx->cssParser->clear();

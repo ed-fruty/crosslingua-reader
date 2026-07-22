@@ -86,14 +86,23 @@ class Section {
   ~Section();
   bool loadSectionFile(const ReaderRenderSpec& spec);
   bool clearCache() const;
-  bool createSectionFile(const ReaderRenderSpec& spec, const std::function<void()>& popupFn = nullptr);
+  bool createSectionFile(const ReaderRenderSpec& spec, const std::function<void()>& popupFn = nullptr,
+                         const std::function<void()>& autoFallbackFn = nullptr);
+
+  // Pre-Translation: path to the persisted bilingual HTML for this spine
+  // (`<cache>/sections/<spineIndex>.translated.html`). The translator subsystem writes it;
+  // startBuild() prefers it over the unzipped chapter HTML when present, and it survives
+  // layout-cache invalidation (font/size/mode changes only invalidate the `.bin`).
+  std::string getTranslatedHtmlPath() const;
+  bool hasTranslatedHtml() const;
 
   // Incremental build: lay out the section a few pages at a time so a large chapter
   // can show its first page immediately and keep the UI responsive while the rest
   // builds. createSectionFile() above is the one-shot wrapper over these.
   //   if (!startBuild(...)) fail;
   //   each tick: buildSomeMore(N); render up to pageCount; when isBuildComplete() stop.
-  bool startBuild(const ReaderRenderSpec& spec, const std::function<void()>& popupFn = nullptr);
+  bool startBuild(const ReaderRenderSpec& spec, const std::function<void()>& popupFn = nullptr,
+                  const std::function<void()>& autoFallbackFn = nullptr);
   // Lay out up to maxPages more pages (maxPages <= 0 = build to completion). Returns
   // false on error (the build is abandoned). Sets isBuildComplete() when finished.
   bool buildSomeMore(int maxPages);

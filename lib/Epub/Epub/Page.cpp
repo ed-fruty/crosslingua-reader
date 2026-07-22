@@ -29,7 +29,10 @@ bool PageLine::serialize(HalFile& file) {
   serialization::writePod(file, yPos);
 
   // serialize TextBlock pointed to by PageLine
-  return block->serialize(file);
+  if (!block->serialize(file)) return false;
+  // Pre-Translation: paragraph index (section-cache version bump forces a full re-read).
+  serialization::writePod(file, paragraphIdx);
+  return true;
 }
 
 std::unique_ptr<PageLine> PageLine::deserialize(HalFile& file) {
@@ -44,11 +47,16 @@ std::unique_ptr<PageLine> PageLine::deserialize(HalFile& file) {
     return nullptr;
   }
 
+  // Pre-Translation: paragraph index written after the TextBlock (see serialize()).
+  int16_t paragraphIdx = -1;
+  serialization::readPod(file, paragraphIdx);
+
   auto* line = new (std::nothrow) PageLine(std::move(tb), xPos, yPos);
   if (!line) {
     LOG_ERR("PGE", "Deserialization failed: could not allocate PageLine");
     return nullptr;
   }
+  line->paragraphIdx = paragraphIdx;
   return std::unique_ptr<PageLine>(line);
 }
 
@@ -165,6 +173,10 @@ bool Page::serialize(HalFile& file) const {
     }
   }
 
+  // Pre-Translation: paragraph range for this page (appended after footnotes for back-compat).
+  serialization::writePod(file, firstParagraphIdx);
+  serialization::writePod(file, lastParagraphIdx);
+
   return true;
 }
 
@@ -220,6 +232,11 @@ std::unique_ptr<Page> Page::deserialize(HalFile& file) {
     entry.number[sizeof(entry.number) - 1] = '\0';
     entry.href[sizeof(entry.href) - 1] = '\0';
   }
+
+  // Pre-Translation: paragraph range (always present: the section version bump invalidates
+  // any pre-v32 file at the header check, so Page::deserialize only runs on v32+ pages).
+  serialization::readPod(file, page->firstParagraphIdx);
+  serialization::readPod(file, page->lastParagraphIdx);
 
   return page;
 }

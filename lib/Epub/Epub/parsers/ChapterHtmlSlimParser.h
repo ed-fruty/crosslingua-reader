@@ -55,6 +55,14 @@ class ChapterHtmlSlimParser {
   std::string imageBasePath;
   int imageCounter = 0;
 
+  // Pre-Translation feature:
+  uint8_t translationMode = 0;            // 0=Normal, 1=Dark, 2=Light, 3=OrigOnly, 4=TransOnly, 5=SideBySide, 6=Modal
+  int16_t paragraphCounter = 0;           // Monotonic counter over ORIGINAL outermost blocks
+  int16_t currentBlockParagraphIdx = -1;  // Paragraph index of the currently-open outermost block; -1 outside any block
+  bool currentBlockIsTranslated =
+      false;                    // True when the currently-open outermost block has lang= differing from bookPrimaryLang
+  std::string bookPrimaryLang;  // Book's content.opf language; a differing lang= marks a translated block
+
   // Style tracking (replaces depth-based approach)
   struct StyleStackEntry {
     int depth = 0;
@@ -66,6 +74,9 @@ class ChapterHtmlSlimParser {
     CssTextDirection direction = CssTextDirection::Ltr;
     bool hasSup = false, sup = false;
     bool hasSub = false, sub = false;
+    // Pre-Translation: true when the enclosing block/inline element has a lang= attribute
+    // differing from the book's primary language (propagated to children through nesting).
+    bool isTranslatedBlock = false;
   };
   std::vector<StyleStackEntry> inlineStyleStack;
   std::vector<BlockStyle> blockStyleStack;  // accumulated block styles from open ancestor elements
@@ -134,7 +145,8 @@ class ChapterHtmlSlimParser {
                                  const bool embeddedStyle, const std::string& contentBase,
                                  const std::string& imageBasePath, const uint8_t imageRendering = 0,
                                  std::vector<std::string> tocAnchors = {},
-                                 const std::function<void()>& popupFn = nullptr, const CssParser* cssParser = nullptr)
+                                 const std::function<void()>& popupFn = nullptr, const CssParser* cssParser = nullptr,
+                                 const uint8_t translationMode = 0, const std::string& bookPrimaryLang = "")
 
       : epub(epub),
         filepath(filepath),
@@ -154,6 +166,8 @@ class ChapterHtmlSlimParser {
         imageRendering(imageRendering),
         contentBase(contentBase),
         imageBasePath(imageBasePath),
+        translationMode(translationMode),
+        bookPrimaryLang(bookPrimaryLang),
         tocAnchors(std::move(tocAnchors)) {}
 
   ~ChapterHtmlSlimParser();

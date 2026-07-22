@@ -21,4 +21,8 @@ struct ReaderRenderSpec {
   bool embeddedStyle = true;
   uint8_t imageRendering = 0;
   bool focusReadingEnabled = false;
+  // Pre-Translation display mode (0=Normal, 1=Dark, 2=Light, 3=OrigOnly, 4=TransOnly,
+  // 5=SideBySide, 6=Modal). Non-Normal modes change which words survive layout and the
+  // paragraph spacing, so it is part of the section-cache key like every other field.
+  uint8_t translationMode = 0;
 };
