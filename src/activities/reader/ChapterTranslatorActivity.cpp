@@ -11,6 +11,7 @@
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
+#include "activities/ActivityManager.h"
 #include "activities/ActivityResult.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/translator/LanguagePickerActivity.h"
@@ -21,10 +22,36 @@
 // Matches CrossPointSettings::sourceTranslationLanguage's 0xFF sentinel.
 static constexpr uint8_t AUTO_DETECT_SENTINEL = 0xFF;
 
+// ─── epub (re)loading ───────────────────────────────────────────────────────
+
+bool ChapterTranslatorActivity::ensureEpubLoaded() {
+  if (epub) return true;
+  LOG_DBG("CHT", "Loading lean epub (heap: %u)", (unsigned)ESP.getFreeHeap());
+  epub = std::make_shared<Epub>(epubPath, "/.crosspoint");
+  epub->setupCacheDir();
+  // Metadata only: no CSS, and don't rebuild the cache if it is missing.
+  if (!epub->load(false, true)) {
+    LOG_ERR("CHT", "Failed to load epub: %s", epubPath.c_str());
+    epub.reset();
+    return false;
+  }
+  LOG_DBG("CHT", "Lean epub loaded (heap: %u)", (unsigned)ESP.getFreeHeap());
+  return true;
+}
+
+void ChapterTranslatorActivity::returnToReader() { activityManager.goToReader(epubPath); }
+
 // ─── lifecycle ────────────────────────────────────────────────────────────────
 
 void ChapterTranslatorActivity::onEnter() {
   Activity::onEnter();
+
+  if (!ensureEpubLoaded()) {
+    state = FAILED;
+    snprintf(statusMsg, sizeof(statusMsg), "Failed to load book");
+    requestUpdate();
+    return;
+  }
 
   // If the chapter is already translated, show confirmation before proceeding.
   if (alreadyTranslated) {
@@ -70,7 +97,7 @@ void ChapterTranslatorActivity::launchSourcePicker() {
                                                                   /*customTitle=*/tr(STR_SOURCE_LANGUAGE)),
                          [this](const ActivityResult& result) {
                            if (result.isCancelled) {
-                             finish();
+                             returnToReader();
                              return;
                            }
                            const auto& menu = std::get<MenuResult>(result.data);
@@ -89,7 +116,7 @@ void ChapterTranslatorActivity::launchTargetPicker() {
                                                                   /*customTitle=*/tr(STR_TARGET_LANGUAGE)),
                          [this](const ActivityResult& result) {
                            if (result.isCancelled) {
-                             finish();
+                             returnToReader();
                              return;
                            }
                            const auto& menu = std::get<MenuResult>(result.data);
@@ -120,7 +147,7 @@ void ChapterTranslatorActivity::onTargetLangSelected(uint8_t resultIndex) {
   if (resultIndex >= LanguagePickerActivity::NUM_LANGUAGES) {
     // Defensive: out-of-range. Cancel rather than translate to an unknown code.
     LOG_ERR("CHT", "Target language out of range: %d", resultIndex);
-    finish();
+    returnToReader();
     return;
   }
   targetLangCode = LanguagePickerActivity::LANGUAGES[resultIndex].code;
@@ -192,6 +219,13 @@ void ChapterTranslatorActivity::runTranslation() {
   WiFi.config(WiFi.localIP(), WiFi.gatewayIP(), WiFi.subnetMask(), dns1, dns2);
   delay(500);  // Let the lwIP stack pick up the new resolver list.
   LOG_DBG("CHT", "DNS set to 8.8.8.8 / 8.8.4.4");
+
+  // Defensive: the lean Epub is normally loaded in onEnter, but guard the task entry too.
+  if (!ensureEpubLoaded()) {
+    snprintf(statusMsg, sizeof(statusMsg), "Failed to load book");
+    taskFailed = true;
+    return;
+  }
 
   // Step 1: extract this chapter's HTML out of the EPUB zip into a scratch file.
   const auto& spineItem = epub->getSpineItem(spineIndex);
@@ -312,7 +346,7 @@ void ChapterTranslatorActivity::loop() {
       return;
     }
     if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-      finish();
+      returnToReader();
       return;
     }
     return;
@@ -335,15 +369,12 @@ void ChapterTranslatorActivity::loop() {
     }
   }
 
-  // Result screens: any of Confirm/Back leaves. We do not pass any payload
-  // upstream; the caller refreshes its translation state from disk.
+  // Result screens: any of Confirm/Back leaves. The reader was torn down before this
+  // activity launched, so we relaunch it from disk (it re-reads translation state).
   if (state == DONE || state == FAILED || state == CANCELLED) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
         mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-      ActivityResult result;
-      result.isCancelled = (state != DONE);
-      setResult(std::move(result));
-      finish();
+      returnToReader();
       return;
     }
   }

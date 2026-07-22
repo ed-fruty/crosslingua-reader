@@ -17,7 +17,9 @@
 #include <limits>
 
 #include "../../util/BookmarkFile.h"
+#include "BookTranslatorActivity.h"
 #include "BookmarkEntry.h"
+#include "ChapterTranslatorActivity.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "DictionaryWordSelectActivity.h"
@@ -865,10 +867,23 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
     case EpubReaderMenuActivity::MenuAction::PRE_TRANSLATION: {
       startActivityForResult(
           std::make_unique<PreTranslationSubmenuActivity>(renderer, mappedInput, epub, currentSpineIndex),
-          [this](const ActivityResult& /* result */) {
-            // After return, mode may have changed; re-render.
+          [this](const ActivityResult& result) {
+            // The submenu hands back a typed request (encoded in MenuResult::action).
+            // TRANSLATE_* means "tear down the reader and run the translator"; anything
+            // else (a plain Back, or an in-submenu setting change) is just a re-render:
             // Section will detect any new .translated.html files on next load.
-            requestUpdate();
+            PreTranslationResult kind = PreTranslationResult::NONE;
+            if (const auto* mr = std::get_if<MenuResult>(&result.data)) {
+              if (mr->action == static_cast<int>(PreTranslationResult::TRANSLATE_CHAPTER) ||
+                  mr->action == static_cast<int>(PreTranslationResult::TRANSLATE_BOOK)) {
+                kind = static_cast<PreTranslationResult>(mr->action);
+              }
+            }
+            if (kind != PreTranslationResult::NONE) {
+              launchTranslation(kind);
+            } else {
+              requestUpdate();
+            }
           });
       break;
     }
@@ -921,6 +936,48 @@ bool EpubReaderActivity::launchKOReaderSync() {
       renderer, mappedInput, savedEpubPath, currentSpineIndex, currentPage, totalPages, std::move(localKoPos),
       std::move(localChapterName), paragraphIndex));
   return true;  // acted: launched the sync activity
+}
+
+void EpubReaderActivity::launchTranslation(PreTranslationResult kind) {
+  // Pre-compute every POD the translator needs while the Epub is still resident.
+  // The translator reopens its own lean (metadata-only) Epub from this path.
+  const std::string savedEpubPath = epub->getPath();
+  const int spineIndex = currentSpineIndex;
+  const std::string translatedHtmlPath =
+      epub->getCachePath() + "/sections/" + std::to_string(spineIndex) + ".translated.html";
+  const bool alreadyTranslated = Storage.exists(translatedHtmlPath.c_str());
+
+  const int currentPage = section ? section->currentPage : nextPageNumber;
+  const int totalPages = section ? section->estimatedTotalPages() : cachedChapterTotalPageCount;
+
+  // Persist current position so the reader resumes at the right page when the
+  // translator relaunches it via goToReader(). goToReader() depends on this file,
+  // so abort (and surface the same save-error toast KOSync uses) if the write fails.
+  if (!saveProgress(spineIndex, currentPage, totalPages)) {
+    LOG_ERR("PreTr", "Aborting translation because current progress could not be saved");
+    pendingSyncSaveError = true;
+    requestUpdate();
+    return;
+  }
+
+  // Release Epub and Section to free ~65KB RAM for the TLS handshake.
+  LOG_DBG("PreTr", "Releasing epub for translation (heap before: %u)", (unsigned)ESP.getFreeHeap());
+  {
+    RenderLock lock(*this);
+    if (section) {
+      nextPageNumber = section->currentPage;
+    }
+    section.reset();
+    epub.reset();
+  }
+  LOG_DBG("PreTr", "Epub released (heap after: %u)", (unsigned)ESP.getFreeHeap());
+
+  if (kind == PreTranslationResult::TRANSLATE_BOOK) {
+    activityManager.replaceActivity(std::make_unique<BookTranslatorActivity>(renderer, mappedInput, savedEpubPath));
+  } else {
+    activityManager.replaceActivity(std::make_unique<ChapterTranslatorActivity>(
+        renderer, mappedInput, savedEpubPath, spineIndex, translatedHtmlPath, alreadyTranslated));
+  }
 }
 
 void EpubReaderActivity::applyOrientation(const uint8_t orientation) {

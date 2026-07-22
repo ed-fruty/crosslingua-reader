@@ -12,6 +12,10 @@
 #include "activities/Activity.h"
 #include "translator/ModalOverlay.h"
 
+// Defined in PreTranslationSubmenuActivity.h; forward-declared here so the reader
+// header does not pull in the submenu (and its transitive) headers.
+enum class PreTranslationResult : uint8_t;
+
 class EpubReaderActivity final : public Activity {
   std::shared_ptr<Epub> epub;
   std::unique_ptr<Section> section = nullptr;
@@ -137,6 +141,11 @@ class EpubReaderActivity final : public Activity {
   // Returns true if sync acted (launched, or surfaced a save error); false if it was a no-op
   // because no KOReader credentials are stored.
   bool launchKOReaderSync();
+  // Tears down the reader (saveProgress -> release Epub + Section) and replaces it
+  // with the chapter/book translator, modeled on launchKOReaderSync(): the ~65KB
+  // freed lets wolfSSL complete the TLS handshake. The translator relaunches the
+  // reader on exit via goToReader(). Called from the PRE_TRANSLATION result handler.
+  void launchTranslation(PreTranslationResult kind);
   void applyOrientation(uint8_t orientation);
   void toggleAutoPageTurn(uint8_t selectedPageTurnOption);
   void pageTurn(bool isForwardTurn);

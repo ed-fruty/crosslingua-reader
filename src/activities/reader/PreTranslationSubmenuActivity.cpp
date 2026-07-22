@@ -14,8 +14,6 @@
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "activities/ActivityResult.h"
-#include "activities/reader/BookTranslatorActivity.h"
-#include "activities/reader/ChapterTranslatorActivity.h"
 #include "activities/reader/ReaderUtils.h"
 #include "activities/translator/LanguagePickerActivity.h"
 #include "activities/util/KeyboardEntryActivity.h"
@@ -161,19 +159,25 @@ void PreTranslationSubmenuActivity::onActionSelected(Action a) {
 
     case Action::TRANSLATE_CHAPTER: {
       if (!epub) return;
-      const std::string translatedPath =
-          epub->getCachePath() + "/sections/" + std::to_string(currentSpineIndex) + ".translated.html";
-      startActivityForResult(std::make_unique<ChapterTranslatorActivity>(renderer, mappedInput, epub, currentSpineIndex,
-                                                                         translatedPath, chapterIsTranslated),
-                             [this](const ActivityResult& /*res*/) { rebuildAfterReturn(); });
+      // Hand the request back to the reader rather than launching the translator
+      // here: the reader must release its Epub + Section (freeing ~65KB) before
+      // the TLS handshake, and replaceActivity() clears the whole stack, so the
+      // teardown has to run while the reader is the current activity.
+      ActivityResult result;
+      result.data = MenuResult{static_cast<int>(PreTranslationResult::TRANSLATE_CHAPTER)};
+      setResult(std::move(result));
+      finish();
       return;
     }
 
-    case Action::TRANSLATE_BOOK:
+    case Action::TRANSLATE_BOOK: {
       if (!epub) return;
-      startActivityForResult(std::make_unique<BookTranslatorActivity>(renderer, mappedInput, epub),
-                             [this](const ActivityResult& /*res*/) { rebuildAfterReturn(); });
+      ActivityResult result;
+      result.data = MenuResult{static_cast<int>(PreTranslationResult::TRANSLATE_BOOK)};
+      setResult(std::move(result));
+      finish();
       return;
+    }
 
     case Action::DELETE_TRANSLATIONS: {
       if (!epub) return;

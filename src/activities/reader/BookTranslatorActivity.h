@@ -24,10 +24,13 @@
  *     Two progress bars are rendered: per-chapter paragraphs and overall chapters.
  *  6. Cancel preserves finished chapters; only the in-flight chapter's partial output
  *     is removed.
- *  7. Result screen (DONE/FAILED/CANCELLED) waits for any button -> finish().
+ *  7. Result screen (DONE/FAILED/CANCELLED) waits for any button -> relaunches the reader.
  *
- * Returns no payload via ActivityResult; the launching activity refreshes its state
- * from disk after the activity finishes.
+ * Takes the EPUB by PATH, not by shared_ptr: the reader tears down its own Epub/Section
+ * before launching this activity (freeing ~65 KB for the TLS handshake). One lean,
+ * metadata-only Epub is reopened lazily via ensureEpubLoaded() and stays open for the
+ * whole book run. On exit the reader is relaunched from disk via
+ * ActivityManager::goToReader() (no ActivityResult payload is passed back).
  */
 class BookTranslatorActivity final : public Activity {
  public:
@@ -42,8 +45,8 @@ class BookTranslatorActivity final : public Activity {
     CANCELLED,
   };
 
-  explicit BookTranslatorActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::shared_ptr<Epub> epub)
-      : Activity("BookTranslator", renderer, mappedInput), epub(std::move(epub)) {}
+  explicit BookTranslatorActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string epubPath)
+      : Activity("BookTranslator", renderer, mappedInput), epubPath(std::move(epubPath)) {}
 
   void onEnter() override;
   void onExit() override;
@@ -53,7 +56,8 @@ class BookTranslatorActivity final : public Activity {
   bool preventAutoSleep() override { return state == TRANSLATING || state == WIFI_SELECTION; }
 
  private:
-  std::shared_ptr<Epub> epub;
+  std::string epubPath;
+  std::shared_ptr<Epub> epub;  // null until lazy-loaded (metadata-only) in ensureEpubLoaded()
   State state = SOURCE_LANG_SELECTION;
 
   // Language selection. sourceLangCode "auto" => engine-side auto-detect.
@@ -81,6 +85,13 @@ class BookTranslatorActivity final : public Activity {
   volatile int progressCurrent = 0;    // paragraph progress within current chapter
   volatile int progressTotal = 0;
   unsigned long lastProgressUpdate = 0;
+
+  // Reopens a lean, metadata-only Epub from epubPath (the reader released its own before
+  // this activity launched). Idempotent; returns false + LOG_ERR if the load fails.
+  bool ensureEpubLoaded();
+  // Tears this activity down and relaunches the reader from disk (the stack was cleared
+  // when the reader replaced itself with this activity, so finish() cannot return there).
+  void returnToReader();
 
   void launchSourcePicker();
   void launchTargetPicker();

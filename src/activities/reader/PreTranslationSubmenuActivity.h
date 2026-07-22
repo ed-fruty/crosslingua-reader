@@ -12,6 +12,18 @@
 #include "activities/Activity.h"
 #include "util/ButtonNavigator.h"
 
+// Typed request the submenu hands back to the reader when the user picks a
+// translate action. The submenu itself no longer launches the translator (that
+// would keep the live reader + Section + Epub resident during the TLS handshake
+// and starve wolfSSL of heap); instead it finishes with one of these and the
+// reader runs launchTranslation() after releasing the Epub. Encoded in the
+// returned ActivityResult's MenuResult::action field.
+enum class PreTranslationResult : uint8_t {
+  NONE = 0,
+  TRANSLATE_CHAPTER = 1,
+  TRANSLATE_BOOK = 2,
+};
+
 /**
  * Consolidated submenu that aggregates every Pre-Translation action and setting
  * into a single screen launched from the EPUB reader menu.
