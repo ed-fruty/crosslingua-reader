@@ -55,7 +55,12 @@ bool isRedirect(int status) {
 // (lib/KOReaderSync/KOReaderSyncClient.cpp: MIN_HEAP_FOR_TLS), which checks
 // both total free heap and largest contiguous block so fragmented heap
 // doesn't fall through into a failed TLS allocation.
-constexpr uint32_t MIN_HEAP_FOR_TLS = 55000;
+// TEMPORARY MEASUREMENT BUILD — revert to 55000 before any release/PR.
+// Lowered so the handshake is actually attempted at the translator's current
+// ~36 KB free / ~30 KB max-block: either it succeeds (guard was too
+// conservative — recalibrate) or WolfSslAllocDiag logs the exact failing
+// allocation size ([WSSL] XMALLOC FAIL: req=...), giving ground truth.
+constexpr uint32_t MIN_HEAP_FOR_TLS = 28000;
 
 bool insufficientHeapForTls() {
   const uint32_t freeHeap = ESP.getFreeHeap();
