@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "activities/Activity.h"
@@ -49,8 +50,18 @@ class PreTranslationSubmenuActivity final : public Activity {
     ENTER_API_KEY,
   };
 
+  // Reader mode: launched from the EPUB reader menu. The submenu borrows the
+  // reader's live Epub and current spine index and hands translate requests back
+  // to the reader via a typed MenuResult (the reader tears itself down first).
   explicit PreTranslationSubmenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                          std::shared_ptr<Epub> epub, int currentSpineIndex);
+
+  // Path mode: launched from the file browser with no reader open. The submenu
+  // lazily loads its own lean, metadata-only Epub from epubPath and derives the
+  // spine index from the book's saved progress. Translate requests are launched
+  // directly (replaceActivity into a translator with FILE_BROWSER return target)
+  // because there is no reader to tear anything down.
+  explicit PreTranslationSubmenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string epubPath);
 
   void onEnter() override;
   void onExit() override;
@@ -65,6 +76,11 @@ class PreTranslationSubmenuActivity final : public Activity {
 
   std::shared_ptr<Epub> epub;
   int currentSpineIndex;
+  // Path mode only: the book path the lean Epub is (re)loaded from. Empty in reader mode.
+  std::string epubPath;
+  bool pathMode = false;
+  // Set true when the path-mode lean Epub fails to load; renders an error screen.
+  bool epubLoadFailed = false;
   std::vector<MenuItem> menuItems;
   int selectedIndex = 0;
   ButtonNavigator buttonNavigator;
@@ -83,6 +99,17 @@ class PreTranslationSubmenuActivity final : public Activity {
   // onEnter() and from each child-activity result handler.
   void rebuildAfterReturn();
   void onActionSelected(Action a);
+
+  // Path mode only. Reopens a lean, metadata-only Epub from epubPath (same shape
+  // as the translators' ensureEpubLoaded()). Idempotent; LOG_ERR + false on failure.
+  bool ensureEpubLoaded();
+  // Path mode only. Reads the book's saved progress.bin the same way the reader
+  // restores it and returns the resume spine index, clamped to a valid chapter
+  // (0 when there is no saved progress). Requires the lean Epub to be loaded.
+  int loadSavedSpineIndex();
+  // Launches the given translate action directly in path mode (replaceActivity into
+  // the translator with FILE_BROWSER return target). Reader mode never calls this.
+  void launchTranslatorFromPath(Action a);
 
   // Dynamic right-hand value labels for the list rows.
   const char* displayModeLabel() const;
