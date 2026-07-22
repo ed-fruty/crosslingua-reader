@@ -163,6 +163,32 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     QUICK_RESUME_SLEEP_SCREEN_COUNT
   };
 
+  // Pre-Translation feature: how translated text renders on e-ink
+  enum PRE_TRANSLATION_MODE : uint8_t {
+    PT_NORMAL = 0,
+    PT_DARK = 1,
+    PT_LIGHT = 2,
+    PT_ORIGINAL_ONLY = 3,
+    PT_TRANSLATION_ONLY = 4,
+    PT_SIDE_BY_SIDE = 5,
+    PT_MODAL = 6,
+    PT_MODE_COUNT
+  };
+
+  // Pre-Translation feature: translation backend selection
+  // Values match upstream fork (crosspoint-reader) to keep JSON-stored indices stable.
+  enum TRANSLATION_ENGINE : uint8_t {
+    ENGINE_GOOGLE_FREE = 0,
+    ENGINE_DEEPL = 1,
+    ENGINE_DEEPL_PRO = 2,
+    ENGINE_OPENAI = 3,
+    ENGINE_DEEPSEEK = 4,
+    ENGINE_GEMINI = 5,
+    ENGINE_GOOGLE_V2 = 6,
+    ENGINE_GOOGLE_HTML = 7,
+    TRANSLATION_ENGINE_COUNT
+  };
+
   // Sleep screen settings
   uint8_t sleepScreen = DARK;
   // Sleep screen cover mode settings
@@ -266,6 +292,15 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t language = 0;
   // Quick Resume: keep current content visible with moon icon instead of showing a static sleep screen.
   uint8_t quickResumeSleepScreen = QUICK_RESUME_NEVER;
+
+  // Pre-Translation feature
+  // translationLanguage: index into LanguagePickerActivity::LANGUAGES[], 0xFF = unset
+  uint8_t translationLanguage = 0xFF;
+  // sourceTranslationLanguage: 0xFF = auto-detect, otherwise LANGUAGES[] index
+  uint8_t sourceTranslationLanguage = 0xFF;
+  uint8_t translationEngine = ENGINE_GOOGLE_V2;
+  char translateApiKey[128] = "";
+  uint8_t translationDisplayMode = PT_NORMAL;
 
   static constexpr uint8_t MIN_SLEEP_TIMEOUT_MINUTES = 1;
   static constexpr uint8_t SLEEP_TIMEOUT_NEVER_MINUTES = 31;

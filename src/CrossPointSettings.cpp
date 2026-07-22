@@ -99,6 +99,14 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   // Language -- managed by LanguageSelectActivity, not in SettingsList.
   // Stored as ISO code string ("EN", "DE", ...) for stability across enum reorders.
   doc["language"] = (language < getLanguageCount()) ? LANGUAGE_CODES[language] : "EN";
+
+  // Pre-Translation feature -- managed by LanguagePickerActivity / EngineSelectActivity,
+  // not in SettingsList. 0xFF sentinels and a free-form API key don't fit the SettingInfo schema.
+  doc["translationLanguage"] = translationLanguage;
+  doc["sourceTranslationLanguage"] = sourceTranslationLanguage;
+  doc["translationEngine"] = translationEngine;
+  doc["translateApiKey"] = translateApiKey;
+  doc["translationDisplayMode"] = translationDisplayMode;
 }
 
 bool CrossPointSettings::fromJson(JsonVariantConst doc) {
@@ -200,6 +208,16 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
     language = static_cast<uint8_t>(I18n::languageFromCode(doc["language"].as<const char*>()));
   }
 
+  // Pre-Translation feature -- absent keys keep struct-initializer defaults (backward compatible
+  // with settings.json files written before this feature shipped).
+  translationLanguage = doc["translationLanguage"] | translationLanguage;
+  sourceTranslationLanguage = doc["sourceTranslationLanguage"] | sourceTranslationLanguage;
+  translationEngine = clamp(doc["translationEngine"] | (uint8_t)ENGINE_GOOGLE_V2, (uint8_t)TRANSLATION_ENGINE_COUNT,
+                            (uint8_t)ENGINE_GOOGLE_V2);
+  copyToField(translateApiKey, doc["translateApiKey"] | "", sizeof(translateApiKey));
+  translationDisplayMode =
+      clamp(doc["translationDisplayMode"] | (uint8_t)PT_NORMAL, (uint8_t)PT_MODE_COUNT, (uint8_t)PT_NORMAL);
+
   if (needsResave) {
     LOG_DBG("CPS", "Resaving settings to update format");
     requestResave();
@@ -240,6 +258,10 @@ ReaderRenderSpec CrossPointSettings::readerRenderSpec(const uint16_t viewportWid
   spec.embeddedStyle = embeddedStyle != 0;
   spec.imageRendering = imageRendering;
   spec.focusReadingEnabled = focusReadingEnabled != 0;
+  // Pre-Translation feature: layout-affecting display mode (side-by-side/original-only/etc.
+  // change page layout), so it must be part of the section-cache key. See
+  // ReaderRenderSpec::translationMode (added by the Epub porter).
+  spec.translationMode = translationDisplayMode;
   return spec;
 }
 
