@@ -1,0 +1,84 @@
+#pragma once
+#include <Epub.h>
+#include <GfxRenderer.h>
+#include <I18n.h>
+#include <MappedInputManager.h>
+
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <vector>
+
+#include "activities/Activity.h"
+#include "util/ButtonNavigator.h"
+
+/**
+ * Consolidated submenu that aggregates every Pre-Translation action and setting
+ * into a single screen launched from the EPUB reader menu.
+ *
+ * Mirrors EpubReaderMenuActivity's vertical list pattern. Selecting most items
+ * spawns a child activity (translate / language picker / API-key keyboard);
+ * cyclical items mutate SETTINGS and re-render in place.
+ *
+ * After any child activity returns, the menu re-scans the on-disk translation
+ * state so labels like "Translate Chapter" flip to "Re-translate Chapter" and
+ * the "Delete Translations" entry appears once any chapter has been translated.
+ */
+class PreTranslationSubmenuActivity final : public Activity {
+ public:
+  enum class Action : uint8_t {
+    CYCLE_DISPLAY_MODE,
+    TRANSLATE_CHAPTER,
+    TRANSLATE_BOOK,
+    DELETE_TRANSLATIONS,
+    PICK_TARGET_LANG,
+    PICK_SOURCE_LANG,
+    CYCLE_ENGINE,
+    ENTER_API_KEY,
+  };
+
+  explicit PreTranslationSubmenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
+                                         std::shared_ptr<Epub> epub, int currentSpineIndex);
+
+  void onEnter() override;
+  void onExit() override;
+  void loop() override;
+  void render(RenderLock&&) override;
+
+ private:
+  struct MenuItem {
+    Action action;
+    StrId labelId;
+  };
+
+  std::shared_ptr<Epub> epub;
+  int currentSpineIndex;
+  std::vector<MenuItem> menuItems;
+  int selectedIndex = 0;
+  ButtonNavigator buttonNavigator;
+
+  bool chapterIsTranslated = false;
+  bool bookHasAnyTranslation = false;
+
+  // Toast overlay (shown when user tries to switch display mode without translation).
+  bool showingToast = false;
+  unsigned long toastShownAtMs = 0UL;
+  unsigned long toastDurationMs = 0UL;
+  const char* toastMessage = nullptr;
+
+  void buildMenuItems();
+  // Re-scans on-disk translation state and rebuilds menu items. Called from
+  // onEnter() and from each child-activity result handler.
+  void rebuildAfterReturn();
+  void onActionSelected(Action a);
+
+  // Dynamic right-hand value labels for the list rows.
+  const char* displayModeLabel() const;
+  const char* engineLabel() const;
+  const char* targetLangLabel() const;
+  const char* sourceLangLabel() const;
+  // Writes a masked representation of the API key into `out`.
+  void maskedApiKey(char* out, size_t outSize) const;
+
+  void showToast(const char* msg, unsigned long durationMs);
+};
