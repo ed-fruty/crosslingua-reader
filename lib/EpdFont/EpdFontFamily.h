@@ -4,8 +4,8 @@
 class EpdFontFamily {
  public:
   // Bitmask of text style flags carried per-word through layout and serialized in page cache.
-  // Bits 0-1 select the font variant (BOLD/ITALIC); bits 2-5 are decoration/positioning overlays
-  // applied at render time without changing the underlying font. getFont() ignores all bits
+  // Bits 0-1 select the font variant (BOLD/ITALIC); bits 2-6 are decoration/positioning/translation
+  // overlays applied at render time without changing the underlying font. getFont() ignores all bits
   // above bit 1 so decorations compose freely with bold/italic (e.g. BOLD | UNDERLINE | SUP).
   enum Style : uint8_t {
     REGULAR = 0,
@@ -16,6 +16,9 @@ class EpdFontFamily {
     STRIKETHROUGH = 8,  // drawn as a line through midline by TextBlock::render()
     SUP = 16,           // superscript: glyph scaled 50%, raised ~40% of ascender
     SUB = 32,           // subscript: glyph scaled 50%, lowered ~25% of ascender
+    TRANSLATED =
+        64,  // bit 6: word came from a translated block (lang= attribute set); used by Pre-Translation Dark/Light modes
+    // bit 7 reserved (Tooltip in future PR)
   };
   static constexpr uint8_t TEXT_DECORATION_MASK = static_cast<uint8_t>(UNDERLINE | STRIKETHROUGH);
 

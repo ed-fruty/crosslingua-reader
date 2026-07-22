@@ -282,6 +282,11 @@ enum class TextRotation { None, Rotated90CW };
 static void renderCharScaled(const GfxRenderer& renderer, GfxRenderer::RenderMode renderMode,
                              const EpdFontFamily& fontFamily, const uint32_t cp, int cursorX, int cursorY,
                              const bool pixelState, const EpdFontFamily::Style style) {
+  // Pre-Translation: words tagged with TRANSLATED render at the configured gray level.
+  // 0 = black (default, unchanged behavior); 1 = dark gray; 2 = light gray.
+  const bool isTranslated = (style & EpdFontFamily::TRANSLATED) != 0;
+  const uint8_t effectiveGrayLevel = isTranslated ? renderer.getTranslationGrayLevel() : 0;
+
   const EpdGlyph* glyph = fontFamily.getGlyph(cp, style);
   if (!glyph) return;
 
@@ -297,6 +302,33 @@ static void renderCharScaled(const GfxRenderer& renderer, GfxRenderer::RenderMod
   // pixel offset from the (already-shifted) cursor position.
   const int baseX = cursorX + glyph->left / 2;
   const int baseY = cursorY - glyph->top / 2;
+
+  // Per-pass paint helper. When effectiveGrayLevel == 0 we use the legacy path
+  // (unconditional paint with pixelState) to keep behavior bit-identical for
+  // non-translated text. Otherwise we honor BW + gray fallback semantics that
+  // mirror renderCharImpl's translated-text logic. Band clipping is handled
+  // downstream by drawPixel() (strip target), so no extra culling is needed here.
+  auto paintInk = [&](int x, int y) {
+    if (effectiveGrayLevel == 0) {
+      renderer.drawPixel(x, y, pixelState);
+      return;
+    }
+    if (effectiveGrayLevel == 1) {
+      // Dark gray: BW fallback + both gray passes.
+      if (renderMode == GfxRenderer::BW) {
+        renderer.drawPixel(x, y, pixelState);
+      } else {
+        renderer.drawPixel(x, y, false);
+      }
+    } else if (effectiveGrayLevel == 2) {
+      // Light gray: BW fallback + MSB only.
+      if (renderMode == GfxRenderer::BW) {
+        renderer.drawPixel(x, y, pixelState);
+      } else if (renderMode == GfxRenderer::GRAYSCALE_MSB) {
+        renderer.drawPixel(x, y, false);
+      }
+    }
+  };
 
   if (fontData->is2Bit) {
     // 2-bit packed format: 4 pixels per byte, MSB first, 2 bits per pixel.
@@ -317,7 +349,7 @@ static void renderCharScaled(const GfxRenderer& renderer, GfxRenderer::RenderMod
           }
         }
         if (maxRaw >= 2 || coverage >= 2) {
-          renderer.drawPixel(baseX + dstX, baseY + dstY, pixelState);
+          paintInk(baseX + dstX, baseY + dstY);
         }
       }
     }
@@ -339,7 +371,7 @@ static void renderCharScaled(const GfxRenderer& renderer, GfxRenderer::RenderMod
           }
         }
         if (hasInk) {
-          renderer.drawPixel(baseX + dstX, baseY + dstY, pixelState);
+          paintInk(baseX + dstX, baseY + dstY);
         }
       }
     }
@@ -350,6 +382,11 @@ template <TextRotation rotation = TextRotation::None>
 static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode renderMode,
                            const EpdFontFamily& fontFamily, const uint32_t cp, int cursorX, int cursorY,
                            const bool pixelState, const EpdFontFamily::Style style) {
+  // Pre-Translation: words tagged with TRANSLATED render at the configured gray level.
+  // 0 = black (default, normal antialiased path); 1 = dark gray; 2 = light gray.
+  const bool isTranslated = (style & EpdFontFamily::TRANSLATED) != 0;
+  const uint8_t effectiveGrayLevel = isTranslated ? renderer.getTranslationGrayLevel() : 0;
+
   const EpdGlyph* glyph = fontFamily.getGlyph(cp, style);
   if (!glyph) {
     LOG_ERR("GFX", "No glyph for codepoint %d", cp);
@@ -415,17 +452,39 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
           // 0 -> black, 1 -> dark grey, 2 -> light grey, 3 -> white
           const uint8_t bmpVal = 3 - ((byte >> bit_index) & 0x3);
 
-          if (renderMode == GfxRenderer::BW && bmpVal < 3) {
-            // Black (also paints over the grays in BW mode)
-            renderer.drawPixel(screenX, screenY, pixelState);
-          } else if (renderMode == GfxRenderer::GRAYSCALE_MSB && (bmpVal == 1 || bmpVal == 2)) {
-            // Light gray (also mark the MSB if it's going to be a dark gray too)
-            // Dedicated X3 gray LUTs now provide proper 4-level gray on both devices
-            // We have to flag pixels in reverse for the gray buffers, as 0 leave alone, 1 update
-            renderer.drawPixel(screenX, screenY, false);
-          } else if (renderMode == GfxRenderer::GRAYSCALE_LSB && bmpVal == 1) {
-            // Dark gray
-            renderer.drawPixel(screenX, screenY, false);
+          if (effectiveGrayLevel == 0) {
+            // Default path: render normally with font antialiasing.
+            if (renderMode == GfxRenderer::BW && bmpVal < 3) {
+              // Black (also paints over the grays in BW mode)
+              renderer.drawPixel(screenX, screenY, pixelState);
+            } else if (renderMode == GfxRenderer::GRAYSCALE_MSB && (bmpVal == 1 || bmpVal == 2)) {
+              // Light gray (also mark the MSB if it's going to be a dark gray too)
+              // Dedicated X3 gray LUTs now provide proper 4-level gray on both devices
+              // We have to flag pixels in reverse for the gray buffers, as 0 leave alone, 1 update
+              renderer.drawPixel(screenX, screenY, false);
+            } else if (renderMode == GfxRenderer::GRAYSCALE_LSB && bmpVal == 1) {
+              // Dark gray
+              renderer.drawPixel(screenX, screenY, false);
+            }
+          } else if (effectiveGrayLevel == 1) {
+            // Dark gray translated text: paint full glyph coverage (bmpVal < 3) in BW as a
+            // fallback so the word stays visible if the gray overlay never renders, then mark
+            // both LSB and MSB so the gray pass paints dark gray on top.
+            if (renderMode == GfxRenderer::BW && bmpVal < 3) {
+              renderer.drawPixel(screenX, screenY, pixelState);
+            } else if (renderMode == GfxRenderer::GRAYSCALE_MSB && bmpVal < 3) {
+              renderer.drawPixel(screenX, screenY, false);
+            } else if (renderMode == GfxRenderer::GRAYSCALE_LSB && bmpVal < 3) {
+              renderer.drawPixel(screenX, screenY, false);
+            }
+          } else if (effectiveGrayLevel == 2) {
+            // Light gray translated text: BW fallback + MSB only (LSB skipped). On X3/X4 LUTs
+            // MSB-only flagged pixels resolve to light gray.
+            if (renderMode == GfxRenderer::BW && bmpVal < 3) {
+              renderer.drawPixel(screenX, screenY, pixelState);
+            } else if (renderMode == GfxRenderer::GRAYSCALE_MSB && bmpVal < 3) {
+              renderer.drawPixel(screenX, screenY, false);
+            }
           }
         }
       }
@@ -447,7 +506,23 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
           const uint8_t bit_index = 7 - (pixelPosition & 7);
 
           if ((byte >> bit_index) & 1) {
-            renderer.drawPixel(screenX, screenY, pixelState);
+            if (effectiveGrayLevel == 0) {
+              renderer.drawPixel(screenX, screenY, pixelState);
+            } else if (effectiveGrayLevel == 1) {
+              // Dark gray: BW fallback + both gray passes.
+              if (renderMode == GfxRenderer::BW) {
+                renderer.drawPixel(screenX, screenY, pixelState);
+              } else {
+                renderer.drawPixel(screenX, screenY, false);
+              }
+            } else if (effectiveGrayLevel == 2) {
+              // Light gray: BW fallback + MSB only.
+              if (renderMode == GfxRenderer::BW) {
+                renderer.drawPixel(screenX, screenY, pixelState);
+              } else if (renderMode == GfxRenderer::GRAYSCALE_MSB) {
+                renderer.drawPixel(screenX, screenY, false);
+              }
+            }
           }
         }
       }

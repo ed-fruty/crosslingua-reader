@@ -74,6 +74,9 @@ class GfxRenderer {
   mutable int _stripRows = 0;
   mutable bool _stripActive = false;
 
+  uint8_t translationGrayLevel = 0;  // 0=black (default), 1=dark gray, 2=light gray.
+                                     // Applied to words tagged with EpdFontFamily::TRANSLATED.
+
   void renderChar(const EpdFontFamily& fontFamily, uint32_t cp, int* x, int* y, bool pixelState,
                   EpdFontFamily::Style style) const;
   void freeBwBufferChunks();
@@ -245,6 +248,10 @@ class GfxRenderer {
   // Grayscale functions
   void setRenderMode(const RenderMode mode) { this->renderMode = mode; }
   RenderMode getRenderMode() const { return renderMode; }
+  // Pre-Translation: gray level applied to glyphs whose style carries the TRANSLATED bit.
+  // 0=black (default, no remap), 1=dark gray (also drawn in BW pass as fallback), 2=light gray.
+  void setTranslationGrayLevel(uint8_t level) { translationGrayLevel = level; }
+  uint8_t getTranslationGrayLevel() const { return translationGrayLevel; }
   // Grayscale preconditioning settle pass (no-op on X4). The rect overload
   // takes the gray region in LOGICAL screen coordinates and rotates it to the
   // panel; the no-arg overload settles the full frame. Call after the BW base
