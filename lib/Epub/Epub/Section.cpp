@@ -25,7 +25,13 @@ namespace {
 //      so a bilingual (e.g. en->uk) book's translated text finally breaks. Hyphenated splits
 //      are baked into the serialized pages, so sections cached under v32 (English-only splits
 //      on Cyrillic text) must be regenerated.
-constexpr uint8_t SECTION_FILE_VERSION = 34;
+// v35: Side by Side (translationMode 5) now lays original and translation into two half-width
+//      columns (renderSideBySide) instead of full-width sequential blocks. The Page/PageLine
+//      binary structure is unchanged — columns reuse the existing per-line xPos field — but a
+//      mode-5 section cached under v34 carries an identical header key (translationMode still 5)
+//      and would otherwise be served with the old single-column layout, so the version bump is
+//      the only thing that forces those sections to rebuild.
+constexpr uint8_t SECTION_FILE_VERSION = 35;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects

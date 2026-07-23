@@ -230,11 +230,14 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
   //   Mode 4 (TranslationOnly) drops untranslated text.
   //   Mode 6 (Modal) renders only original content in the main flow; translations are surfaced
   //   through a popup at view time, so they are filtered here too.
+  //   Mode 7 (Tooltip) is original-only in the main flow like mode 6 — translations appear in the
+  //   tooltip popup; emitting them inline would double the text and break the tooltip's
+  //   underline/sentence-index math.
   // Reset continuation on drop: a dropped word must not attach to the next (this also keeps the
   // CJK MAX_WORD_SIZE split intact, since both halves of a split word carry the same block state
   // and are filtered identically).
   if ((translationMode == 3 && inTranslatedBlock) || (translationMode == 4 && !inTranslatedBlock) ||
-      (translationMode == 6 && inTranslatedBlock)) {
+      (translationMode == 6 && inTranslatedBlock) || (translationMode == 7 && inTranslatedBlock)) {
     partWordBufferIndex = 0;
     nextWordContinues = false;
     return;
@@ -310,7 +313,15 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
       return;
     }
 
-    makePages();
+    // Pre-Translation (SideBySide, mode 5): route through the two-column table builder, which
+    // buffers originals and pairs them with their translations. currentBlockIsTranslated and
+    // currentBlockParagraphIdx are stamped AFTER this flush by the caller, so here they still
+    // describe the block being flushed — exactly what makePagesTableMode inspects.
+    if (translationMode == 5) {
+      makePagesTableMode();
+    } else {
+      makePages();
+    }
   }
   // If the pending anchor is a TOC chapter boundary, force a page break after the previous
   // block is flushed so the chapter starts on a fresh page.
@@ -318,6 +329,11 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
   currentTextBlock.reset(new ParsedText(extraParagraphSpacing, hyphenationEnabled, focusReadingEnabled, blockStyle));
   wordsExtractedInBlock = 0;
   listItemBulletOnly = false;
+  // Pre-Translation: a fresh physical text block has not been assigned a paragraph index yet. The
+  // next content block-open (original) that lands on it claims the index and advances the counter;
+  // nested opens that reuse this same block (empty / li-bullet reuse paths above) leave the flag set
+  // and inherit the index, so exactly one index is consumed per distinct content block.
+  currentBlockIndexAssigned = false;
 }
 
 void ChapterHtmlSlimParser::emitHorizontalRule(const BlockStyle& blockStyle) {
@@ -933,9 +949,6 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     if (self->embeddedStyle && cssStyle.hasTextAlign()) {
       headerBlockStyle.alignment = cssStyle.textAlign;
     }
-    // Pre-Translation: detect the outermost transition BEFORE the blockStyleStack push
-    // (size()==1 means "root only", no open block ancestors).
-    const bool isOutermostBlock = (self->blockStyleStack.size() == 1);
     // Pre-Translation: push a no-op inline-style marker so child inline tags inherit
     // isTranslatedBlock through nesting. It carries no style bits, so it does not affect
     // effective styles; it is popped by the generic inline-pop in endElement.
@@ -946,27 +959,26 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     const auto accumulated =
         self->blockStyleStack.back().getCombinedBlockStyle(headerBlockStyle, BlockStyle::CombineAxis::Horizontal);
     self->blockStyleStack.push_back(accumulated);
-    // Pre-Translation (SideBySide): this new outermost block is an original (guard below).
-    // Before startNewTextBlock flushes the previous outermost block, mark it if it was itself
-    // an unpaired original — nothing will pair with it now.
-    if (isOutermostBlock && !currentIsTranslated) {
-      self->appendSideBySideNoTranslationMarkerIfUnpaired();
-    }
+    // Pre-Translation (SideBySide, mode 5): the unpaired-original marker is no longer emitted
+    // pre-emptively here. makePagesTableMode buffers each original and only decides it is
+    // unpaired (appending the marker via flushBufferedOriginal) once the next original arrives
+    // or EOF is reached, so a pre-emptive mark here would double-mark and bake into paired blocks.
     self->startNewTextBlock(accumulated.withoutBottom());
     self->boldUntilDepth = std::min(self->boldUntilDepth, self->depth);
     self->updateEffectiveInlineStyle();
-    // Pre-Translation: stamp the paragraph index AFTER startNewTextBlock so the previous block
-    // is flushed under the previous translation state. A translated outermost block pairs with
-    // the most recent original paragraph (paragraphCounter - 1); an original one advances the
-    // counter.
-    if (isOutermostBlock) {
-      if (currentIsTranslated) {
-        self->currentBlockParagraphIdx = static_cast<int16_t>(self->paragraphCounter - 1);
-      } else {
-        self->currentBlockParagraphIdx = self->paragraphCounter;
-        self->paragraphCounter++;
-      }
-      self->currentBlockIsTranslated = currentIsTranslated;
+    // Pre-Translation: stamp the paragraph index AFTER startNewTextBlock so the previous block is
+    // flushed under the previous translation state. The counter advances once per content-bearing
+    // original block at ANY nesting depth: the FIRST open to claim a freshly-created text block
+    // takes the next index (currentBlockIndexAssigned latches so nested opens reusing the same empty
+    // block inherit it instead of double-counting). A translated block never advances the counter;
+    // it pairs with the most recent original paragraph (paragraphCounter - 1).
+    self->currentBlockIsTranslated = currentIsTranslated;
+    if (currentIsTranslated) {
+      self->currentBlockParagraphIdx = static_cast<int16_t>(self->paragraphCounter - 1);
+    } else if (!self->currentBlockIndexAssigned) {
+      self->currentBlockParagraphIdx = self->paragraphCounter;
+      self->paragraphCounter++;
+      self->currentBlockIndexAssigned = true;
     }
   } else if (paraboundary::isParagraphBlockTag(name)) {
     // Reached only for NON-header block tags (headers handled by the branch
@@ -986,8 +998,6 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       self->startNewTextBlock(brStyle);
     } else {
       self->currentCssStyle = cssStyle;
-      // Pre-Translation: detect outermost transition BEFORE the blockStyleStack push.
-      const bool isOutermostBlock = (self->blockStyleStack.size() == 1);
       // Pre-Translation: push a no-op inline-style marker for isTranslatedBlock propagation.
       StyleStackEntry translationEntry;
       translationEntry.depth = self->depth;
@@ -996,24 +1006,24 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       const auto accumulated = self->blockStyleStack.back().getCombinedBlockStyle(userAlignmentBlockStyle,
                                                                                   BlockStyle::CombineAxis::Horizontal);
       self->blockStyleStack.push_back(accumulated);
-      // Pre-Translation (SideBySide): this new outermost block is an original (guard below).
-      // Before startNewTextBlock flushes the previous outermost block, mark it if it was itself
-      // an unpaired original — nothing will pair with it now.
-      if (isOutermostBlock && !currentIsTranslated) {
-        self->appendSideBySideNoTranslationMarkerIfUnpaired();
-      }
+      // Pre-Translation (SideBySide, mode 5): the unpaired-original marker is no longer emitted
+      // pre-emptively here — makePagesTableMode/flushBufferedOriginal own the unpaired decision
+      // (see the header branch above for the full rationale).
       self->startNewTextBlock(accumulated.withoutBottom());
       self->updateEffectiveInlineStyle();
       // Pre-Translation: stamp the paragraph index AFTER startNewTextBlock so the previous block
-      // flushed inside it uses the previous translation state.
-      if (isOutermostBlock) {
-        if (currentIsTranslated) {
-          self->currentBlockParagraphIdx = static_cast<int16_t>(self->paragraphCounter - 1);
-        } else {
-          self->currentBlockParagraphIdx = self->paragraphCounter;
-          self->paragraphCounter++;
-        }
-        self->currentBlockIsTranslated = currentIsTranslated;
+      // flushed inside it uses the previous translation state. The counter advances once per
+      // content-bearing original block at ANY nesting depth: the FIRST open to claim a freshly-
+      // created text block takes the next index (currentBlockIndexAssigned latches so nested opens
+      // reusing the same empty block inherit it instead of double-counting). A translated block
+      // never advances the counter; it pairs with the most recent original (paragraphCounter - 1).
+      self->currentBlockIsTranslated = currentIsTranslated;
+      if (currentIsTranslated) {
+        self->currentBlockParagraphIdx = static_cast<int16_t>(self->paragraphCounter - 1);
+      } else if (!self->currentBlockIndexAssigned) {
+        self->currentBlockParagraphIdx = self->paragraphCounter;
+        self->paragraphCounter++;
+        self->currentBlockIndexAssigned = true;
       }
 
       if (strcmp(name, "li") == 0) {
@@ -1549,10 +1559,18 @@ bool ChapterHtmlSlimParser::finishParse() {
 
   // Process last page if there is still text
   if (currentTextBlock) {
-    // Pre-Translation (SideBySide): the trailing outermost block may be an unpaired original
-    // (no translation followed it before EOF). Mark it before the final layout.
-    appendSideBySideNoTranslationMarkerIfUnpaired();
-    makePages();
+    // Pre-Translation (SideBySide, mode 5): flush the trailing outermost block through the
+    // two-column builder. A trailing original is buffered (not laid out) by makePagesTableMode,
+    // so drain any block still buffered — the last original of the chapter — full-width with the
+    // dim "not translated" marker via flushBufferedOriginal.
+    if (translationMode == 5) {
+      makePagesTableMode();
+      if (bufferedOriginalBlock) {
+        flushBufferedOriginal();
+      }
+    } else {
+      makePages();
+    }
     if (!pendingAnchorId.empty()) {
       anchorData.push_back({std::move(pendingAnchorId), static_cast<uint16_t>(completedPageCount)});
       pendingAnchorId.clear();
@@ -1675,13 +1693,139 @@ void ChapterHtmlSlimParser::makePages() {
     currentPageNextY += blockStyle.paddingBottom;
   }
 
-  // Pre-Translation: in SideBySide mode (5), suppress the extra spacing AFTER a translated
-  // outermost paragraph so it visually pairs with the original above. currentBlockIsTranslated
-  // reflects the most-recently-opened outermost block — the one being flushed here.
-  const bool suppressExtraSpacing = (translationMode == 5) && currentBlockIsTranslated;
+  // Extra paragraph spacing if enabled (default behavior).
+  // Pre-Translation (SideBySide, mode 5): paired blocks lay out through renderSideBySide, not
+  // makePages, so there is no longer a translated block flowing through here to suppress. The
+  // only mode-5 callers of makePages are full-width fallbacks (an unpaired original, or a
+  // translation with no buffered original), which both want normal paragraph spacing.
+  if (extraParagraphSpacing) {
+    currentPageNextY += lineHeight / 2;
+  }
+}
 
-  // Extra paragraph spacing if enabled (default behavior)
-  if (extraParagraphSpacing && !suppressExtraSpacing) {
+// Pre-Translation (SideBySide, mode 5): route one flushed outermost block to the two-column
+// table. currentBlockIsTranslated / currentBlockParagraphIdx still describe the block being
+// flushed at this point (the caller stamps the next block's state only after this returns).
+void ChapterHtmlSlimParser::makePagesTableMode() {
+  if (!currentTextBlock || currentTextBlock->isEmpty()) return;
+
+  if (currentBlockIsTranslated) {
+    // Translation paragraph: pair it beside the buffered original if one is waiting, otherwise
+    // fall back to a full-width layout (a translation with no preceding original — unusual).
+    if (bufferedOriginalBlock) {
+      renderSideBySide(std::move(bufferedOriginalBlock), std::move(currentTextBlock));
+    } else {
+      makePages();
+    }
+  } else {
+    // Original paragraph: if a previous original is still buffered it never got a translation,
+    // so lay it out full-width (with the dim marker) before buffering this one for pairing.
+    if (bufferedOriginalBlock) {
+      flushBufferedOriginal();
+    }
+    bufferedOriginalParagraphIdx = currentBlockParagraphIdx;
+    bufferedOriginalBlock = std::move(currentTextBlock);
+  }
+}
+
+// Pre-Translation (SideBySide, mode 5): lay out a buffered original that never received a paired
+// translation. It renders full-width (via makePages) with the dim "not translated" marker inline.
+void ChapterHtmlSlimParser::flushBufferedOriginal() {
+  if (!bufferedOriginalBlock) return;
+
+  // Swap the buffered original into currentTextBlock so makePages() lays it out, and point the
+  // block-level paragraph state at the buffered original so both the marker guard and the emitted
+  // PageLines' paragraphIdx match it. Save/restore the caller's in-flight state around the swap.
+  auto savedBlock = std::move(currentTextBlock);
+  const int16_t savedParagraphIdx = currentBlockParagraphIdx;
+  const bool savedIsTranslated = currentBlockIsTranslated;
+
+  currentTextBlock = std::move(bufferedOriginalBlock);
+  currentBlockParagraphIdx = bufferedOriginalParagraphIdx;
+  currentBlockIsTranslated = false;
+
+  appendSideBySideNoTranslationMarkerIfUnpaired();
+  makePages();
+
+  currentTextBlock = std::move(savedBlock);
+  currentBlockParagraphIdx = savedParagraphIdx;
+  currentBlockIsTranslated = savedIsTranslated;
+}
+
+// Pre-Translation (SideBySide, mode 5): lay an original (left) and its paired translation (right)
+// into two half-width columns, emitted as lockstep PageLine rows — left at xPos=0, right at
+// rightColX, both sharing one yPos and advancing one lineHeight per row. Both columns stamp the
+// original paragraph's index (bufferedOriginalParagraphIdx) so the Modal overlay's line->paragraph
+// mapping still resolves. RTL is handled per-word inside each half-width line by
+// layoutAndExtractLines; the columns themselves are never mirrored (original always left).
+void ChapterHtmlSlimParser::renderSideBySide(std::unique_ptr<ParsedText> leftBlock,
+                                             std::unique_ptr<ParsedText> rightBlock) {
+  if (!leftBlock || !rightBlock) return;
+
+  if (!currentPage) {
+    currentPage.reset(new Page());
+    currentPageNextY = 0;
+  }
+
+  const int lineHeight = renderer.getLineHeight(fontId) * lineCompression;
+  const uint16_t gapWidth = static_cast<uint16_t>(viewportWidth * 0.04f);
+  const uint16_t colWidth = static_cast<uint16_t>((viewportWidth - gapWidth) / 2);
+  const int16_t rightColX = static_cast<int16_t>(colWidth + gapWidth);
+
+  // Lay each column out at half width into its own line vector. Paragraphs are short (one block
+  // each), so a small reserve avoids the first few reallocs without over-committing DRAM.
+  std::vector<std::shared_ptr<TextBlock>> leftLines;
+  std::vector<std::shared_ptr<TextBlock>> rightLines;
+  leftLines.reserve(8);
+  rightLines.reserve(8);
+  leftBlock->layoutAndExtractLines(renderer, fontId, colWidth,
+                                   [&leftLines](const std::shared_ptr<TextBlock>& line) { leftLines.push_back(line); });
+  rightBlock->layoutAndExtractLines(renderer, fontId, colWidth, [&rightLines](const std::shared_ptr<TextBlock>& line) {
+    rightLines.push_back(line);
+  });
+
+  // Top spacing comes from the original (left) block.
+  const BlockStyle& bs = leftBlock->getBlockStyle();
+  if (bs.marginTop > 0) currentPageNextY += bs.marginTop;
+  if (bs.paddingTop > 0) currentPageNextY += bs.paddingTop;
+
+  const size_t maxLines = std::max(leftLines.size(), rightLines.size());
+  for (size_t i = 0; i < maxLines; i++) {
+    // Page-break check: v2 uses the 3-arg completePageFn + explicit page counter.
+    if (currentPageNextY + lineHeight > viewportHeight) {
+      completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex);
+      completedPageCount++;
+      currentPage.reset(new Page());
+      currentPageNextY = 0;
+    }
+
+    if (i < leftLines.size()) {
+      auto leftLine = std::make_shared<PageLine>(leftLines[i], 0, currentPageNextY);
+      leftLine->paragraphIdx = bufferedOriginalParagraphIdx;
+      currentPage->elements.push_back(std::move(leftLine));
+    }
+    if (i < rightLines.size()) {
+      auto rightLine = std::make_shared<PageLine>(rightLines[i], rightColX, currentPageNextY);
+      rightLine->paragraphIdx = bufferedOriginalParagraphIdx;
+      currentPage->elements.push_back(std::move(rightLine));
+    }
+
+    // Both columns belong to the same original paragraph; keep the page's paragraph range current
+    // (also fixes up firstParagraphIdx on a page freshly reset by the break above).
+    if (bufferedOriginalParagraphIdx >= 0) {
+      if (currentPage->firstParagraphIdx < 0) {
+        currentPage->firstParagraphIdx = bufferedOriginalParagraphIdx;
+      }
+      currentPage->lastParagraphIdx = bufferedOriginalParagraphIdx;
+    }
+
+    currentPageNextY += lineHeight;
+  }
+
+  // Bottom spacing + the usual half-line paragraph gap after the pair.
+  if (bs.marginBottom > 0) currentPageNextY += bs.marginBottom;
+  if (bs.paddingBottom > 0) currentPageNextY += bs.paddingBottom;
+  if (extraParagraphSpacing) {
     currentPageNextY += lineHeight / 2;
   }
 }

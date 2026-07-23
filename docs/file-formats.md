@@ -90,6 +90,19 @@ if (parsedSize != fileSize) {
 
 ## `section.bin`
 
+### Version 35
+
+Version 35 is binary-identical to version 34 in structure; it was bumped because
+Side-by-Side mode (`translationMode == 5`) now lays out original and translation
+paragraphs into two half-width columns instead of full-width sequential blocks.
+The two columns are emitted as lockstep `PageLine` rows — the left line at
+`xPos = 0` and the right line at `xPos = rightColX`, both sharing one `yPos` —
+reusing the existing per-line `xPos` field, so no new fields are added. A mode-5
+section cached under v34 carries an identical header cache key (`translationMode`
+is still `5`) and would otherwise be served with the old single-column layout, so
+the version bump is what forces those sections to rebuild. See
+[Side by Side](./pre-translation.md#side-by-side).
+
 ### Version 34
 
 Version 34 is binary-identical to version 33 in layout; it was bumped because
@@ -388,16 +401,23 @@ clean, complete write has finished. Consequences:
   reclaims it on the next `.bin` invalidation, while the completed final file is
   preserved across that invalidation.
 
-### Side-by-Side "not translated" marker
+### Side-by-Side two-column layout
 
-`section.bin` layouts built in **Side by Side** mode (`translationMode == 5`) may
-contain extra dim marker words: when a source paragraph has no paired translation, the
-layout parser appends a short, dimmed `tr(STR_NO_TRANSLATION)` marker inline after the
-source text so the gap is visible (see [Side by Side](./pre-translation.md#side-by-side)).
-The marker words reuse the existing per-word `TRANSLATED` style bit for dimming and add
-no new fields, so the serialized structure is unchanged and `SECTION_FILE_VERSION` is
-**not** bumped for it. Because `translationMode` is already part of the cache-busting
-header, a section cached before this change simply lacks the marker until it is next
-rebuilt; it never mismatches the format. (A section with *no* translation at all falls
-back to Normal mode during layout, so the marker only appears in partially-translated
-Side-by-Side sections.)
+`section.bin` layouts built in **Side by Side** mode (`translationMode == 5`) place each
+original paragraph and its paired translation into two half-width columns: the original
+in the left column (`xPos = 0`), the translation in the right column (`xPos = rightColX`,
+where `rightColX = colWidth + gapWidth`, `gapWidth = viewportWidth * 0.04`, and
+`colWidth = (viewportWidth - gapWidth) / 2`). The parser buffers the original block and,
+when its paired translation arrives, lays both out at `colWidth` and emits them as lockstep
+`PageLine` rows: the left and right lines of each row share one `yPos`, and `yPos` advances
+one line-height per row (see [Side by Side](./pre-translation.md#side-by-side)). This rides
+entirely on the existing per-line `xPos` field, so the serialized `Page`/`PageLine` structure
+is unchanged; the layout difference is what forced the `SECTION_FILE_VERSION` bump to v35
+(the header cache key is identical for a mode-5 section, since `translationMode` stays `5`).
+
+An original paragraph that has no paired translation renders full-width, with a short,
+dimmed `tr(STR_NO_TRANSLATION)` marker appended inline after its source text so the gap is
+visible. The marker words reuse the existing per-word `TRANSLATED` style bit for dimming and
+add no new fields. Columns are never mirrored for RTL — the original always occupies the
+left column — though per-word RTL within each half-width line is handled normally by the
+line layout.

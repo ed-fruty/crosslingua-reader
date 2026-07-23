@@ -56,13 +56,33 @@ class ChapterHtmlSlimParser {
   int imageCounter = 0;
 
   // Pre-Translation feature:
-  uint8_t translationMode = 0;            // 0=Normal, 1=Dark, 2=Light, 3=OrigOnly, 4=TransOnly, 5=SideBySide, 6=Modal
-  int16_t paragraphCounter = 0;           // Monotonic counter over ORIGINAL outermost blocks
-  int16_t currentBlockParagraphIdx = -1;  // Paragraph index of the currently-open outermost block; -1 outside any block
-  bool currentBlockIsTranslated =
-      false;                    // True when the currently-open outermost block has lang= differing from bookPrimaryLang
-  std::string bookPrimaryLang;  // Book's content.opf language; a differing lang= marks a translated block
-  std::string translatedHyphenLang;  // Last lang= applied to the Hyphenator's translated slot; avoids re-resolving
+  uint8_t translationMode = 0;  // 0=Normal, 1=Dark, 2=Light, 3=OrigOnly, 4=TransOnly, 5=SideBySide, 6=Modal
+  // Monotonic index over ORIGINAL content paragraphs. Advances once per content-bearing original
+  // block regardless of nesting depth, matching the per-content-paragraph granularity of the
+  // ModalOverlay/TooltipOverlay reparsers (ParagraphBoundary.h SSOT). Empty/whitespace-only blocks
+  // and translated blocks do NOT advance it.
+  int16_t paragraphCounter = 0;
+  // Paragraph index stamped on the currently-open block's laid-out lines; -1 before any block opens.
+  int16_t currentBlockParagraphIdx = -1;
+  // True once the current physical text block has been assigned a paragraph index. Reset to false
+  // whenever startNewTextBlock creates a FRESH ParsedText, so a wrapper container and the child
+  // block that reuses its empty ParsedText (via the isEmpty / listItemBulletOnly reuse paths) share
+  // ONE index — the wrapper never wastes an index, and each distinct content block consumes exactly
+  // one. This replaces the former "outermost block" gate that collapsed div/blockquote/li-wrapped
+  // subtrees to a single index.
+  bool currentBlockIndexAssigned = false;
+  bool currentBlockIsTranslated = false;  // True when the currently-open block has lang= differing from bookPrimaryLang
+  std::string bookPrimaryLang;            // Book's content.opf language; a differing lang= marks a translated block
+  std::string translatedHyphenLang;       // Last lang= applied to the Hyphenator's translated slot; avoids re-resolving
+
+  // Pre-Translation (SideBySide, mode 5): the current ORIGINAL outermost block is buffered here
+  // until its paired translation arrives, so both lay out together into two half-width columns
+  // (see renderSideBySide). bufferedOriginalParagraphIdx carries the original's paragraph index
+  // across the buffering window — the block-level currentBlockParagraphIdx has already advanced to
+  // the next block by the time the pair is emitted, so the emitted PageLines would otherwise stamp
+  // the wrong index for the Modal overlay's line->paragraph mapping.
+  std::unique_ptr<ParsedText> bufferedOriginalBlock = nullptr;
+  int16_t bufferedOriginalParagraphIdx = -1;
 
   // Style tracking (replaces depth-based approach)
   struct StyleStackEntry {
@@ -125,6 +145,15 @@ class ChapterHtmlSlimParser {
   void flushPendingAnchor();
   void flushPartWordBuffer();
   void makePages();
+  // Pre-Translation (SideBySide, mode 5): two-column table layout. makePagesTableMode routes an
+  // outermost block to either buffering (an original, held in bufferedOriginalBlock) or pairing
+  // (a translation, laid beside the buffered original). renderSideBySide lays a buffered original
+  // and its paired translation into two half-width columns, emitting them as lockstep PageLine
+  // rows (left at xPos=0, right at rightColX, both at the same yPos). flushBufferedOriginal lays
+  // an unpaired original full-width with the dim "not translated" marker.
+  void makePagesTableMode();
+  void flushBufferedOriginal();
+  void renderSideBySide(std::unique_ptr<ParsedText> leftBlock, std::unique_ptr<ParsedText> rightBlock);
   // Pre-Translation (SideBySide, mode 5): if the outermost block currently held in
   // currentTextBlock is an ORIGINAL paragraph with no translation paired to it, append a
   // short dim "not translated" marker inline after its source text before it lays out, so
