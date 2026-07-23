@@ -2,7 +2,9 @@
 #include <Epub.h>
 #include <Epub/FootnoteEntry.h>
 #include <Epub/Section.h>
+#include <FontCacheManager.h>  // for the held FontCacheManager::PrewarmScope member below
 
+#include <cstdint>
 #include <optional>
 
 #include "BookmarkEntry.h"
@@ -66,6 +68,19 @@ class EpubReaderActivity final : public Activity {
   // Pre-Translation tooltip overlay (PT_TOOLTIP mode). Owns its configured nav buttons for
   // per-sentence stepping and its own long-press page-turn; see loop()'s tooltip input block.
   TooltipOverlay tooltipOverlay;
+  // Retained reader-font glyph prewarm for an ACTIVE translation overlay. Built ONCE (wipe + scan +
+  // prewarm) when an overlay opens or the page under it turns, then HELD across every sentence-step /
+  // modal-scroll so those steps reuse the warm page buffer instead of re-wiping and re-decoding the
+  // whole page on demand each press (that on-demand path was ~10x slower -- see renderOverlayFrame()).
+  // Torn down when the overlay closes (normal branch of renderContents) and in onExit(); the scope's
+  // dtor clears the decompressor cache. Reuse is gated on the page identity it was built for AND the
+  // cache generation: any intervening clearCache() (a dictionary sub-activity, the next normal render)
+  // bumps FontCacheManager::cacheGeneration(), forcing a rebuild instead of reusing a wiped cache.
+  std::optional<FontCacheManager::PrewarmScope> overlayPrewarm_;
+  int overlayPrewarmSpine_ = -1;
+  int overlayPrewarmPage_ = -1;
+  int overlayPrewarmFontId_ = -1;
+  uint32_t overlayPrewarmGen_ = 0;
   // Shown when a PT_MODAL long-press opens the overlay on a page that has NO translated
   // paragraphs: the overlay refuses (clears its active flag in render()), and the reader surfaces
   // this toast instead of the previous silent no-op. Timed out in loop() like the other toasts.

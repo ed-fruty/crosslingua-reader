@@ -13,6 +13,7 @@ FontCacheManager::FontCacheManager(const std::map<int, EpdFontFamily>& fontMap,
 void FontCacheManager::setFontDecompressor(FontDecompressor* d) { fontDecompressor_ = d; }
 
 void FontCacheManager::clearCache() {
+  cacheGeneration_ += 1;  // invalidates any held prewarm reuse (see cacheGeneration())
   if (fontDecompressor_) fontDecompressor_->clearCache();
   for (auto& [id, font] : sdCardFonts_) {
     font->clearCache();

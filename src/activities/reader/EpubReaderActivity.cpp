@@ -225,6 +225,10 @@ void EpubReaderActivity::onExit() {
     saveProgress(origin.spineIndex, origin.pageNumber, 0);
   }
 
+  // Release any warm cache a still-active overlay was holding, so its dtor clears the shared glyph
+  // cache before we leave the reader (idempotent — no-op when no overlay was active).
+  overlayPrewarm_.reset();
+
   section.reset();
   if (pendingReadFolderMove && epub) {
     const std::string srcPath = epub->getPath();
@@ -1635,6 +1639,33 @@ void EpubReaderActivity::renderOverlayFrame(Page& page, const int fontId, const 
   const int viewportWidth = renderer.getScreenWidth() - orientedMarginLeft - orientedMarginRight;
   const int viewportHeight = renderer.getScreenHeight() - orientedMarginTop - orientedMarginBottom;
 
+  // Held font-prewarm cache (regression fix for 348cfa90). While the user steps through sentences /
+  // scrolls the modal the page's text is STATIC — only the overlay's own small text changes — so the
+  // page's reader-font glyphs are wiped, scanned and prewarmed ONCE here (on overlay open or when the
+  // page under it turns) and the scope is then HELD across steps: every step's page.render() below is
+  // a warm binary-search hit. Without this the page rendered fully on demand each press — the
+  // decompressor keeps only ONE group decompressed at a time, so glyphs from different frequency
+  // groups thrash that single slot (a full group inflate per group-transition, plus an O(glyphIndex)
+  // aligned-offset scan per glyph), which was the ~10x slowdown. Rebuild only when the page identity
+  // changes or the shared cache was cleared out from under us (a dictionary sub-activity's own
+  // PrewarmScope bumps cacheGeneration()); reuse otherwise. Overlay + status-bar text stay on demand —
+  // small, and the overlay's text changes every step, so there is nothing stable to prewarm; this is
+  // the same tradeoff the normal reading path already makes for the status bar.
+  auto* fcm = renderer.getFontCacheManager();
+  const int curPage = section ? section->currentPage : -1;
+  const bool cacheStale = !overlayPrewarm_ || overlayPrewarmSpine_ != currentSpineIndex ||
+                          overlayPrewarmPage_ != curPage || overlayPrewarmFontId_ != fontId ||
+                          overlayPrewarmGen_ != fcm->cacheGeneration();
+  if (cacheStale) {
+    overlayPrewarm_.emplace(*fcm);  // dtor of any prior scope + this ctor both clearCache(); scan ON
+    page.render(renderer, fontId, orientedMarginLeft, orientedMarginTop);  // scan pass: records text, draws nothing
+    overlayPrewarm_->endScanAndPrewarm();  // prewarm reader font; scan OFF; cache retained (no clear)
+    overlayPrewarmSpine_ = currentSpineIndex;
+    overlayPrewarmPage_ = curPage;
+    overlayPrewarmFontId_ = fontId;
+    overlayPrewarmGen_ = fcm->cacheGeneration();  // capture AFTER prewarm; any later clear bumps it
+  }
+
   // BW frame: the page, the status bar, then the active overlay composited on top. The overlay's
   // fillRect/drawText land in the BW framebuffer, so they ride the SINGLE refresh below — no
   // separate flush. (The modal's viewport ends above the status-bar margin, so it never covers it.)
@@ -1680,26 +1711,27 @@ void EpubReaderActivity::renderContents(Page& page, const int orientedMarginTop,
                                         const int orientedMarginBottom, const int orientedMarginLeft) {
   const int fontId = SETTINGS.getReaderFontId();
 
-  // A translation overlay (PT_TOOLTIP / PT_MODAL) takes the upstream-fork choreography: the overlay
-  // is composited into ONE BW frame and refreshed once (FAST, HALF only on the periodic cadence),
-  // instead of the image / tiled-grayscale machinery below — which is a normal-reading page-turn
-  // optimization, and which (drawing the overlay only afterwards, in a second slow HALF_REFRESH)
-  // was the source of the tooltip's blink-and-lag. Kept in a dedicated path so the normal reading
-  // path stays byte-for-byte unchanged.
+  // A translation overlay (PT_TOOLTIP / PT_MODAL) takes the upstream-fork choreography: the page,
+  // status bar and overlay are composited into ONE BW frame and refreshed once (FAST, HALF only on
+  // the periodic cadence), instead of the image / tiled-grayscale machinery below — a normal-reading
+  // page-turn optimization whose second slow HALF_REFRESH used to make the tooltip blink and lag.
+  // Kept in a dedicated path so the normal reading path stays byte-for-byte unchanged.
   //
-  // Handled HERE, *before* the font-prewarm scan pass below, deliberately: that scan is a full extra
-  // page.render() whose PrewarmScope calls FontCacheManager::clearCache() on BOTH entry and exit
-  // (FontCacheManager.cpp) — i.e. it wipes the decompressed-glyph cache, then re-decompresses every
-  // glyph on the page via prewarmCache(). Running it per tooltip sentence-step / modal-scroll forced
-  // a full-page glyph RE-DECODE on every single press (the same page, the same glyphs, redecoded from
-  // scratch each time) plus a redundant layout iteration — that is the remaining button-press → tooltip
-  // latency, and the fork has no prewarm scan at all. Skipping it here lets the glyph cache stay warm
-  // across steps exactly like the fork: renderOverlayFrame()'s page.render() decodes on demand for the
-  // first (cold) frame after a page turn, then every subsequent step reuses the cache. Matches the fork.
+  // The overlay path owns its OWN held font-prewarm cache (renderOverlayFrame): the page's glyphs are
+  // scanned + prewarmed ONCE per page and the scope is held across steps, so stepping/scrolling never
+  // re-wipes or re-decodes the page. Do NOT prewarm here for it — that would wipe the held cache on
+  // every press (the 348cfa90 regression skipped prewarm entirely instead, which was WORSE: the page
+  // then rendered fully on demand each press, ~10x slower).
   if (tooltipOverlay.isActive() || modalOverlay.isActive()) {
     renderOverlayFrame(page, fontId, orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
     return;
   }
+
+  // Normal reading: release any warm cache the overlay was holding (idempotent — no-op when nothing is
+  // held) so the per-frame scope below owns the glyph cache exactly as it did before any overlay
+  // opened. Its dtor re-wipes anyway, but releasing here keeps ownership single and teardown eager.
+  overlayPrewarm_.reset();
+  overlayPrewarmSpine_ = overlayPrewarmPage_ = overlayPrewarmFontId_ = -1;
 
   const auto t0 = millis();
   // Font prewarm: scan pass accumulates text, then prewarm, then real render

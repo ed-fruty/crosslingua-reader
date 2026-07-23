@@ -20,6 +20,13 @@ class FontCacheManager {
   void logStats(const char* label = "render");
   void resetStats();
 
+  // Monotonic counter bumped on every clearCache(). A holder that prewarmed the cache and wants to
+  // reuse it later (the reader's held overlay warm-cache) captures this value after prewarming and
+  // compares it before reuse: any intervening clearCache() -- a dictionary sub-activity's own
+  // PrewarmScope, the next normal render's scope, etc. -- bumps it, signaling the retained glyphs
+  // are gone and the cache must be rebuilt rather than reused. Render-thread only; not atomic.
+  uint32_t cacheGeneration() const { return cacheGeneration_; }
+
   // Scan-mode API: called by GfxRenderer::drawText() during scan pass
   bool isScanning() const;
   void recordText(const char* text, int fontId, EpdFontFamily::Style style);
@@ -48,6 +55,8 @@ class FontCacheManager {
   const std::map<int, EpdFontFamily>& fontMap_;
   const std::map<int, SdCardFont*>& sdCardFonts_;
   FontDecompressor* fontDecompressor_ = nullptr;
+
+  uint32_t cacheGeneration_ = 0;  // bumped by clearCache(); see cacheGeneration()
 
   enum class ScanMode : uint8_t { None, Scanning };
   ScanMode scanMode_ = ScanMode::None;
