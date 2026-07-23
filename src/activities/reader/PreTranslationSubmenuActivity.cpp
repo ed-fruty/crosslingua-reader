@@ -86,28 +86,23 @@ void PreTranslationSubmenuActivity::buildMenuItems() {
 
   menuItems.push_back({Action::CYCLE_DISPLAY_MODE, StrId::STR_DISPLAY_MODE});
 
-  // Translation Engine sits directly under Display Mode: together they are the two
-  // "how translations look/come from" settings, ahead of the per-mode controls and actions.
-  menuItems.push_back({Action::CYCLE_ENGINE, StrId::STR_TRANSLATION_ENGINE});
-
-  // API-key entry is only meaningful for engines that authenticate with a user key; keyless
-  // engines (the Google variants ship a built-in key) hide the row entirely. The menu is rebuilt
-  // on every engine change (see CYCLE_ENGINE) so the row appears/disappears immediately.
-  if (ParagraphTranslator::engineNeedsApiKey(SETTINGS.translationEngine)) {
-    menuItems.push_back({Action::ENTER_API_KEY, StrId::STR_TRANSLATE_API_KEY});
-  }
-
-  // Tooltip-mode controls (they only affect PT_TOOLTIP), shown only while that mode is
-  // selected so they don't clutter the menu for other display modes.
+  // Per-mode controls sit directly under Display Mode (they belong to the selected mode),
+  // shown only while that mode is selected so they don't clutter the menu otherwise.
   if (SETTINGS.translationDisplayMode == CrossPointSettings::PT_TOOLTIP) {
     menuItems.push_back({Action::CYCLE_TOOLTIP_BUTTONS, StrId::STR_TOOLTIP_BUTTONS});
     menuItems.push_back({Action::CYCLE_TOOLTIP_BEHAVIOR, StrId::STR_TOOLTIP_NAV});
   }
-
-  // Modal-mode control (only affects PT_MODAL), shown only while that mode is selected.
-  // Mirrors the tooltip-control block above.
   if (SETTINGS.translationDisplayMode == CrossPointSettings::PT_MODAL) {
     menuItems.push_back({Action::CYCLE_MODAL_BUTTONS, StrId::STR_MODAL_BUTTONS});
+  }
+
+  // Translation Engine follows the mode block; the API-key row is only meaningful for engines
+  // that authenticate with a user key — keyless engines (the Google variants ship a built-in
+  // key) hide it entirely. The menu is rebuilt on every engine change (see CYCLE_ENGINE) so the
+  // row appears/disappears immediately.
+  menuItems.push_back({Action::CYCLE_ENGINE, StrId::STR_TRANSLATION_ENGINE});
+  if (ParagraphTranslator::engineNeedsApiKey(SETTINGS.translationEngine)) {
+    menuItems.push_back({Action::ENTER_API_KEY, StrId::STR_TRANSLATE_API_KEY});
   }
 
   menuItems.push_back(
