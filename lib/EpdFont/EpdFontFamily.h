@@ -18,7 +18,11 @@ class EpdFontFamily {
     SUB = 32,           // subscript: glyph scaled 50%, lowered ~25% of ascender
     TRANSLATED =
         64,  // bit 6: word came from a translated block (lang= attribute set); used by Pre-Translation Dark/Light modes
-    // bit 7 reserved (Tooltip in future PR)
+    TOOLTIP = 128,  // bit 7: reserved for the Tooltip display mode (PT_TOOLTIP). The tooltip renders the
+                    // page as original-only and surfaces translations through an at-view popup, so the
+                    // TooltipOverlay itself does not set this bit today; it is claimed here so the flag is
+                    // named and cannot be reused. getFont() ignores all bits above bit 1, so it composes
+                    // freely with bold/italic/decorations like the other overlay bits.
   };
   static constexpr uint8_t TEXT_DECORATION_MASK = static_cast<uint8_t>(UNDERLINE | STRIKETHROUGH);
 

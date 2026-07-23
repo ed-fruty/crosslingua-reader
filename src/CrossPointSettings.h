@@ -163,7 +163,12 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     QUICK_RESUME_SLEEP_SCREEN_COUNT
   };
 
-  // Pre-Translation feature: how translated text renders on e-ink
+  // Pre-Translation feature: how translated text renders on e-ink.
+  // VALUE STABILITY: translationDisplayMode persists as this integer in settings.json, so new
+  // modes MUST be APPENDED at the end — never inserted or renumbered — or existing on-device
+  // saves are silently reinterpreted. PT_TOOLTIP is therefore 7 here even though the upstream
+  // fork numbered its tooltip mode 6 (its enum ordered TOOLTIP before MODAL); v2 already shipped
+  // PT_MODAL = 6, so tooltip appends as 7.
   enum PRE_TRANSLATION_MODE : uint8_t {
     PT_NORMAL = 0,
     PT_DARK = 1,
@@ -172,6 +177,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     PT_TRANSLATION_ONLY = 4,
     PT_SIDE_BY_SIDE = 5,
     PT_MODAL = 6,
+    PT_TOOLTIP = 7,
     PT_MODE_COUNT
   };
 
@@ -301,6 +307,15 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t translationEngine = ENGINE_GOOGLE_V2;
   char translateApiKey[128] = "";
   uint8_t translationDisplayMode = PT_NORMAL;
+  // Tooltip display mode (PT_TOOLTIP) controls. Ported from the upstream fork.
+  // tooltipButtons: which buttons step through per-sentence tooltips.
+  //   0 = front buttons (Left/Right), 1 = side buttons (PageBack/PageForward).
+  // tooltipBehavior: what happens at a page boundary while stepping.
+  //   0 = loop (wrap to first/last sentence), 1 = page turn (advance/retreat the page).
+  // Persisted manually in toJson/fromJson alongside the other Pre-Translation fields (they are
+  // edited from the Bilingua submenu, not the generic on-device Settings list).
+  uint8_t tooltipButtons = 0;
+  uint8_t tooltipBehavior = 0;
 
   static constexpr uint8_t MIN_SLEEP_TIMEOUT_MINUTES = 1;
   static constexpr uint8_t SLEEP_TIMEOUT_NEVER_MINUTES = 31;

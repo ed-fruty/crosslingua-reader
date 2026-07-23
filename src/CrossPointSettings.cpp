@@ -107,6 +107,8 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   doc["translationEngine"] = translationEngine;
   doc["translateApiKey"] = translateApiKey;
   doc["translationDisplayMode"] = translationDisplayMode;
+  doc["tooltipButtons"] = tooltipButtons;
+  doc["tooltipBehavior"] = tooltipBehavior;
 }
 
 bool CrossPointSettings::fromJson(JsonVariantConst doc) {
@@ -217,6 +219,10 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   copyToField(translateApiKey, doc["translateApiKey"] | "", sizeof(translateApiKey));
   translationDisplayMode =
       clamp(doc["translationDisplayMode"] | (uint8_t)PT_NORMAL, (uint8_t)PT_MODE_COUNT, (uint8_t)PT_NORMAL);
+  // Tooltip controls (PT_TOOLTIP): both are 0/1 selectors, so clamp to 2. Absent keys keep the
+  // struct-initializer defaults (0/0), so pre-feature settings.json files load unchanged.
+  tooltipButtons = clamp(doc["tooltipButtons"] | (uint8_t)0, (uint8_t)2, (uint8_t)0);
+  tooltipBehavior = clamp(doc["tooltipBehavior"] | (uint8_t)0, (uint8_t)2, (uint8_t)0);
 
   if (needsResave) {
     LOG_DBG("CPS", "Resaving settings to update format");
