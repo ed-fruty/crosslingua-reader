@@ -19,6 +19,10 @@ class TranslatingHtmlRewriter {
   struct Result {
     int paragraphsTranslated = 0;
     int paragraphsSkipped = 0;
+    // Paragraphs whose translation genuinely failed after retries were exhausted (or the
+    // chapter was aborted mid-translation). Distinct from paragraphsSkipped, which also
+    // counts already-translated/empty-source blocks that were never sent to the engine.
+    int translateFailures = 0;
     bool cancelled = false;
     bool abortedOnErrors = false;
     char errorDetail[64] = {};  // last error message when abortedOnErrors
@@ -78,12 +82,27 @@ class TranslatingHtmlRewriter {
 
   int paragraphsTranslated = 0;
   int paragraphsSkipped = 0;
-  int blocksProcessed = 0;  // all batch entries including empty blocks (for progress bar)
+  int translateFailures = 0;  // genuine translate failures (see Result::translateFailures)
+  int blocksProcessed = 0;    // all batch entries including empty blocks (for progress bar)
   bool wasCancelled = false;
   int consecutiveFailures = 0;   // reset on success, increment on failure
   bool abortedOnErrors = false;  // set when consecutiveFailures hits threshold
   std::string lastError;         // last translation error message
   static constexpr int MAX_CONSECUTIVE_FAILURES = 20;
+
+  // ─── Network retry/backoff (see HttpDownloader::lastHttpCode) ───────────────
+  int consecutive429 = 0;  // consecutive HTTP 429 responses; reset on any non-429 outcome
+  static constexpr int MAX_CONSECUTIVE_429 = 3;
+
+  // Classify a failed translate attempt (httpCode = HttpDownloader::lastHttpCode captured
+  // right after the failing call). Updates consecutive429 and, on a non-retryable outcome,
+  // sets abortedOnErrors (auth failure or too many consecutive 429s).
+  // Returns true if the attempt loop should retry.
+  bool shouldRetryAfterFailure(int httpCode);
+
+  // Pure backoff delay (ms) for a given HTTP status code and 0-based retry attempt index.
+  // 429 gets a fixed ~1.5s spacing; other transient errors ramp {500, 1500, 3000} ms.
+  static int backoffDelayMs(int httpCode, int attempt);
 
   // ─── Batch buffering ─────────────────────────────────────────────────────
   struct BatchEntry {

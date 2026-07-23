@@ -28,8 +28,6 @@ class ParagraphTranslator {
   static bool extractJsonStringValue(const std::string& json, size_t startPos, std::string& result);
 
   // Per-engine implementations
-  static bool translateGoogle(const std::string& text, const char* sourceLang, const char* targetLang,
-                              std::string& result);
   static bool translateDeepL(const std::string& text, const char* sourceLang, const char* targetLang,
                              const char* apiKey, bool pro, std::string& result);
   static bool translateOpenAICompat(const std::string& text, const char* sourceLang, const char* targetLang,
@@ -42,7 +40,6 @@ class ParagraphTranslator {
                                   std::string& result);
 
   // Response parsers
-  static bool parseGoogleResponse(const std::string& json, std::string& result);
   static bool parseDeepLResponse(const std::string& json, std::string& result);
   static bool parseOpenAIResponse(const std::string& json, std::string& result);
   static bool parseGeminiResponse(const std::string& json, std::string& result);

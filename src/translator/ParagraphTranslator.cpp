@@ -98,72 +98,6 @@ bool ParagraphTranslator::extractJsonStringValue(const std::string& json, size_t
   return false;
 }
 
-// ─── Google Translate (free gtx API) ─────────────────────────────────────────
-
-bool ParagraphTranslator::parseGoogleResponse(const std::string& json, std::string& result) {
-  result.clear();
-  size_t pos = json.find("[[[");
-  if (pos == std::string::npos) return false;
-  pos += 3;
-
-  bool firstSeg = true;
-  while (pos < json.size()) {
-    if (!firstSeg) {
-      size_t dblClose = json.find("]]", pos);
-      size_t nextOpen = json.find("[\"", pos);
-      if (nextOpen == std::string::npos || (dblClose != std::string::npos && dblClose <= nextOpen)) break;
-      pos = nextOpen + 1;
-    }
-    firstSeg = false;
-
-    if (pos >= json.size() || json[pos] != '"') break;
-
-    // Use the shared extraction starting from pos (which points at the opening ")
-    std::string segment;
-    if (extractJsonStringValue(json, pos - 1, segment)) {
-      result += segment;
-    }
-    // Skip past the closing " of this segment and find next
-    size_t closeQuote = pos + 1;
-    int depth = 0;
-    while (closeQuote < json.size()) {
-      if (json[closeQuote] == '\\') {
-        closeQuote += 2;
-        continue;
-      }
-      if (json[closeQuote] == '"') break;
-      closeQuote++;
-    }
-    pos = closeQuote + 1;
-  }
-  return !result.empty();
-}
-
-bool ParagraphTranslator::translateGoogle(const std::string& text, const char* sourceLang, const char* targetLang,
-                                          std::string& result) {
-  const char* src = (sourceLang && strcmp(sourceLang, "auto") != 0) ? sourceLang : "auto";
-  std::string url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=";
-  url += src;
-  url += "&dt=t&tl=";
-  url += targetLang;
-  url += "&q=";
-  url += urlEncode(text);
-
-  LOG_DBG("Translator", "Google: src=%s, tgt=%s", src, targetLang);
-
-  std::string response;
-  if (!HttpDownloader::fetchUrl(url, response)) {
-    LOG_ERR("Translator", "Google HTTP fetch failed");
-    return false;
-  }
-
-  if (!parseGoogleResponse(response, result)) {
-    LOG_ERR("Translator", "Google parse failed (%.80s)", response.c_str());
-    return false;
-  }
-  return true;
-}
-
 // ─── DeepL ───────────────────────────────────────────────────────────────────
 
 bool ParagraphTranslator::parseDeepLResponse(const std::string& json, std::string& result) {
@@ -547,7 +481,9 @@ bool ParagraphTranslator::translate(const std::string& text, const char* sourceL
   bool ok = false;
   switch (engine) {
     case CrossPointSettings::ENGINE_GOOGLE_FREE:
-      ok = translateGoogle(text, sourceLang, targetLang, result);
+      // Legacy free gtx-API engine was removed; route to the maintained Google V2 engine so old
+      // saved settings (translationEngine == ENGINE_GOOGLE_FREE == 0) keep working.
+      ok = translateGoogleV2(text, sourceLang, targetLang, result);
       break;
     case CrossPointSettings::ENGINE_DEEPL:
       ok = translateDeepL(text, sourceLang, targetLang, apiKey, false, result);

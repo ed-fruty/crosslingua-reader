@@ -1,5 +1,6 @@
 #include "TranslatingHtmlRewriter.h"
 
+#include <Epub/htmlEntities.h>
 #include <HalStorage.h>
 #include <Logging.h>
 
@@ -7,6 +8,7 @@
 
 #include "CrossPointSettings.h"
 #include "ParagraphTranslator.h"
+#include "network/HttpDownloader.h"
 
 static constexpr size_t PARSE_CHUNK = 1024;
 
@@ -61,6 +63,44 @@ std::vector<std::string> TranslatingHtmlRewriter::splitByDoubleLF(const std::str
     start = pos + 2;
   }
   return parts;
+}
+
+bool TranslatingHtmlRewriter::shouldRetryAfterFailure(int httpCode) {
+  // Auth failures never recover on retry — abort the whole chapter immediately.
+  if (httpCode == 401 || httpCode == 403) {
+    LOG_ERR("HtmlRW", "Aborting: auth error %d", httpCode);
+    abortedOnErrors = true;
+    return false;
+  }
+  // Rate limiting: retry, but trip a fast abort after too many in a row.
+  if (httpCode == 429) {
+    consecutive429++;
+    if (consecutive429 >= MAX_CONSECUTIVE_429) {
+      LOG_ERR("HtmlRW", "Aborting: %d consecutive 429s", consecutive429);
+      abortedOnErrors = true;
+      return false;
+    }
+    return true;
+  }
+  consecutive429 = 0;
+  // Permanent client errors: no point retrying, but not fatal to the rest of the chapter.
+  if (httpCode == 400 || httpCode == 404) {
+    return false;
+  }
+  // Transient: 5xx, 0 (no response), negative (connect/DNS/timeout), or unclassified.
+  return true;
+}
+
+int TranslatingHtmlRewriter::backoffDelayMs(int httpCode, int attempt) {
+  if (httpCode == 429) return 1500;
+  // First transient retry already waits (matches the previous flat 500 ms spacing); later
+  // retries back off further. The retry loops run few attempts, so index 0 must be non-zero
+  // or transient retries would hammer with no spacing.
+  static constexpr int kTransientDelaysMs[] = {500, 1500, 3000};
+  static constexpr int kNumDelays = static_cast<int>(sizeof(kTransientDelaysMs) / sizeof(kTransientDelaysMs[0]));
+  if (attempt < 0) attempt = 0;
+  if (attempt >= kNumDelays) attempt = kNumDelays - 1;
+  return kTransientDelaysMs[attempt];
 }
 
 std::string TranslatingHtmlRewriter::makeOpenTag(const XML_Char* name, const XML_Char** atts) {
@@ -166,8 +206,13 @@ void TranslatingHtmlRewriter::flushBatch() {
       std::string translated;
       bool ok = false;
       for (int attempt = 0; attempt < 2 && !ok; attempt++) {
-        if (attempt > 0) delay(500);
+        if (attempt > 0) delay(backoffDelayMs(HttpDownloader::lastHttpCode, attempt - 1));
         ok = ParagraphTranslator::translate(mergedText, sourceLang, targetLang, engine, apiKey, translated, &lastError);
+        if (ok) {
+          consecutive429 = 0;
+        } else if (!shouldRetryAfterFailure(HttpDownloader::lastHttpCode)) {
+          break;
+        }
       }
       if (ok && !translated.empty()) {
         translations = splitByDoubleLF(translated);
@@ -175,11 +220,14 @@ void TranslatingHtmlRewriter::flushBatch() {
         LOG_DBG("HtmlRW", "Batch: sent %u paragraphs, got %u back, response %.120s",
                 (unsigned)translatableIndices.size(), (unsigned)translations.size(), translated.c_str());
       } else {
-        consecutiveFailures++;
-        LOG_ERR("HtmlRW", "Batch translate failed (%d consecutive)", consecutiveFailures);
-        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-          LOG_ERR("HtmlRW", "Aborting: %d consecutive failures", consecutiveFailures);
-          abortedOnErrors = true;
+        translateFailures += static_cast<int>(translatableIndices.size());
+        if (!abortedOnErrors) {
+          consecutiveFailures++;
+          LOG_ERR("HtmlRW", "Batch translate failed (%d consecutive)", consecutiveFailures);
+          if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+            LOG_ERR("HtmlRW", "Aborting: %d consecutive failures", consecutiveFailures);
+            abortedOnErrors = true;
+          }
         }
       }
     } else {
@@ -191,18 +239,26 @@ void TranslatingHtmlRewriter::flushBatch() {
         std::string translated;
         bool ok = false;
         for (int attempt = 0; attempt < 2 && !ok; attempt++) {
-          if (attempt > 0) delay(500);
+          if (attempt > 0) delay(backoffDelayMs(HttpDownloader::lastHttpCode, attempt - 1));
           ok = ParagraphTranslator::translate(batch[translatableIndices[i]].trimmedText, sourceLang, targetLang, engine,
                                               apiKey, translated, &lastError);
+          if (ok) {
+            consecutive429 = 0;
+          } else if (!shouldRetryAfterFailure(HttpDownloader::lastHttpCode)) {
+            break;
+          }
         }
         if (ok) {
           consecutiveFailures = 0;
         } else {
-          consecutiveFailures++;
-          LOG_ERR("HtmlRW", "Translate failed (%d consecutive)", consecutiveFailures);
-          if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-            LOG_ERR("HtmlRW", "Aborting: %d consecutive failures", consecutiveFailures);
-            abortedOnErrors = true;
+          translateFailures++;
+          if (!abortedOnErrors) {
+            consecutiveFailures++;
+            LOG_ERR("HtmlRW", "Translate failed (%d consecutive)", consecutiveFailures);
+            if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+              LOG_ERR("HtmlRW", "Aborting: %d consecutive failures", consecutiveFailures);
+              abortedOnErrors = true;
+            }
           }
         }
         translations.push_back(ok ? std::move(translated) : std::string{});
@@ -389,8 +445,16 @@ void XMLCALL TranslatingHtmlRewriter::onDefault(void* ud, const XML_Char* s, int
     // Entity reference — pass through as-is (expat already tried to expand)
     if (self->blockDepth != -1) {
       self->blockHtml.append(s, static_cast<size_t>(len));
-      // For plain text, strip the entity name (approximate: use space)
-      self->blockText += ' ';
+      // For plain text sent to the translation engine, expand the entity to its
+      // real UTF-8 value so punctuation like &mdash;/&hellip;/&laquo; survives
+      // translation instead of being blanked to a space.
+      const char* utf8Value = lookupHtmlEntity(s, static_cast<size_t>(len));
+      if (utf8Value != nullptr) {
+        self->blockText += utf8Value;
+      } else {
+        // Unknown entity name: fall back to a single space (previous behavior).
+        self->blockText += ' ';
+      }
     } else if (!self->insideHead) {
       self->writeOut(s, static_cast<size_t>(len));
     }
@@ -475,8 +539,10 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewrite(const char* inp
   skipBlockDepth = -1;
   paragraphsTranslated = 0;
   paragraphsSkipped = 0;
+  translateFailures = 0;
   wasCancelled = false;
   consecutiveFailures = 0;
+  consecutive429 = 0;
   abortedOnErrors = false;
   lastError.clear();
   batch.clear();
@@ -486,7 +552,7 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewrite(const char* inp
   XML_Parser parser = XML_ParserCreate("UTF-8");
   if (!parser) {
     LOG_ERR("HtmlRW", "Failed to create expat parser");
-    return {0, 0, false, false};
+    return {0, 0, 0, false, false};
   }
 
   XML_SetUserData(parser, this);
@@ -520,6 +586,7 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewrite(const char* inp
   Result res;
   res.paragraphsTranslated = paragraphsTranslated;
   res.paragraphsSkipped = paragraphsSkipped;
+  res.translateFailures = translateFailures;
   res.cancelled = wasCancelled || (cancelled && *cancelled);
   res.abortedOnErrors = abortedOnErrors;
   if (abortedOnErrors && !lastError.empty()) {
@@ -553,8 +620,10 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewriteFromFile(
   skipBlockDepth = -1;
   paragraphsTranslated = 0;
   paragraphsSkipped = 0;
+  translateFailures = 0;
   wasCancelled = false;
   consecutiveFailures = 0;
+  consecutive429 = 0;
   abortedOnErrors = false;
   lastError.clear();
   batch.clear();
@@ -564,7 +633,7 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewriteFromFile(
   HalFile inputFile;
   if (!Storage.openFileForRead("HtmlRW", inputPath, inputFile)) {
     LOG_ERR("HtmlRW", "Failed to open input file: %s", inputPath.c_str());
-    return {0, 0, false, false};
+    return {0, 0, 0, false, false};
   }
 
   const size_t fileSize = inputFile.size();
@@ -573,7 +642,7 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewriteFromFile(
   if (!parser) {
     LOG_ERR("HtmlRW", "Failed to create expat parser");
     inputFile.close();
-    return {0, 0, false, false};
+    return {0, 0, 0, false, false};
   }
 
   XML_SetUserData(parser, this);
@@ -615,6 +684,7 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewriteFromFile(
   Result res;
   res.paragraphsTranslated = paragraphsTranslated;
   res.paragraphsSkipped = paragraphsSkipped;
+  res.translateFailures = translateFailures;
   res.cancelled = wasCancelled || (cancelled && *cancelled);
   res.abortedOnErrors = abortedOnErrors;
   if (abortedOnErrors && !lastError.empty()) {
