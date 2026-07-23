@@ -6,7 +6,9 @@
 #include <string>
 #include <vector>
 
-// ── Word-array sentence splitting (ported from fork's SentenceSplitter.cpp) ──
+#include "TextNormalize.h"
+
+// ── Word-array sentence splitting ────────────────────────────────────────────
 
 // Common abbreviations that end with '.' but are not sentence boundaries.
 static const char* const ABBREVIATIONS[] = {"Mr.",  "Mrs.", "Ms.",   "Dr.",   "Prof.",   "Sr.",  "Jr.", "St.",
@@ -15,34 +17,6 @@ static const char* const ABBREVIATIONS[] = {"Mr.",  "Mrs.", "Ms.",   "Dr.",   "P
 
 // i.e. and e.g. handled specially (two-letter prefix + period)
 static const char* const DOT_ABBREVIATIONS[] = {"i.e.", "e.g.", nullptr};
-
-// Check for trailing UTF-8 closing quote at word[0..len-1].
-// Returns byte length of the closing quote (1 for ASCII, 2-3 for UTF-8), 0 if none.
-// Matches readest tooltip-7 isClosingQuote: " ' ) ] » « " " „ ' '
-static int trailingClosingQuote(const char* word, int len) {
-  if (len <= 0) return 0;
-  auto u = [](char c) -> uint8_t { return (uint8_t)c; };
-
-  // ASCII closing quotes
-  char c = word[len - 1];
-  if (c == '"' || c == '\'' || c == ')' || c == ']') return 1;
-
-  // 2-byte UTF-8: » U+00BB (0xC2 0xBB), « U+00AB (0xC2 0xAB)
-  if (len >= 2) {
-    uint8_t b0 = u(word[len - 2]), b1 = u(word[len - 1]);
-    if (b0 == 0xC2 && (b1 == 0xBB || b1 == 0xAB)) return 2;
-  }
-
-  // 3-byte UTF-8: " U+201D (E2 80 9D), " U+201C (E2 80 9C),
-  //   „ U+201E (E2 80 9E), ' U+2019 (E2 80 99), ' U+2018 (E2 80 98)
-  if (len >= 3) {
-    uint8_t b0 = u(word[len - 3]), b1 = u(word[len - 2]), b2 = u(word[len - 1]);
-    if (b0 == 0xE2 && b1 == 0x80 && (b2 == 0x9D || b2 == 0x9C || b2 == 0x9E || b2 == 0x99 || b2 == 0x98)) {
-      return 3;
-    }
-  }
-  return 0;
-}
 
 // Check if the word ending at the current position is an abbreviation.
 static bool isAbbreviation(const char* lastWord) {
@@ -64,27 +38,28 @@ static bool isAbbreviation(const char* lastWord) {
   return false;
 }
 
-// Check if the period at position `pos` in `word` is part of an ellipsis.
-static bool isEllipsis(const char* word, int pos) {
-  const int len = static_cast<int>(strlen(word));
-  int dotCount = 0;
-  int start = pos;
-  while (start > 0 && word[start - 1] == '.') start--;
-  while (start + dotCount < len && word[start + dotCount] == '.') dotCount++;
-  return dotCount >= 3;
-}
-
-// Check if a word ends with a sentence terminator (. ! ?)
-// Strips trailing UTF-8 and ASCII closing quotes before checking.
-static char getTerminator(const char* word) {
-  if (!word || *word == '\0') return '\0';
-  int len = static_cast<int>(strlen(word));
-  int cq;
-  while (len > 0 && (cq = trailingClosingQuote(word, len)) > 0) len -= cq;
-  if (len <= 0) return '\0';
-  char c = word[len - 1];
-  if (c == '.' || c == '!' || c == '?') return c;
-  return '\0';
+// Classify how `word` terminates a sentence, funneling recognition through the
+// shared textnorm primitives so every quote / dash / ellipsis form is canonical
+// first (see TextNormalize.h). The word is folded, trailing closing quotes are
+// skipped via textnorm::closingQuoteLenAt (post-fold they are ASCII " ' ) ],
+// 1 byte each), then the final unit is tested with textnorm::terminatorLenAt.
+// Returns:
+//   0 = not a terminator
+//   1 = HARD terminator (! ? , the ellipsis sentinel that "..."/"…" fold to, or
+//       the CJK 。！？) — always a sentence boundary. Ellipsis now terminates.
+//   2 = a single ASCII '.' — the caller applies abbreviation / spaced-run
+//       exceptions before deciding to break.
+static int classifyTerminator(const char* word) {
+  if (!word || *word == '\0') return 0;
+  std::string f = textnorm::foldForMatch(word);
+  while (!f.empty() && textnorm::closingQuoteLenAt(f, f.size() - 1) == 1) f.pop_back();
+  if (f.empty()) return 0;
+  // CJK terminators survive the fold as 3 raw bytes at the end.
+  if (f.size() >= 3 && textnorm::terminatorLenAt(f, f.size() - 3) == 3) return 1;
+  if (textnorm::terminatorLenAt(f, f.size() - 1) == 1) {
+    return (static_cast<uint8_t>(f.back()) == '.') ? 2 : 1;
+  }
+  return 0;
 }
 
 SentenceSplitResult splitSentences(const char* const* words, int wordCount) {
@@ -95,23 +70,18 @@ SentenceSplitResult splitSentences(const char* const* words, int wordCount) {
 
   for (int i = 0; i < wordCount; i++) {
     const char* word = words[i];
-    char terminator = getTerminator(word);
+    const int kind = classifyTerminator(word);
 
-    if (terminator == '\0') continue;
+    if (kind == 0) continue;
 
-    if (terminator == '.') {
-      int len = static_cast<int>(strlen(word));
-      int pos = len - 1;
-      int cq;
-      while (pos > 0 && (cq = trailingClosingQuote(word, pos + 1)) > 0) pos -= cq;
-      if (isEllipsis(word, pos)) continue;
+    if (kind == 2) {  // single ASCII '.'
       if (isAbbreviation(word)) continue;
 
       // Spaced ellipsis handling: for a standalone "." word, check if more
       // "." words follow. If yes, skip this dot (middle of run). If no,
       // this is the LAST dot — let it create ONE sentence break for the run.
       // Result: ". . ." creates exactly one break (at the last dot), not three.
-      if (len == 1) {
+      if (strlen(word) == 1) {
         bool moreDots = (i + 1 < wordCount && strlen(words[i + 1]) == 1 && words[i + 1][0] == '.');
         if (moreDots) continue;  // middle of run — skip
         // Last dot in run: fall through to create sentence break.
@@ -141,184 +111,109 @@ SentenceSplitResult splitSentences(const char* const* words, int wordCount) {
   return result;
 }
 
-static int totalCharsInRange(const char* const* words, int start, int end) {
-  int total = 0;
-  for (int i = start; i < end; i++) {
-    total += static_cast<int>(strlen(words[i]));
-    if (i < end - 1) total++;
-  }
-  return total;
+// ── Char-offset sentence helpers (over the shared textnorm fold) ──────────────
+
+// UTF-8 byte length of the code point whose lead byte is b (1..4; 1 if invalid).
+static int utf8CodePointLen(uint8_t b) {
+  if (b < 0x80) return 1;
+  if ((b & 0xE0) == 0xC0) return 2;
+  if ((b & 0xF0) == 0xE0) return 3;
+  if ((b & 0xF8) == 0xF0) return 4;
+  return 1;
 }
 
-MappedSentenceResult mapSentenceTranslations(const char* const* originalWords, int originalCount,
-                                             const char* const* translatedWords, int translatedCount,
-                                             const SentenceSplitResult& splits, char* outBuffer, int outBufferSize) {
-  MappedSentenceResult result;
-  if (splits.count == 0 || translatedCount == 0) return result;
-
-  SentenceSplitResult transSplits = splitSentences(translatedWords, translatedCount);
-
-  const int origTotalChars = totalCharsInRange(originalWords, 0, originalCount);
-  const int transTotalChars = totalCharsInRange(translatedWords, 0, translatedCount);
-
-  int bufPos = 0;
-  int transWordIdx = 0;
-  int transCharAccum = 0;
-  int origCharAccum = 0;
-
-  for (int i = 0; i < splits.count && i < MAX_SENTENCES; i++) {
-    result.sentences[i].original = splits.spans[i];
-
-    origCharAccum += totalCharsInRange(originalWords, splits.spans[i].startWord, splits.spans[i].endWord);
-    const float targetFraction = origTotalChars > 0 ? static_cast<float>(origCharAccum) / origTotalChars : 1.0f;
-
-    const int transStart = transWordIdx;
-    if (transSplits.count == splits.count) {
-      transWordIdx = (i < transSplits.count) ? transSplits.spans[i].endWord : translatedCount;
-    } else {
-      while (transWordIdx < translatedCount) {
-        transCharAccum += static_cast<int>(strlen(translatedWords[transWordIdx])) + 1;
-        transWordIdx++;
-        const float transFraction = transTotalChars > 0 ? static_cast<float>(transCharAccum) / transTotalChars : 1.0f;
-        if (transFraction >= targetFraction - 0.01f || transWordIdx >= translatedCount) break;
-      }
-      if (i == splits.count - 1) {
-        transWordIdx = translatedCount;
-      }
-    }
-
-    const int textStart = bufPos;
-    for (int j = transStart; j < transWordIdx && bufPos < outBufferSize - 1; j++) {
-      if (j > transStart && bufPos < outBufferSize - 1) {
-        outBuffer[bufPos++] = ' ';
-      }
-      const int wlen = static_cast<int>(strlen(translatedWords[j]));
-      const int copyLen = (bufPos + wlen < outBufferSize - 1) ? wlen : (outBufferSize - 1 - bufPos);
-      memcpy(outBuffer + bufPos, translatedWords[j], copyLen);
-      bufPos += copyLen;
-    }
-    outBuffer[bufPos++] = '\0';
-
-    result.sentences[i].translatedText = outBuffer + textStart;
-    result.count++;
+// Byte length of a sentence terminator starting at raw text[o] (0 if none),
+// matching the canonical set textnorm folds to. Wraps textnorm::terminatorLenAt
+// (ASCII . ! ? and CJK 。！？ pass through the fold unchanged, so it works on raw)
+// and adds the two forms the fold collapses that raw text still spells out: a run
+// of >=2 ASCII dots (one ellipsis terminator) and U+2026 (E2 80 A6).
+static int terminatorLenRaw(const std::string& t, size_t o) {
+  const int n = textnorm::terminatorLenAt(t, o);
+  if (n == 1 && t[o] == '.') {
+    size_t run = 1;
+    while (o + run < t.size() && t[o + run] == '.') run++;
+    return static_cast<int>(run);  // "." => 1; ".."/"..." collapse to one terminator
   }
-
-  return result;
+  if (n == 0 && o + 3 <= t.size() && static_cast<uint8_t>(t[o]) == 0xE2 && static_cast<uint8_t>(t[o + 1]) == 0x80 &&
+      static_cast<uint8_t>(t[o + 2]) == 0xA6) {
+    return 3;  // U+2026 … (raw terminatorLenAt only recognizes the folded sentinel)
+  }
+  return n;
 }
 
-// ── Free-function sentence helpers (ported from fork's ModalOverlay.cpp lines 36-149) ──
-
-// Count sentences in text. A sentence ends with . ! ? followed by space/end.
-int countSentences(const std::string& text) {
-  if (text.empty()) return 0;
-  int count = 0;
-  for (int i = 0; i < (int)text.size(); i++) {
-    char c = text[i];
-    if (c == '.' || c == '!' || c == '?') {
-      // Skip ellipsis (... or . . .)
-      if (c == '.' && i + 1 < (int)text.size() && text[i + 1] == '.') continue;
-      // Check followed by space, end, or closing quote
-      int next = i + 1;
-      // Skip closing quotes/brackets
-      while (next < (int)text.size() && (text[next] == '"' || text[next] == '\'' || text[next] == ')' ||
-                                         text[next] == ']' || (uint8_t)text[next] > 0x80))
-        next++;
-      if (next >= (int)text.size() || text[next] == ' ' || text[next] == '\n') {
-        count++;
-      }
-    }
+// Byte length of a closing quote/bracket at raw text[o] (0 if none). Wraps
+// textnorm::closingQuoteLenAt (ASCII " ' ) ]) and adds any fancy quote the fold
+// maps to " or ' by folding the single code point at o.
+static int closingQuoteLenRaw(const std::string& t, size_t o) {
+  const int n = textnorm::closingQuoteLenAt(t, o);
+  if (n) return n;
+  const int cp = utf8CodePointLen(static_cast<uint8_t>(t[o]));
+  if (cp > 1 && o + static_cast<size_t>(cp) <= t.size()) {
+    const std::string folded = textnorm::foldForMatch(t.substr(o, cp));
+    if (folded == "\"" || folded == "'") return cp;
   }
-  return std::max(1, count);  // At least 1 sentence per non-empty text
+  return 0;
 }
 
-// Trim text to first N sentences. Returns the trimmed text.
+// Byte offsets in `text` immediately past each COMPLETE sentence: a terminator
+// (plus any trailing closing quotes) that is followed by whitespace or the end of
+// the string. Offsets index `text` itself so callers may slice the original for
+// display. This is the ONE char-offset scanner the trim/count helpers wrap.
+static std::vector<size_t> sentenceEndOffsets(const std::string& text) {
+  std::vector<size_t> ends;
+  size_t i = 0;
+  while (i < text.size()) {
+    const int tl = terminatorLenRaw(text, i);
+    if (tl == 0) {
+      i++;
+      continue;
+    }
+    size_t next = i + static_cast<size_t>(tl);
+    while (next < text.size()) {
+      const int ql = closingQuoteLenRaw(text, next);
+      if (ql == 0) break;
+      next += static_cast<size_t>(ql);
+    }
+    if (next >= text.size() || text[next] == ' ' || text[next] == '\n' || text[next] == '\r' || text[next] == '\t') {
+      ends.push_back(next);
+    }
+    i += static_cast<size_t>(tl);
+  }
+  return ends;
+}
+
+// Raw sentence count (honest zero when no complete sentence is present). Used by
+// callers that need a true zero (e.g. countSentencesBefore).
+static int countSentencesRaw(const std::string& text) {
+  return text.empty() ? 0 : static_cast<int>(sentenceEndOffsets(text).size());
+}
+
+int countSentences(const std::string& text) { return text.empty() ? 0 : std::max(1, countSentencesRaw(text)); }
+
 std::string trimToSentences(const std::string& text, int maxSentences) {
   if (maxSentences <= 0) return "";
-  int count = 0;
-  for (int i = 0; i < (int)text.size(); i++) {
-    char c = text[i];
-    if (c == '.' || c == '!' || c == '?') {
-      if (c == '.' && i + 1 < (int)text.size() && text[i + 1] == '.') continue;
-      int next = i + 1;
-      while (next < (int)text.size() && (text[next] == '"' || text[next] == '\'' || text[next] == ')' ||
-                                         text[next] == ']' || (uint8_t)text[next] > 0x80))
-        next++;
-      if (next >= (int)text.size() || text[next] == ' ' || text[next] == '\n') {
-        count++;
-        if (count >= maxSentences) {
-          return text.substr(0, next);
-        }
-      }
-    }
-  }
-  return text;  // Fewer sentences than max — return all
+  const std::vector<size_t> ends = sentenceEndOffsets(text);
+  if (static_cast<int>(ends.size()) < maxSentences) return text;
+  return text.substr(0, ends[maxSentences - 1]);
 }
 
-// Trim text to LAST N sentences.
 std::string trimToLastSentences(const std::string& text, int maxSentences) {
   if (maxSentences <= 0) return "";
-  // Find all sentence end positions
-  std::vector<int> ends;
-  for (int i = 0; i < (int)text.size(); i++) {
-    char c = text[i];
-    if (c == '.' || c == '!' || c == '?') {
-      if (c == '.' && i + 1 < (int)text.size() && text[i + 1] == '.') continue;
-      int next = i + 1;
-      while (next < (int)text.size() && (text[next] == '"' || text[next] == '\'' || text[next] == ')' ||
-                                         text[next] == ']' || (uint8_t)text[next] > 0x80))
-        next++;
-      if (next >= (int)text.size() || text[next] == ' ' || text[next] == '\n') {
-        ends.push_back(next);
-      }
-    }
-  }
-  if ((int)ends.size() <= maxSentences) return text;
-  // ends[K] = position after sentence K. To keep last N of T sentences,
-  // we drop first (T-N) sentences, starting from position after sentence (T-N-1).
-  int startFrom = ends[ends.size() - maxSentences - 1];
-  // Skip leading space
-  while (startFrom < (int)text.size() && text[startFrom] == ' ') startFrom++;
+  const std::vector<size_t> ends = sentenceEndOffsets(text);
+  if (static_cast<int>(ends.size()) <= maxSentences) return text;
+  // ends[K] = position after sentence K. Keep the last N of T sentences by
+  // starting just after sentence (T-N-1), then skipping the separating space.
+  size_t startFrom = ends[ends.size() - static_cast<size_t>(maxSentences) - 1];
+  while (startFrom < text.size() && text[startFrom] == ' ') startFrom++;
   return text.substr(startFrom);
 }
 
-// Count sentences in origText that end BEFORE the position where visibleText starts.
-// Used to determine how many sentences to skip in translation for tail paragraphs.
 int countSentencesBefore(const std::string& origText, const std::string& visibleStart) {
   if (visibleStart.empty() || origText.empty()) return 0;
-
-  // Normalize visibleStart: collapse whitespace, take first 40 chars
-  std::string needle;
-  bool lastSp = true;
-  for (char c : visibleStart) {
-    if (c == ' ' || c == '\n' || c == '\r' || c == '\t') {
-      if (!lastSp) needle += ' ';
-      lastSp = true;
-    } else {
-      needle += c;
-      lastSp = false;
-    }
-    if ((int)needle.size() >= 40) break;
-  }
-  while (!needle.empty() && needle.back() == ' ') needle.pop_back();
+  const std::string needle = textnorm::foldForMatch(visibleStart, 40);
   if (needle.size() < 3) return 0;
-
-  // Normalize origText too
-  std::string normOrig;
-  lastSp = true;
-  for (char c : origText) {
-    if (c == ' ' || c == '\n' || c == '\r' || c == '\t') {
-      if (!lastSp) normOrig += ' ';
-      lastSp = true;
-    } else {
-      normOrig += c;
-      lastSp = false;
-    }
-  }
-
-  // Find where the visible text starts in the original
-  auto pos = normOrig.find(needle);
+  const std::string foldedOrig = textnorm::foldForMatch(origText);
+  const auto pos = foldedOrig.find(needle);
   if (pos == std::string::npos) return 0;
-
-  // Count sentences that end before this position
-  return countSentences(normOrig.substr(0, pos));
+  return countSentencesRaw(foldedOrig.substr(0, pos));
 }

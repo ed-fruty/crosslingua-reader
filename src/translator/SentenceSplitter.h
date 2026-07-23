@@ -18,38 +18,33 @@ struct SentenceSplitResult {
   int count = 0;
 };
 
-// A mapped sentence: original word range + pointer to translated text.
-// The translatedText buffer is owned by the caller (stack-allocated).
-struct MappedSentence {
-  SentenceSpan original;
-  const char* translatedText;  // points into caller-owned buffer
-};
-
-struct MappedSentenceResult {
-  MappedSentence sentences[MAX_SENTENCES];
-  int count = 0;
-};
-
 // Split a sequence of words into sentences based on punctuation boundaries.
 // words: array of C-strings (the original words from TextBlock, grayLevel==0 only)
 // wordCount: number of words
 // Returns SentenceSplitResult with word-index-based spans.
 SentenceSplitResult splitSentences(const char* const* words, int wordCount);
 
-// Map translated words to original sentences using proportional character-length mapping.
-// originalWords/originalCount: original (grayLevel==0) words
-// translatedWords/translatedCount: translated (grayLevel>0) words
-// splits: result from splitSentences()
-// outBuffer: caller-owned buffer where concatenated translation strings are written
-// outBufferSize: size of outBuffer
-// Returns MappedSentenceResult with original spans + translation text pointers.
-MappedSentenceResult mapSentenceTranslations(const char* const* originalWords, int originalCount,
-                                             const char* const* translatedWords, int translatedCount,
-                                             const SentenceSplitResult& splits, char* outBuffer, int outBufferSize);
+// ── Char-offset sentence helpers (over the shared textnorm canonical fold) ──
+//
+// Terminator / closing-quote recognition funnels through textnorm's ONE set of
+// primitives so "where a sentence ends" stays single-sourced. These scan the
+// ORIGINAL (unfolded) text — the trim helpers must return DISPLAYABLE text, and
+// the fold is lossy / match-only — while the matching helper
+// (countSentencesBefore) folds BOTH sides before comparing.
 
-// ── Free-function sentence helpers (ported from fork's ModalOverlay.cpp lines 36-149) ──
-
+// Sentence count for a paragraph. Clamped to >=1 for any non-empty text (every
+// non-empty paragraph is at least one sentence even without a terminator); 0 for
+// empty text.
 int countSentences(const std::string& text);
+
+// Trim text to its first N sentences (fewer present => whole text).
 std::string trimToSentences(const std::string& text, int maxSentences);
+
+// Trim text to its LAST N sentences (fewer present => whole text).
 std::string trimToLastSentences(const std::string& text, int maxSentences);
+
+// Count sentences in origText that end BEFORE where visibleStart begins. Both
+// sides run through textnorm::foldForMatch so raw-HTML origText (NBSP, fancy
+// quotes, soft hyphens) and laid-out page words compare on equal footing. Honest
+// zero when the visible portion starts inside the paragraph's first sentence.
 int countSentencesBefore(const std::string& origText, const std::string& visibleStart);
