@@ -207,7 +207,8 @@ void TranslatingHtmlRewriter::flushBatch() {
       bool ok = false;
       for (int attempt = 0; attempt < 2 && !ok; attempt++) {
         if (attempt > 0) delay(backoffDelayMs(HttpDownloader::lastHttpCode, attempt - 1));
-        ok = ParagraphTranslator::translate(mergedText, sourceLang, targetLang, engine, apiKey, translated, &lastError);
+        ok = ParagraphTranslator::translate(mergedText, sourceLang, targetLang, engine, apiKey, translated, &lastError,
+                                            httpSession);
         if (ok) {
           consecutive429 = 0;
         } else if (!shouldRetryAfterFailure(HttpDownloader::lastHttpCode)) {
@@ -241,7 +242,7 @@ void TranslatingHtmlRewriter::flushBatch() {
         for (int attempt = 0; attempt < 2 && !ok; attempt++) {
           if (attempt > 0) delay(backoffDelayMs(HttpDownloader::lastHttpCode, attempt - 1));
           ok = ParagraphTranslator::translate(batch[translatableIndices[i]].trimmedText, sourceLang, targetLang, engine,
-                                              apiKey, translated, &lastError);
+                                              apiKey, translated, &lastError, httpSession);
           if (ok) {
             consecutive429 = 0;
           } else if (!shouldRetryAfterFailure(HttpDownloader::lastHttpCode)) {
@@ -262,6 +263,12 @@ void TranslatingHtmlRewriter::flushBatch() {
           }
         }
         translations.push_back(ok ? std::move(translated) : std::string{});
+        // Optimistic progress + boundary check per paragraph: blocksProcessed only advances
+        // in the write-out phase below (which overwrites this with the accurate count —
+        // always >= this optimistic value, so the bar stays monotonic). Without this the
+        // first repaint waits a whole batch (~30 s of silence on slow engines).
+        if (progressOut) *progressOut = blocksProcessed + static_cast<int>(i) + 1;
+        if (onBatchBoundary) onBatchBoundary(batchBoundaryCtx);
         if (i + 1 < translatableIndices.size()) {
           delay(ok ? 100 : 2000);  // longer delay after error to let heap recover
         }
@@ -529,6 +536,7 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewrite(const char* inp
   progressOut = progress;
   onBatchBoundary = nullptr;  // buffer path has no between-batch repaint hook
   batchBoundaryCtx = nullptr;
+  httpSession = nullptr;  // buffer path keeps the stateless per-call HTTP behavior
   depth = 0;
   blockDepth = -1;
   insideHead = false;
@@ -610,6 +618,15 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewriteFromFile(
   progressOut = progress;
   onBatchBoundary = boundaryCb;
   batchBoundaryCtx = boundaryCtx;
+  // One reusable keep-alive connection for the whole chapter: the first translate()
+  // call performs the TLS handshake, every later one reuses the socket (see
+  // TranslationHttpSession). Declared here so it outlives the final flushBatch()
+  // below, and its destructor closes the socket before this function returns —
+  // freeing the TLS buffers ahead of the caller's post-run work (rename, framebuffer
+  // restore). If it could not be set up (OOM / non-wolfSSL build) it transparently
+  // falls back to per-request connections, so httpSession is always safe to use.
+  TranslationHttpSession session;
+  httpSession = &session;
   depth = 0;
   blockDepth = -1;
   insideHead = false;

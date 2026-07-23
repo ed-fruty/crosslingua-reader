@@ -82,6 +82,32 @@ bool insufficientHeapForTls() {
   return false;
 }
 
+// Reused-connection floor: a request on an already-handshaken keep-alive socket
+// does NOT pay the handshake cost — no ~24 KB of churn and no single large
+// cert-flight record buffer (the ~12.5 KB GrowInputBuffer allocation happens
+// only while receiving the server's certificate at handshake time). It needs
+// only working room for the request line/headers and the buffered response, so
+// the full TLS floor (which would wrongly refuse a reused request whenever
+// maxAlloc has dropped below the handshake bar) does not apply. Gate instead on
+// a small absolute floor so we still refuse before an OOM mid-request.
+//
+// Caveat: if the kept-alive socket has died, SecureHttpClient re-handshakes
+// transparently on this same call; that re-handshake could then fail under this
+// low floor. That is acceptable — it surfaces as a normal request failure that
+// the caller's retry/backoff handles — and is far rarer than the common case of
+// a live socket we must not needlessly refuse.
+constexpr uint32_t MIN_FREE_HEAP_FOR_REUSE = 12000;
+
+bool insufficientHeapForReuse() {
+  const uint32_t freeHeap = ESP.getFreeHeap();
+  if (freeHeap < MIN_FREE_HEAP_FOR_REUSE) {
+    LOG_ERR("HTTP", "Insufficient heap for reused TLS request: %u bytes free (need %u)", freeHeap,
+            MIN_FREE_HEAP_FOR_REUSE);
+    return true;
+  }
+  return false;
+}
+
 HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std::string& username,
                                          const std::string& password, Sink& sink) {
   std::string url = startUrl;
@@ -478,4 +504,124 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
   }
   LOG_DBG("HTTP", "Downloaded %zu bytes", sink.downloaded);
   return OK;
+}
+
+// ─── TranslationHttpSession — one kept-alive connection for a request burst ───
+//
+// See the class doc in HttpDownloader.h. The reusable client only exists on the
+// wolfSSL build; on the esp_http_client build (and if the client can't be
+// allocated) every method delegates to the matching static, so behavior is
+// identical to not using a session. The heap guard gates the FIRST request of
+// the session (which performs the handshake) with the full TLS floor and every
+// later, reused request with the much smaller reuse floor.
+
+#if defined(FREEINK_NET_WOLFSSL)
+struct TranslationHttpSession::Impl {
+  freeink::SecureHttpClient http;
+  bool everConnected = false;  // false until a request has established the connection
+
+  Impl() {
+    http.setTimeout(HTTP_TIMEOUT_MS);
+    http.setInsecure();
+    http.setReuse(true);  // keep the socket open between requests to the same origin
+    // setUserAgent replaces the built-in UA and persists across begin() (which
+    // only clears per-request headers); addHeader would append a SECOND
+    // User-Agent that strict servers reject (aiohttp: 400 "Duplicate
+    // 'User-Agent' header found").
+    http.setUserAgent("CrossPoint-ESP32-" CROSSPOINT_VERSION);
+    http.setFollowRedirects(MAX_REDIRECTS);  // parity with runGetWolf's manual redirect loop
+  }
+
+  // Full TLS floor on the first (handshaking) request; the cheap reuse floor after.
+  bool heapRefused() const { return everConnected ? insufficientHeapForReuse() : insufficientHeapForTls(); }
+};
+#else
+struct TranslationHttpSession::Impl {};  // no reusable client off wolfSSL; methods delegate to statics
+#endif
+
+TranslationHttpSession::TranslationHttpSession() {
+#if defined(FREEINK_NET_WOLFSSL)
+  impl = makeUniqueNoThrow<Impl>();
+  if (!impl) {
+    // Degrade gracefully rather than abort: the request methods fall back to
+    // the per-request statics when impl is null.
+    LOG_ERR("HTTP", "OOM: translation session client; using per-request connections");
+  }
+#endif
+}
+
+// unique_ptr frees Impl here; SecureHttpClient's destructor closes the socket.
+TranslationHttpSession::~TranslationHttpSession() = default;
+
+bool TranslationHttpSession::fetchUrl(const std::string& url, std::string& outContent) {
+#if defined(FREEINK_NET_WOLFSSL)
+  if (impl) {
+    outContent.clear();
+    if (impl->heapRefused()) return false;  // GET mirrors runGetWolf: does not touch lastHttpCode
+    freeink::SecureHttpClient& http = impl->http;
+    if (!http.begin(url)) {
+      LOG_ERR("HTTP", "wolfSSL(session) bad URL: %s", url.c_str());
+      return false;
+    }
+    LOG_DBG("HTTP", "wolfSSL(session) GET: %s", url.c_str());
+    const int status = http.GET();
+    if (status >= 0) impl->everConnected = true;  // transport worked -> later requests take the reuse floor
+    if (status != 200) {
+      LOG_ERR("HTTP", "wolfSSL(session) GET status %d: %s", status, url.c_str());
+      return false;
+    }
+    if (!http.responseComplete()) {
+      LOG_ERR("HTTP", "wolfSSL(session) incomplete body");
+      return false;
+    }
+    outContent = http.getString();
+    return true;
+  }
+#endif
+  return HttpDownloader::fetchUrl(url, outContent);
+}
+
+bool TranslationHttpSession::post(const std::string& url, const std::string& body, const char* contentType,
+                                  const char* extraHeaderName, const char* extraHeaderValue, std::string& outContent) {
+#if defined(FREEINK_NET_WOLFSSL)
+  if (impl) {
+    outContent.clear();
+    if (impl->heapRefused()) {
+      HttpDownloader::lastHttpCode = -1;
+      return false;
+    }
+    freeink::SecureHttpClient& http = impl->http;
+    if (!http.begin(url)) {
+      LOG_ERR("HTTP", "wolfSSL(session) bad URL: %s", url.c_str());
+      HttpDownloader::lastHttpCode = -1;
+      return false;
+    }
+    if (contentType && *contentType) http.addHeader("Content-Type", contentType);
+    if (extraHeaderName && extraHeaderValue) http.addHeader(extraHeaderName, extraHeaderValue);
+    LOG_DBG("HTTP", "wolfSSL(session) POST: %s (body=%u bytes)", url.c_str(), (unsigned)body.size());
+    const int status = http.sendRequest("POST", body);
+    if (status >= 0) impl->everConnected = true;
+    HttpDownloader::lastHttpCode = status;
+    if (status < 0) {
+      LOG_ERR("HTTP", "wolfSSL(session) POST failed: %s", url.c_str());
+      return false;
+    }
+    // getString() holds the buffered body for the lifetime of `http`; copy it out.
+    outContent = http.getString();
+    if (status != 200) {
+      LOG_ERR("HTTP", "wolfSSL(session) POST unexpected status: %d (%u byte body)", status,
+              (unsigned)outContent.size());
+      return false;
+    }
+    return true;
+  }
+#endif
+  return HttpDownloader::post(url, body, contentType, extraHeaderName, extraHeaderValue, outContent);
+}
+
+bool TranslationHttpSession::postJson(const std::string& url, const std::string& jsonBody,
+                                      const std::string& authHeader, std::string& outContent) {
+  const char* authName = authHeader.empty() ? nullptr : "Authorization";
+  const char* authValue = authHeader.empty() ? nullptr : authHeader.c_str();
+  return post(url, jsonBody, "application/json", authName, authValue, outContent);
 }

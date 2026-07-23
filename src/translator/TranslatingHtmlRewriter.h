@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+class TranslationHttpSession;  // network/HttpDownloader.h — reusable keep-alive connection
+
 /**
  * SAX-based HTML rewriter that inserts machine-translated paragraphs after
  * each block element in an EPUB chapter.
@@ -67,6 +69,14 @@ class TranslatingHtmlRewriter {
   volatile int* progressOut = nullptr;
   BatchBoundaryCb onBatchBoundary = nullptr;  // between-batch repaint hook; null = disabled
   void* batchBoundaryCtx = nullptr;
+
+  // Reusable keep-alive connection shared by every translate() call of one
+  // rewriteFromFile() run, so a whole chapter pays for a single TLS handshake
+  // instead of one per paragraph. Owned as a local in rewriteFromFile(); this is
+  // a non-owning pointer, valid only for that call's duration. Null on the
+  // buffer rewrite() path and whenever no session was set up (each translate()
+  // then falls back to the stateless HttpDownloader statics — prior behavior).
+  TranslationHttpSession* httpSession = nullptr;
 
   int depth = 0;
   int blockDepth = -1;  // depth where current block element began; -1 = not in block

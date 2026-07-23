@@ -8,6 +8,27 @@
 #include "CrossPointSettings.h"
 #include "network/HttpDownloader.h"
 
+namespace {
+// Route an engine's HTTP call through the caller-provided reusable session when
+// one is given (one kept-alive TLS connection across many paragraphs), else
+// through the stateless HttpDownloader statics (a fresh connection per call —
+// the original behavior, preserved for tests and other callers). The static and
+// session methods share identical contracts (status handling, lastHttpCode
+// semantics), so these are exact drop-ins for the previous direct static calls.
+bool httpFetch(TranslationHttpSession* session, const std::string& url, std::string& out) {
+  return session ? session->fetchUrl(url, out) : HttpDownloader::fetchUrl(url, out);
+}
+bool httpPost(TranslationHttpSession* session, const std::string& url, const std::string& body, const char* contentType,
+              const char* extraHeaderName, const char* extraHeaderValue, std::string& out) {
+  return session ? session->post(url, body, contentType, extraHeaderName, extraHeaderValue, out)
+                 : HttpDownloader::post(url, body, contentType, extraHeaderName, extraHeaderValue, out);
+}
+bool httpPostJson(TranslationHttpSession* session, const std::string& url, const std::string& body,
+                  const std::string& authHeader, std::string& out) {
+  return session ? session->postJson(url, body, authHeader, out) : HttpDownloader::postJson(url, body, authHeader, out);
+}
+}  // namespace
+
 // ─── URL encoding ────────────────────────────────────────────────────────────
 
 void ParagraphTranslator::codePointToUtf8(uint32_t cp, std::string& out) {
@@ -113,7 +134,8 @@ bool ParagraphTranslator::parseDeepLResponse(const std::string& json, std::strin
 }
 
 bool ParagraphTranslator::translateDeepL(const std::string& text, const char* sourceLang, const char* targetLang,
-                                         const char* apiKey, bool pro, std::string& result) {
+                                         const char* apiKey, bool pro, std::string& result,
+                                         TranslationHttpSession* session) {
   const char* host = pro ? "https://api.deepl.com" : "https://api-free.deepl.com";
   std::string url = std::string(host) + "/v2/translate";
 
@@ -160,7 +182,7 @@ bool ParagraphTranslator::translateDeepL(const std::string& text, const char* so
   auth += apiKey;
 
   std::string response;
-  if (!HttpDownloader::postJson(url, body, auth, response)) {
+  if (!httpPostJson(session, url, body, auth, response)) {
     LOG_ERR("Translator", "DeepL HTTP POST failed");
     return false;
   }
@@ -244,7 +266,7 @@ std::string ParagraphTranslator::buildLlmPrompt(const char* sourceLang, const ch
 
 bool ParagraphTranslator::translateOpenAICompat(const std::string& text, const char* sourceLang, const char* targetLang,
                                                 const char* apiKey, const char* endpoint, const char* model,
-                                                std::string& result) {
+                                                std::string& result, TranslationHttpSession* session) {
   LOG_DBG("Translator", "OpenAI-compat: endpoint=%s, model=%s", endpoint, model);
 
   const bool isBatch = text.find("\n\n") != std::string::npos;
@@ -283,7 +305,7 @@ bool ParagraphTranslator::translateOpenAICompat(const std::string& text, const c
   auth += apiKey;
 
   std::string response;
-  if (!HttpDownloader::postJson(endpoint, body, auth, response)) {
+  if (!httpPostJson(session, endpoint, body, auth, response)) {
     LOG_ERR("Translator", "OpenAI-compat HTTP POST failed");
     return false;
   }
@@ -309,7 +331,7 @@ bool ParagraphTranslator::parseGeminiResponse(const std::string& json, std::stri
 }
 
 bool ParagraphTranslator::translateGemini(const std::string& text, const char* sourceLang, const char* targetLang,
-                                          const char* apiKey, std::string& result) {
+                                          const char* apiKey, std::string& result, TranslationHttpSession* session) {
   LOG_DBG("Translator", "Gemini: src=%s, tgt=%s", sourceLang, targetLang);
 
   const bool isBatch = text.find("\n\n") != std::string::npos;
@@ -345,7 +367,7 @@ bool ParagraphTranslator::translateGemini(const std::string& text, const char* s
   body += "\"}]}]}";
 
   std::string response;
-  if (!HttpDownloader::postJson(url, body, "", response)) {
+  if (!httpPostJson(session, url, body, "", response)) {
     LOG_ERR("Translator", "Gemini HTTP POST failed");
     return false;
   }
@@ -371,7 +393,7 @@ bool ParagraphTranslator::parseGoogleV2Response(const std::string& json, std::st
 }
 
 bool ParagraphTranslator::translateGoogleV2(const std::string& text, const char* sourceLang, const char* targetLang,
-                                            std::string& result) {
+                                            std::string& result, TranslationHttpSession* session) {
   const char* src = (sourceLang && strcmp(sourceLang, "auto") != 0) ? sourceLang : "auto";
   LOG_DBG("Translator", "GoogleV2: src=%s, tgt=%s", src, targetLang);
 
@@ -387,7 +409,7 @@ bool ParagraphTranslator::translateGoogleV2(const std::string& text, const char*
   url += urlEncode(text);
 
   std::string response;
-  if (!HttpDownloader::fetchUrl(url, response)) {
+  if (!httpFetch(session, url, response)) {
     LOG_ERR("Translator", "GoogleV2 HTTP fetch failed");
     return false;
   }
@@ -410,7 +432,7 @@ bool ParagraphTranslator::parseGoogleHtmlResponse(const std::string& json, std::
 }
 
 bool ParagraphTranslator::translateGoogleHtml(const std::string& text, const char* sourceLang, const char* targetLang,
-                                              std::string& result) {
+                                              std::string& result, TranslationHttpSession* session) {
   const char* src = (sourceLang && strcmp(sourceLang, "auto") != 0) ? sourceLang : "auto";
   LOG_DBG("Translator", "GoogleHtml: src=%s, tgt=%s", src, targetLang);
 
@@ -447,7 +469,7 @@ bool ParagraphTranslator::translateGoogleHtml(const std::string& text, const cha
   body += "\"],\"wt_lib\"]";
 
   std::string response;
-  if (!HttpDownloader::post(kEndpoint, body, "application/json+protobuf", "X-Goog-Api-Key", kApiKey, response)) {
+  if (!httpPost(session, kEndpoint, body, "application/json+protobuf", "X-Goog-Api-Key", kApiKey, response)) {
     LOG_ERR("Translator", "GoogleHtml HTTP POST failed");
     return false;
   }
@@ -462,7 +484,8 @@ bool ParagraphTranslator::translateGoogleHtml(const std::string& text, const cha
 // ─── Main dispatch ───────────────────────────────────────────────────────────
 
 bool ParagraphTranslator::translate(const std::string& text, const char* sourceLang, const char* targetLang,
-                                    uint8_t engine, const char* apiKey, std::string& result, std::string* errorOut) {
+                                    uint8_t engine, const char* apiKey, std::string& result, std::string* errorOut,
+                                    TranslationHttpSession* session) {
   LOG_DBG("MEM", "Free heap (pre-translate): %u", (unsigned)ESP.getFreeHeap());
   if (text.size() < 3) {
     result = text;
@@ -483,30 +506,30 @@ bool ParagraphTranslator::translate(const std::string& text, const char* sourceL
     case CrossPointSettings::ENGINE_GOOGLE_FREE:
       // Legacy free gtx-API engine was removed; route to the maintained Google V2 engine so old
       // saved settings (translationEngine == ENGINE_GOOGLE_FREE == 0) keep working.
-      ok = translateGoogleV2(text, sourceLang, targetLang, result);
+      ok = translateGoogleV2(text, sourceLang, targetLang, result, session);
       break;
     case CrossPointSettings::ENGINE_DEEPL:
-      ok = translateDeepL(text, sourceLang, targetLang, apiKey, false, result);
+      ok = translateDeepL(text, sourceLang, targetLang, apiKey, false, result, session);
       break;
     case CrossPointSettings::ENGINE_DEEPL_PRO:
-      ok = translateDeepL(text, sourceLang, targetLang, apiKey, true, result);
+      ok = translateDeepL(text, sourceLang, targetLang, apiKey, true, result, session);
       break;
     case CrossPointSettings::ENGINE_OPENAI:
       ok = translateOpenAICompat(text, sourceLang, targetLang, apiKey, "https://api.openai.com/v1/chat/completions",
-                                 "gpt-4o-mini", result);
+                                 "gpt-4o-mini", result, session);
       break;
     case CrossPointSettings::ENGINE_DEEPSEEK:
       ok = translateOpenAICompat(text, sourceLang, targetLang, apiKey, "https://api.deepseek.com/v1/chat/completions",
-                                 "deepseek-chat", result);
+                                 "deepseek-chat", result, session);
       break;
     case CrossPointSettings::ENGINE_GEMINI:
-      ok = translateGemini(text, sourceLang, targetLang, apiKey, result);
+      ok = translateGemini(text, sourceLang, targetLang, apiKey, result, session);
       break;
     case CrossPointSettings::ENGINE_GOOGLE_V2:
-      ok = translateGoogleV2(text, sourceLang, targetLang, result);
+      ok = translateGoogleV2(text, sourceLang, targetLang, result, session);
       break;
     case CrossPointSettings::ENGINE_GOOGLE_HTML:
-      ok = translateGoogleHtml(text, sourceLang, targetLang, result);
+      ok = translateGoogleHtml(text, sourceLang, targetLang, result, session);
       break;
     default:
       LOG_ERR("Translator", "Unknown engine: %d", engine);
@@ -533,7 +556,8 @@ bool ParagraphTranslator::translate(const std::string& text, const char* sourceL
 }
 
 bool ParagraphTranslator::translate(const std::string& text, const char* targetLang, std::string& result,
-                                    std::string* errorOut) {
+                                    std::string* errorOut, TranslationHttpSession* session) {
   LOG_DBG("MEM", "Free heap (pre-translate): %u", (unsigned)ESP.getFreeHeap());
-  return translate(text, "auto", targetLang, SETTINGS.translationEngine, SETTINGS.translateApiKey, result, errorOut);
+  return translate(text, "auto", targetLang, SETTINGS.translationEngine, SETTINGS.translateApiKey, result, errorOut,
+                   session);
 }
