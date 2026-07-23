@@ -1270,6 +1270,10 @@ void EpubReaderActivity::render(RenderLock&& lock) {
           // fast, so no popup -- that's what made an already-indexed book look like it was reindexing.
           // A partial cache that already covers the target page shows it instantly: never popup.
           const bool willInflate = !section->hasHtmlCache();
+          // Both cost proxies above describe the ORIGINAL chapter. A translated chapter lays out the
+          // ~2x bilingual .translated.html sidecar instead, so a cached original ("fast reopen, no
+          // popup") says nothing about the real cost — always indicate for translated builds.
+          const bool translatedBuild = section->hasTranslatedHtml();
           bool showPopup;
           if (anchorJump) {
             // An anchor jump's cost is bounded by the anchor's page, not `target`. An anchor already
@@ -1277,11 +1281,13 @@ void EpubReaderActivity::render(RenderLock&& lock) {
             // lies beyond the indexed watermark and the build may lay out the whole spine to find it,
             // so gate on spine size alone -- laying out a big spine takes seconds even with cached
             // HTML. Ordinary chapter-top TOC jumps resolve on page 0 and stay popup-free.
-            showPopup = !section->findAnchor(pendingAnchor).has_value() && spineBytes > BUILD_POPUP_BYTE_THRESHOLD;
+            showPopup = !section->findAnchor(pendingAnchor).has_value() &&
+                        (translatedBuild || spineBytes > BUILD_POPUP_BYTE_THRESHOLD);
           } else {
             const bool targetAvailable = target < static_cast<int>(section->pageCount);
-            showPopup = !targetAvailable && ((spineBytes > BUILD_POPUP_BYTE_THRESHOLD && willInflate) ||
-                                             target > BUILD_POPUP_PAGE_THRESHOLD);
+            showPopup =
+                !targetAvailable && (translatedBuild || (spineBytes > BUILD_POPUP_BYTE_THRESHOLD && willInflate) ||
+                                     target > BUILD_POPUP_PAGE_THRESHOLD);
           }
           if (showPopup) {
             GUI.drawPopup(renderer, tr(STR_INDEXING));
