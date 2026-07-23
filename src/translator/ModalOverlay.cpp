@@ -323,24 +323,51 @@ static void XMLCALL modalOnText(void* ud, const XML_Char* s, int len) {
   auto* ctx = static_cast<ModalParseCtx*>(ud);
   if (ctx->skipDepth > 0) return;  // text inside a skipped table cell / image subtree
   if (!ctx->inBlock) return;
-  // Mirror ChapterHtmlSlimParser's text normalization so origText (raw expat
-  // output) matches the visible page text byte-for-byte:
-  //   • U+00A0 (NBSP, 0xC2 0xA0)        → ASCII space (chapter parser does the same)
-  //   • U+00AD (soft hyphen, 0xC2 0xAD) → dropped (chapter parser ignores it)
-  // Without this, `find(needle)` in countSentencesBefore misses on any
-  // NBSP/SHY in the first 40 chars, and trimToSentences fails to recognize
-  // sentence boundaries that have NBSP-style separators.
+  // Canonicalize inter-token separators to a single ASCII space so origText and
+  // translation reach the SSOT (countSentences / trimToSentences / trimToLastSentences /
+  // foldForMatch in SentenceSplitter + TextNormalize) AND the display word-wrapper
+  // (splitWords, ASCII-space only) in ONE representation. For U+00A0 / U+202F this is the
+  // byte-identical representation the laid-out page words (visibleText) already use
+  // (ChapterHtmlSlimParser splits both into a standalone ASCII-space word); for the rarer
+  // family members the boundary check reconciles the two sides through foldForMatch, which
+  // collapses the whole set.
+  //
+  // The recognized set is exactly textnorm::whitespaceLenAt — the SSOT for "what
+  // separates words / sentences": ASCII space/tab/CR/LF, U+00A0, U+2000..U+200A,
+  // U+202F, U+205F. Collapsing them here (rather than only U+00A0, as the original
+  // caller-side workaround did) keeps this consumer aligned with the SSOT now that the
+  // splitter is NBSP-family-aware:
+  //   • A raw multi-byte separator that survived (e.g. U+202F, which Google, French and
+  //     Ukrainian typography emit) made the boundary drift check compare an ASCII-spaced
+  //     page slice against a raw-separated source paragraph — a false "drift" that forces
+  //     source fallback and can drop translatedCount to 0 (the "no translations" toast)
+  //     on any build whose foldForMatch does not collapse that byte sequence.
+  //   • It also reached splitWords() unsplit, so "word.<U+202F>Next" was ONE token wider
+  //     than the line → mis-wrapped / mis-aligned output.
+  //   • U+00AD soft hyphen stays dropped (invisible in the page words).
+  // NOTE (unchanged from before): a multi-byte separator split across two expat
+  // character-data callbacks is not folded (the second half arrives next call); this is
+  // rare and identical to the prior behaviour.
   for (int i = 0; i < len; i++) {
     const uint8_t b0 = static_cast<uint8_t>(s[i]);
     if (b0 == 0xC2 && i + 1 < len) {
       const uint8_t b1 = static_cast<uint8_t>(s[i + 1]);
-      if (b1 == 0xA0) {  // NBSP
+      if (b1 == 0xA0) {  // U+00A0 NBSP -> space
         ctx->currentText += ' ';
         i++;
         continue;
       }
-      if (b1 == 0xAD) {  // soft hyphen — invisible, drop
+      if (b1 == 0xAD) {  // U+00AD soft hyphen — invisible, drop
         i++;
+        continue;
+      }
+    } else if (b0 == 0xE2 && i + 2 < len) {
+      const uint8_t b1 = static_cast<uint8_t>(s[i + 1]);
+      const uint8_t b2 = static_cast<uint8_t>(s[i + 2]);
+      // U+2000..U+200A, U+202F, U+205F (mirror textnorm::whitespaceLenAt) -> space.
+      if ((b1 == 0x80 && b2 >= 0x80 && b2 <= 0x8A) || (b1 == 0x80 && b2 == 0xAF) || (b1 == 0x81 && b2 == 0x9F)) {
+        ctx->currentText += ' ';
+        i += 2;  // the for-loop ++ consumes the third byte
         continue;
       }
     }
