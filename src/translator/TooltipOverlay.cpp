@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstring>
 
+#include "TextNormalize.h"
 #include "fontIds.h"
 
 // ── Button handling ───────────────────────────────────────────────────────────
@@ -410,15 +411,26 @@ static void XMLCALL chOnChar(void* ud, const XML_Char* data, int len) {
 
 static inline bool isAsciiSpace(char c) { return c == ' ' || c == '\n' || c == '\r' || c == '\t'; }
 
+// Split text into whitespace-delimited words. Separators are recognized via the shared
+// textnorm::whitespaceLenAt SSOT — the SAME set the char-offset SentenceSplitter fix and
+// foldForMatch use — so ASCII space/tab/CR/LF AND Unicode NBSP-style separators (U+00A0,
+// U+2000..200A, U+202F, U+205F) all break a token. chOnChar keeps raw NBSP in the accumulated
+// text; splitting on ASCII whitespace alone (the old behavior) left an NBSP-joined pair as ONE
+// token, so classifyTerminator — which only sees a terminator at the END of a token — never saw
+// the interior "." and undercounted the sentence, shifting every tooltip mapping by one (gap B).
+// Splitting on whitespaceLenAt guarantees no token can contain an inter-word separator, so a
+// terminator immediately before an NBSP now lands at a token boundary and is recognized.
 static std::vector<std::string> tokenizeWords(const std::string& text) {
   std::vector<std::string> words;
-  const char* p = text.c_str();
-  while (*p) {
-    while (*p && isAsciiSpace(*p)) p++;
-    if (!*p) break;
-    const char* ws = p;
-    while (*p && !isAsciiSpace(*p)) p++;
-    if (p > ws) words.emplace_back(ws, p);
+  const size_t n = text.size();
+  size_t i = 0;
+  while (i < n) {
+    int wl;
+    while (i < n && (wl = textnorm::whitespaceLenAt(text, i)) > 0) i += static_cast<size_t>(wl);
+    if (i >= n) break;
+    const size_t start = i;
+    while (i < n && textnorm::whitespaceLenAt(text, i) == 0) i++;
+    words.emplace_back(text.data() + start, i - start);
   }
   return words;
 }
@@ -822,6 +834,99 @@ static int findLastLineY(const Page& page, const SentenceSpan& span, int yOffset
   return lastY;
 }
 
+// Byte length of the UTF-8 code point starting at s[0], clamped to maxLen. Used so a mid-word hard
+// break never splits a multi-byte sequence (which would draw a garbage glyph / fault the decoder).
+static int utf8CharLen(const char* s, int maxLen) {
+  if (maxLen <= 0) return 0;
+  const unsigned char c = static_cast<unsigned char>(s[0]);
+  int n;
+  if ((c & 0x80) == 0)
+    n = 1;
+  else if ((c & 0xE0) == 0xC0)
+    n = 2;
+  else if ((c & 0xF0) == 0xE0)
+    n = 3;
+  else if ((c & 0xF8) == 0xF0)
+    n = 4;
+  else
+    n = 1;  // stray continuation / invalid lead byte — advance one byte
+  return n > maxLen ? maxLen : n;
+}
+
+// Largest UTF-8-safe byte prefix of s[0..len) whose rendered width (measured with the SAME
+// getTextWidth call the draw path uses) is <= avail. Returns 0 if not even one code point fits.
+static int fitPrefixBytes(GfxRenderer& renderer, int fontId, const char* s, int len, int avail) {
+  char buf[512];
+  int fit = 0;
+  int i = 0;
+  while (i < len) {
+    const int cl = utf8CharLen(s + i, len - i);
+    const int cand = i + cl;
+    if (cand > static_cast<int>(sizeof(buf)) - 1) break;
+    memcpy(buf, s, cand);
+    buf[cand] = '\0';
+    if (renderer.getTextWidth(fontId, buf) > avail) break;
+    fit = cand;
+    i = cand;
+  }
+  return fit;
+}
+
+// A single wrapped tooltip line: a [start, len) byte range into the tooltip text. The draw path
+// renders EXACTLY these ranges, and each was accepted by measuring that exact substring — so the
+// wrapped line count and the drawn line count are structurally identical (no height slack needed).
+struct TipLine {
+  const char* start;
+  int len;
+};
+
+// Wrap `text` into lines no wider than `avail` px, measuring each candidate line with
+// renderer.getTextWidth on the EXACT substring that will later be drawn (never word-widths +
+// getSpaceWidth, whose rounding vs. the real space-glyph advance was the old height-estimate bug).
+// A word longer than `avail` on its own is hard-broken mid-word on a UTF-8 boundary — the same clip
+// the draw path then renders. Fills at most `maxLines`; returns the line count produced.
+static int wrapTooltipLines(GfxRenderer& renderer, int fontId, const char* text, int avail, TipLine* out,
+                            int maxLines) {
+  if (avail < 1) avail = 1;
+  char buf[512];
+  int count = 0;
+  const char* p = text;
+  while (*p && count < maxLines) {
+    while (*p == ' ') p++;  // strip leading spaces; lines never begin with a space
+    if (!*p) break;
+    const char* lineStart = p;
+    int lineLen = 0;  // committed bytes on this line, measured from lineStart (no trailing space)
+    while (*p) {
+      const char* wordStart = p;
+      while (*p && *p != ' ') p++;  // p now at end of this word
+      int cand = static_cast<int>(p - lineStart);
+      int measLen = cand < static_cast<int>(sizeof(buf)) - 1 ? cand : static_cast<int>(sizeof(buf)) - 1;
+      memcpy(buf, lineStart, measLen);
+      buf[measLen] = '\0';
+      if (renderer.getTextWidth(fontId, buf) <= avail) {
+        lineLen = cand;         // whole run up to here fits; commit through this word
+        while (*p == ' ') p++;  // consume the separating spaces, then try the next word
+        continue;
+      }
+      if (lineLen > 0) {
+        p = wordStart;  // this word overflows; break the line before it (its spaces already skipped)
+        break;
+      }
+      // First word alone exceeds avail: hard-break it mid-word so the line (and box) can't overflow.
+      const int wordLen = static_cast<int>(p - wordStart);
+      int fit = fitPrefixBytes(renderer, fontId, wordStart, wordLen, avail);
+      if (fit <= 0) fit = utf8CharLen(wordStart, wordLen);  // guarantee forward progress
+      lineLen = fit;
+      p = wordStart + fit;  // remainder wraps onto the next line
+      break;
+    }
+    out[count].start = lineStart;
+    out[count].len = lineLen;
+    count++;
+  }
+  return count;
+}
+
 void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId, int tooltipFontId, int xOffset,
                             int yOffset, int viewportWidth, int viewportHeight) {
   if (currentSentenceIndex < 0) return;
@@ -890,21 +995,45 @@ void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId,
 
   constexpr int PAD = 6, RAD = 3, GAP = 4;
   const int maxW = viewportWidth - 2 * PAD;
-  const int tw = renderer.getTextWidth(tooltipFontId, text);
   const int tlh = renderer.getLineHeight(tooltipFontId);
 
-  int tipW, tipH, nLines = 1;
-  if (tw <= maxW - 2 * PAD) {
-    tipW = tw + 2 * PAD;
-    tipH = tlh + 2 * PAD;
+  // Exact sizing: wrap ONCE into the concrete line list the draw loop below will render, measuring
+  // each line with the SAME renderer.getTextWidth call the draw uses. Box height is then exactly
+  // lineCount * lineHeight + padding — no "+1" slack line. The old code sized from
+  // ceil(getTextWidth(wholeText) / avail) + 1, a DIFFERENT measurement than the word-by-word draw
+  // (word widths + getSpaceWidth), so it reserved a phantom empty line to hide the mismatch. Wrapping
+  // is done at the FULL-width text area (maxW - 2*PAD): that keeps the SAME line list valid whether
+  // the box is later shrunk to a single line or clamped up/down near a screen edge — the wrap width
+  // never depends on the final tipY/tipW.
+  const int maxAvail = maxW - 2 * PAD;
+  static constexpr int MAX_TIP_LINES = 30;  // exceeds any box that fits within 40% of the tallest viewport
+  TipLine lines[MAX_TIP_LINES];
+  int lineCount = wrapTooltipLines(renderer, tooltipFontId, text, maxAvail, lines, MAX_TIP_LINES);
+  if (lineCount < 1) {
+    // Degenerate (empty / all-whitespace) text — draw a minimal one-line box, never read lines[0]
+    // uninitialized. In practice `text` is a non-blank translation or the STR_NO_TRANSLATION marker.
+    lines[0].start = text;
+    lines[0].len = 0;
+    lineCount = 1;
+  }
+
+  int maxL = (viewportHeight * 4 / 10) / tlh;
+  if (maxL < 1) maxL = 1;
+  const int nLines = lineCount > maxL ? maxL : lineCount;  // clamp tall tooltips; excess text is clipped
+
+  int tipW;
+  if (nLines == 1) {
+    // Single line: shrink the box to that line's real drawn width (measured as it will be drawn).
+    char lb[512];
+    const int cl = std::min(lines[0].len, 511);
+    memcpy(lb, lines[0].start, cl);
+    lb[cl] = '\0';
+    tipW = renderer.getTextWidth(tooltipFontId, lb) + 2 * PAD;
+    if (tipW > maxW) tipW = maxW;
   } else {
     tipW = maxW;
-    // +1 line to account for word-wrap rounding (space widths differ from getTextWidth estimate).
-    nLines = (tw + (tipW - 2 * PAD) - 1) / (tipW - 2 * PAD) + 1;
-    int maxL = (viewportHeight * 4 / 10) / tlh;
-    if (nLines > maxL) nLines = maxL;
-    tipH = nLines * tlh + 2 * PAD;
   }
+  const int tipH = nLines * tlh + 2 * PAD;
 
   int tipX = xOffset + PAD;
   int tipY = (tipH + GAP <= bounds.firstLineY - yOffset) ? bounds.firstLineY - GAP - tipH : lastY + lh + GAP;
@@ -914,43 +1043,21 @@ void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId,
   renderer.fillRect(tipX - 1, tipY - 1, tipW + 2, tipH + 2, false);
   renderer.drawRoundedRect(tipX, tipY, tipW, tipH, 1, RAD, true);
 
-  const int avail = tipW - 2 * PAD;
-  const int spW = renderer.getSpaceWidth(tooltipFontId);
-  const char* p = text;
-  int textY = tipY + PAD, drawn = 0;
-  while (*p && drawn < nLines) {
-    int lineW = 0;
-    const char *ls = p, *le = p;
-    while (*p) {
-      const char* ws = p;
-      while (*p && *p != ' ') p++;
-      char wb[128];
-      int wl = std::min((int)(p - ws), 127);
-      memcpy(wb, ws, wl);
-      wb[wl] = '\0';
-      int ww = renderer.getTextWidth(tooltipFontId, wb);
-      if (lineW > 0 && lineW + spW + ww > avail) {
-        p = ws;
-        break;
-      }
-      lineW += (lineW > 0 ? spW : 0) + ww;
-      le = p;
-      while (*p == ' ') p++;
-    }
-    int dl = (int)(le - ls);
-    if (dl > 0) {
+  // Draw the precomputed lines verbatim — the SAME [start, len) ranges the wrap measured, so what is
+  // drawn is exactly what was sized (the invariant is structural, not padded). The fork dimmed the
+  // "not translated" marker via drawText's grayLevel arg; v2's drawText has no grayLevel parameter
+  // and the panel is monochrome, so the marker renders as ordinary black text (the fork's grayLevel=1
+  // also fell back to black on pure-BW panels).
+  int textY = tipY + PAD;
+  for (int i = 0; i < nLines; i++) {
+    if (lines[i].len > 0) {
       char lb[512];
-      int cl = std::min(dl, 511);
-      memcpy(lb, ls, cl);
+      const int cl = std::min(lines[i].len, 511);
+      memcpy(lb, lines[i].start, cl);
       lb[cl] = '\0';
-      // The fork dimmed the "not translated" marker via drawText's grayLevel arg; v2's drawText
-      // has no grayLevel parameter and the panel is monochrome, so the marker renders as ordinary
-      // black text (the fork's grayLevel=1 also fell back to black on pure-BW panels).
       renderer.drawText(tooltipFontId, tipX + PAD, textY, lb, true, EpdFontFamily::REGULAR);
-      textY += tlh;
-      drawn++;
     }
-    if (p == ls) break;
+    textY += tlh;
   }
 
   drawSentenceUnderline(renderer, page, span, fontId, xOffset, yOffset);

@@ -1678,15 +1678,7 @@ void EpubReaderActivity::renderOverlayFrame(Page& page, const int fontId, const 
 
 void EpubReaderActivity::renderContents(Page& page, const int orientedMarginTop, const int orientedMarginRight,
                                         const int orientedMarginBottom, const int orientedMarginLeft) {
-  const auto t0 = millis();
   const int fontId = SETTINGS.getReaderFontId();
-
-  // Font prewarm: scan pass accumulates text, then prewarm, then real render
-  auto* fcm = renderer.getFontCacheManager();
-  auto scope = fcm->createPrewarmScope();
-  page.render(renderer, fontId, orientedMarginLeft, orientedMarginTop);  // scan pass
-  scope.endScanAndPrewarm();
-  const auto tPrewarm = millis();
 
   // A translation overlay (PT_TOOLTIP / PT_MODAL) takes the upstream-fork choreography: the overlay
   // is composited into ONE BW frame and refreshed once (FAST, HALF only on the periodic cadence),
@@ -1694,10 +1686,28 @@ void EpubReaderActivity::renderContents(Page& page, const int orientedMarginTop,
   // optimization, and which (drawing the overlay only afterwards, in a second slow HALF_REFRESH)
   // was the source of the tooltip's blink-and-lag. Kept in a dedicated path so the normal reading
   // path stays byte-for-byte unchanged.
+  //
+  // Handled HERE, *before* the font-prewarm scan pass below, deliberately: that scan is a full extra
+  // page.render() whose PrewarmScope calls FontCacheManager::clearCache() on BOTH entry and exit
+  // (FontCacheManager.cpp) — i.e. it wipes the decompressed-glyph cache, then re-decompresses every
+  // glyph on the page via prewarmCache(). Running it per tooltip sentence-step / modal-scroll forced
+  // a full-page glyph RE-DECODE on every single press (the same page, the same glyphs, redecoded from
+  // scratch each time) plus a redundant layout iteration — that is the remaining button-press → tooltip
+  // latency, and the fork has no prewarm scan at all. Skipping it here lets the glyph cache stay warm
+  // across steps exactly like the fork: renderOverlayFrame()'s page.render() decodes on demand for the
+  // first (cold) frame after a page turn, then every subsequent step reuses the cache. Matches the fork.
   if (tooltipOverlay.isActive() || modalOverlay.isActive()) {
     renderOverlayFrame(page, fontId, orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
     return;
   }
+
+  const auto t0 = millis();
+  // Font prewarm: scan pass accumulates text, then prewarm, then real render
+  auto* fcm = renderer.getFontCacheManager();
+  auto scope = fcm->createPrewarmScope();
+  page.render(renderer, fontId, orientedMarginLeft, orientedMarginTop);  // scan pass
+  scope.endScanAndPrewarm();
+  const auto tPrewarm = millis();
 
   const bool pageHasImages = page.hasImages();
   const bool pageHasImagesNeedingDecode = pageHasImages && page.hasImagesNeedingDecode();
