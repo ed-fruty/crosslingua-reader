@@ -136,13 +136,26 @@ void SdCardFont::freeAll() {
 }
 
 void SdCardFont::clearOverflow() {
-  for (uint32_t i = 0; i < overflowCount_; i++) {
+  // One summary line per render cycle instead of a per-glyph LOG_DBG flood (each on-demand load
+  // previously logged a line, and at serial baud that logging itself added real time to the frame).
+  // After the per-page overlay prewarm this should read 0 (or a tiny residual for uncovered glyphs) —
+  // a useful on-device confirmation that overlay text is being served from the prewarmed cache.
+  if (overflowLoadCount_ > 0) {
+    LOG_DBG("SDCF", "Overflow: %u glyph(s) loaded on demand this cycle (cap=%u)", overflowLoadCount_,
+            OVERFLOW_CAPACITY);
+    overflowLoadCount_ = 0;
+  }
+  // Free every slot's bitmap. delete[] on nullptr is safe, so iterate the whole array rather than only
+  // [0, overflowCount_): under LRU any slot in range can hold a live bitmap.
+  for (uint32_t i = 0; i < OVERFLOW_CAPACITY; i++) {
     delete[] overflow_[i].bitmap;
     overflow_[i].bitmap = nullptr;
     overflow_[i].codepoint = 0;
+    overflow_[i].styleIdx = 0;
+    overflow_[i].lastUsed = 0;
   }
   overflowCount_ = 0;
-  overflowNext_ = 0;
+  lruClock_ = 0;
 }
 
 // --- Per-style kern/ligature ---
@@ -1304,9 +1317,12 @@ const EpdGlyph* SdCardFont::onGlyphMiss(void* ctx, uint32_t codepoint) {
   const auto& s = self->styles_[styleIdx];
   if (!s.fullIntervals && !s.bmpIntervals) return nullptr;
 
-  // Check overflow cache first (matching both codepoint and style)
+  // Check overflow cache first (matching both codepoint and style). A hit re-stamps the LRU clock so
+  // the glyph survives eviction while it stays in use.
   for (uint32_t i = 0; i < self->overflowCount_; i++) {
     if (self->overflow_[i].codepoint == codepoint && self->overflow_[i].styleIdx == styleIdx) {
+      self->lruClock_ += 1;
+      self->overflow_[i].lastUsed = self->lruClock_;
       return &self->overflow_[i].glyph;
     }
   }
@@ -1315,11 +1331,20 @@ const EpdGlyph* SdCardFont::onGlyphMiss(void* ctx, uint32_t codepoint) {
   int32_t globalIdx = self->findGlobalGlyphIndex(s, codepoint);
   if (globalIdx < 0) return nullptr;
 
-  // Pick overflow slot (ring buffer). Read into temporaries first so the
-  // existing slot stays valid if SD I/O fails. Bookkeeping (count/next)
-  // is deferred until after all I/O succeeds to avoid inconsistent state.
-  uint32_t slot = self->overflowNext_;
+  // Pick a slot: fill empty slots first, otherwise evict the least-recently-used one (min lastUsed).
+  // The just-loaded / just-hit glyph is always the most-recently-used, so the single glyph the caller
+  // holds live is never the eviction target on the next miss. Read into temporaries first so the chosen
+  // slot stays valid if SD I/O fails; bookkeeping is deferred until all I/O succeeds.
   bool wasAtCapacity = (self->overflowCount_ == OVERFLOW_CAPACITY);
+  uint32_t slot;
+  if (!wasAtCapacity) {
+    slot = self->overflowCount_;
+  } else {
+    slot = 0;
+    for (uint32_t i = 1; i < OVERFLOW_CAPACITY; i++) {
+      if (self->overflow_[i].lastUsed < self->overflow_[slot].lastUsed) slot = i;
+    }
+  }
 
   // Read glyph metadata into temporary
   HalFile file;
@@ -1361,20 +1386,23 @@ const EpdGlyph* SdCardFont::onGlyphMiss(void* ctx, uint32_t codepoint) {
     }
   }
 
-  // All reads succeeded — commit to slot and advance ring buffer
+  // All reads succeeded — commit to the chosen slot and stamp it most-recently-used.
   if (wasAtCapacity) {
     delete[] self->overflow_[slot].bitmap;
   } else {
     self->overflowCount_++;
   }
-  self->overflowNext_ = (slot + 1) % OVERFLOW_CAPACITY;
   self->overflow_[slot].glyph = tempGlyph;
   self->overflow_[slot].bitmap = tempBitmap;
   self->overflow_[slot].codepoint = codepoint;
   self->overflow_[slot].styleIdx = styleIdx;
+  self->lruClock_ += 1;
+  self->overflow_[slot].lastUsed = self->lruClock_;
 
-  LOG_DBG("SDCF", "Overflow: loaded U+%04X style %u on demand (slot %u/%u)", codepoint, styleIdx, slot,
-          OVERFLOW_CAPACITY);
+  // Per-glyph logging removed on purpose: it flooded the serial log (hundreds of lines per overlay
+  // frame) and the logging itself cost real time at serial baud. clearOverflow() emits one summary
+  // line per render cycle from overflowLoadCount_ instead.
+  self->overflowLoadCount_++;
 
   return &self->overflow_[slot].glyph;
 }

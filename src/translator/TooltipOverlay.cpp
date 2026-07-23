@@ -628,6 +628,20 @@ static std::vector<SentEntry> parseAndBuildIndex(const std::string& path, int wa
 
 // ── Page preparation ──────────────────────────────────────────────────────────
 
+void TooltipOverlay::collectPageGlyphText(const Page& page, std::string& out) {
+  preparePage(page);  // idempotent (pagePrepared guard); render() will find it already done
+  size_t need = 0;
+  for (const auto& s : sentenceTranslations) need += s.size() + 1;
+  const char* const marker = tr(STR_NO_TRANSLATION);
+  need += std::strlen(marker) + 1;
+  out.reserve(out.size() + need);
+  for (const auto& s : sentenceTranslations) {
+    out += s;
+    out += ' ';
+  }
+  out += marker;  // shown for any sentence with no mapped translation (Option C)
+}
+
 void TooltipOverlay::preparePage(const Page& page) {
   if (pagePrepared) return;
   pagePrepared = true;

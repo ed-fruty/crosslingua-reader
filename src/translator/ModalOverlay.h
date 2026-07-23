@@ -33,6 +33,13 @@ class ModalOverlay {
   void onPageChanged();
   void onSectionChanged();
 
+  // Prepare this page's paragraph translations (idempotent with render()'s own preparePage) and append
+  // every string the modal will draw for this page — each visible paragraph's text plus the
+  // STR_NO_TRANSLATION marker when any paragraph is a source fallback — into `out`. Lets the caller
+  // prewarm the modal font's glyph cache ONCE per page (see EpubReaderActivity::renderOverlayFrame)
+  // instead of taking a per-glyph SD read while scrolling. Text only: no rendering, no SD I/O.
+  void collectPageGlyphText(const Page& page, std::string& out);
+
   bool isActive() const { return active; }
 
  private:

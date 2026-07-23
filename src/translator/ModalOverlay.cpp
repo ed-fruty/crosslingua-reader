@@ -466,6 +466,24 @@ static std::string sliceTranslationForPage(const ModalOverlay::ParagraphPair& pa
   return trimmed;
 }
 
+void ModalOverlay::collectPageGlyphText(const Page& page, std::string& out) {
+  preparePage(page);  // idempotent (pagePrepared guard); render() will find it already done
+  size_t need = 0;
+  bool anyUntranslated = false;
+  for (const auto& p : pageParagraphs) {
+    need += p.text.size() + 1;
+    if (!p.translated) anyUntranslated = true;
+  }
+  const char* const marker = tr(STR_NO_TRANSLATION);
+  if (anyUntranslated) need += std::strlen(marker) + 1;
+  out.reserve(out.size() + need);
+  for (const auto& p : pageParagraphs) {
+    out += p.text;
+    out += ' ';
+  }
+  if (anyUntranslated) out += marker;  // dim marker line drawn for each source-fallback paragraph
+}
+
 void ModalOverlay::preparePage(const Page& page) {
   if (pagePrepared) return;
   pagePrepared = true;

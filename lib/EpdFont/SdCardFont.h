@@ -208,17 +208,30 @@ class SdCardFont {
   };
   OverflowContext overflowCtx_[MAX_STYLES] = {};
 
-  // Shared on-demand overflow buffer (ring buffer of glyphs loaded via glyphMissHandler)
-  static constexpr uint32_t OVERFLOW_CAPACITY = 8;
+  // Shared on-demand overflow cache: glyphs a page's prewarm did not cover, loaded one at a time via
+  // glyphMissHandler. This is now a rare-miss safety net: a translation overlay's whole alphabet is
+  // prewarmed per page (EpubReaderActivity::renderOverlayFrame), and a normal page prewarms its own
+  // text, so in steady state almost nothing lands here. Sized to hold a full alphabet-plus-punctuation
+  // working set (~40-60 codepoints) so a fallback burst never evicts a glyph it is about to redraw;
+  // eviction is LRU, not round-robin, so when the working set does exceed capacity the hot glyphs stay
+  // resident instead of cycling. Fixed cost: 64 * sizeof(OverflowEntry) (~28 B) = ~1.8 KB per loaded SD
+  // font, and exactly ONE point size is resident at a time (SdCardFontManager loads a single size), so
+  // ~1.8 KB total. Bitmaps are heap-allocated only for slots actually filled: <= 64 * largest-glyph
+  // bitmap (~130 B for an 18pt 2-bit glyph) ~= 8 KB worst case, reached only under sustained misses that
+  // the per-page overlay prewarm is designed to eliminate.
+  static constexpr uint32_t OVERFLOW_CAPACITY = 64;
   struct OverflowEntry {
     EpdGlyph glyph;
     uint8_t* bitmap = nullptr;
     uint32_t codepoint = 0;
     uint8_t styleIdx = 0;
+    uint32_t lastUsed = 0;  // LRU stamp (value of lruClock_ at last hit/load); 0 = never used
   };
   OverflowEntry overflow_[OVERFLOW_CAPACITY] = {};
   uint32_t overflowCount_ = 0;
-  uint32_t overflowNext_ = 0;
+  uint32_t lruClock_ = 0;           // monotonic tick, stamped into OverflowEntry::lastUsed on access
+  uint32_t overflowLoadCount_ = 0;  // on-demand SD loads since the last clearOverflow(); logged as one
+                                    // summary line per render cycle instead of a per-glyph flood
 
   // Compact advance-only table for layout measurement (per-style).
   // Built by buildAdvanceTable(), queried by getAdvance().

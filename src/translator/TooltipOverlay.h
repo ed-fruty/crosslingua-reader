@@ -33,6 +33,13 @@ class TooltipOverlay {
 
   void onPageChanged();
 
+  // Prepare this page's per-sentence translations (idempotent with render()'s own preparePage) and
+  // append every string the tooltip will draw for this page — all sentence translations plus the
+  // STR_NO_TRANSLATION marker — into `out`. Lets the caller prewarm the tooltip font's glyph cache
+  // ONCE per page (see EpubReaderActivity::renderOverlayFrame) instead of taking a per-glyph SD read
+  // on every sentence step. Text only: does no rendering and no SD I/O of its own.
+  void collectPageGlyphText(const Page& page, std::string& out);
+
   bool isActive() const { return currentSentenceIndex >= 0; }
 
   // Set by handleInput when "Page Turn" tooltip behavior reaches a page boundary.

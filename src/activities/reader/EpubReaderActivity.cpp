@@ -1662,9 +1662,38 @@ void EpubReaderActivity::renderOverlayFrame(Page& page, const int fontId, const 
                           overlayPrewarmPage_ != curPage || overlayPrewarmFontId_ != fontId ||
                           overlayPrewarmGen_ != fcm->cacheGeneration();
   if (cacheStale) {
+    // The overlay draws the page's TRANSLATION text, whose alphabet (e.g. Cyrillic) is disjoint from
+    // the page's SOURCE text. For an SD-card font the reader body and the overlay resolve to the SAME
+    // single loaded font instance (SdCardFontManager loads one point size; getReaderFontId() and
+    // getTooltipFontId()/getModalFontId() all map to it), so the page scan below warms only the source
+    // glyphs and every overlay glyph would miss into the per-glyph SD overflow path — hundreds of SD
+    // reads per frame. Gather the page's FULL overlay text ONCE here (bounded to this page's sentences /
+    // paragraphs) and prewarm it alongside the page so stepping/scrolling is zero-SD-I/O. Done only on
+    // rebuild (page turn / overlay open), never per step.
+    const bool modalActive = modalOverlay.isActive();
+    const int overlayFontId = modalActive ? getModalFontId() : getTooltipFontId();
+    std::string overlayText;
+    if (modalActive) {
+      modalOverlay.collectPageGlyphText(page, overlayText);
+    } else if (tooltipOverlay.isActive()) {
+      tooltipOverlay.collectPageGlyphText(page, overlayText);
+    }
+
     overlayPrewarm_.emplace(*fcm);  // dtor of any prior scope + this ctor both clearCache(); scan ON
     page.render(renderer, fontId, orientedMarginLeft, orientedMarginTop);  // scan pass: records text, draws nothing
+    // Same font instance as the reader body (SD-card fonts, and built-ins at the smallest size, where
+    // getTooltipFontId() == getReaderFontId()): fold the overlay's glyphs into the single prewarm so
+    // neither the page nor the overlay misses. recordText() appends to the in-progress scan; the font
+    // was already captured by the page scan (or is set here if the page had no text).
+    if (overlayFontId == fontId && !overlayText.empty()) {
+      fcm->recordText(overlayText.c_str(), fontId, EpdFontFamily::REGULAR);
+    }
     overlayPrewarm_->endScanAndPrewarm();  // prewarm reader font; scan OFF; cache retained (no clear)
+    // Distinct overlay font (a built-in one size smaller than the body): warm it separately in one
+    // pass. prewarmCache() dispatches to the SD or built-in path by font id; overlays draw REGULAR only.
+    if (overlayFontId != fontId && !overlayText.empty()) {
+      fcm->prewarmCache(overlayFontId, overlayText.c_str(), 0x01 /* REGULAR */);
+    }
     overlayPrewarmSpine_ = currentSpineIndex;
     overlayPrewarmPage_ = curPage;
     overlayPrewarmFontId_ = fontId;
