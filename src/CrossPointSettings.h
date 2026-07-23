@@ -195,6 +195,23 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     TRANSLATION_ENGINE_COUNT
   };
 
+  // Which physical button pair drives a translation overlay (tooltip sentence stepping /
+  // modal scrolling). Shared by tooltipButtons and modalButtons.
+  // VALUE STABILITY: persisted as an integer; 0/1 are fixed — append only, never renumber.
+  enum OVERLAY_BUTTONS : uint8_t {
+    OVERLAY_BUTTONS_FRONT = 0,  // front pair (Left / Right)
+    OVERLAY_BUTTONS_SIDE = 1,   // side pair (PageBack / PageForward)
+    OVERLAY_BUTTONS_COUNT
+  };
+
+  // What tooltip stepping does when it reaches a page boundary (last/first sentence).
+  // VALUE STABILITY: persisted as an integer; 0/1 are fixed — append only, never renumber.
+  enum TOOLTIP_NAVIGATION : uint8_t {
+    TOOLTIP_NAV_LOOP = 0,       // wrap to the first/last sentence, stay on the page
+    TOOLTIP_NAV_TURN_PAGE = 1,  // turn the page and continue stepping on the next page
+    TOOLTIP_NAVIGATION_COUNT
+  };
+
   // Sleep screen settings
   uint8_t sleepScreen = DARK;
   // Sleep screen cover mode settings
@@ -308,14 +325,18 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   char translateApiKey[128] = "";
   uint8_t translationDisplayMode = PT_NORMAL;
   // Tooltip display mode (PT_TOOLTIP) controls. Ported from the upstream fork.
-  // tooltipButtons: which buttons step through per-sentence tooltips.
-  //   0 = front buttons (Left/Right), 1 = side buttons (PageBack/PageForward).
-  // tooltipBehavior: what happens at a page boundary while stepping.
-  //   0 = loop (wrap to first/last sentence), 1 = page turn (advance/retreat the page).
+  // tooltipButtons: which button pair steps through per-sentence tooltips (OVERLAY_BUTTONS).
+  //   Default SIDE — the page-turn pair reads as the natural "next sentence" control.
+  // tooltipBehavior: what stepping does at a page boundary (TOOLTIP_NAVIGATION).
+  //   Default TURN_PAGE — stepping past the last sentence turns the page and continues.
   // Persisted manually in toJson/fromJson alongside the other Pre-Translation fields (they are
   // edited from the Bilingua submenu, not the generic on-device Settings list).
-  uint8_t tooltipButtons = 0;
-  uint8_t tooltipBehavior = 0;
+  uint8_t tooltipButtons = OVERLAY_BUTTONS_SIDE;
+  uint8_t tooltipBehavior = TOOLTIP_NAV_TURN_PAGE;
+  // Modal display mode (PT_MODAL) control: which button pair scrolls/closes the OPEN modal
+  // (OVERLAY_BUTTONS). The modal still OPENS on a side long-press regardless of this setting.
+  // Default SIDE (same pair that opened it). Persisted manually in toJson/fromJson.
+  uint8_t modalButtons = OVERLAY_BUTTONS_SIDE;
 
   static constexpr uint8_t MIN_SLEEP_TIMEOUT_MINUTES = 1;
   static constexpr uint8_t SLEEP_TIMEOUT_NEVER_MINUTES = 31;

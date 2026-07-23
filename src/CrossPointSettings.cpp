@@ -109,6 +109,7 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   doc["translationDisplayMode"] = translationDisplayMode;
   doc["tooltipButtons"] = tooltipButtons;
   doc["tooltipBehavior"] = tooltipBehavior;
+  doc["modalButtons"] = modalButtons;
 }
 
 bool CrossPointSettings::fromJson(JsonVariantConst doc) {
@@ -219,10 +220,15 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   copyToField(translateApiKey, doc["translateApiKey"] | "", sizeof(translateApiKey));
   translationDisplayMode =
       clamp(doc["translationDisplayMode"] | (uint8_t)PT_NORMAL, (uint8_t)PT_MODE_COUNT, (uint8_t)PT_NORMAL);
-  // Tooltip controls (PT_TOOLTIP): both are 0/1 selectors, so clamp to 2. Absent keys keep the
-  // struct-initializer defaults (0/0), so pre-feature settings.json files load unchanged.
-  tooltipButtons = clamp(doc["tooltipButtons"] | (uint8_t)0, (uint8_t)2, (uint8_t)0);
-  tooltipBehavior = clamp(doc["tooltipBehavior"] | (uint8_t)0, (uint8_t)2, (uint8_t)0);
+  // Tooltip/modal overlay controls: 0/1 selectors clamped to their enum counts. An ABSENT key
+  // falls back to the feature default (SIDE buttons, TURN_PAGE nav) rather than 0 — a settings.json
+  // written before these defaults changed had no key, so it should adopt the new default too.
+  tooltipButtons = clamp(doc["tooltipButtons"] | (uint8_t)OVERLAY_BUTTONS_SIDE, (uint8_t)OVERLAY_BUTTONS_COUNT,
+                         (uint8_t)OVERLAY_BUTTONS_SIDE);
+  tooltipBehavior = clamp(doc["tooltipBehavior"] | (uint8_t)TOOLTIP_NAV_TURN_PAGE, (uint8_t)TOOLTIP_NAVIGATION_COUNT,
+                          (uint8_t)TOOLTIP_NAV_TURN_PAGE);
+  modalButtons = clamp(doc["modalButtons"] | (uint8_t)OVERLAY_BUTTONS_SIDE, (uint8_t)OVERLAY_BUTTONS_COUNT,
+                       (uint8_t)OVERLAY_BUTTONS_SIDE);
 
   if (needsResave) {
     LOG_DBG("CPS", "Resaving settings to update format");

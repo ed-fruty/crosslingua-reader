@@ -116,6 +116,12 @@ class EpubReaderActivity final : public Activity {
 
   void renderContents(Page& page, int orientedMarginTop, int orientedMarginRight, int orientedMarginBottom,
                       int orientedMarginLeft);
+  // Fork-parity render path for a page with an active translation overlay (PT_TOOLTIP / PT_MODAL):
+  // page + status bar + overlay composited into ONE BW frame, a single refresh, and (when the page
+  // is visible, i.e. not under the modal) the grayscale AA pass. Avoids the second slow refresh the
+  // old overlay path did on every sentence step / scroll.
+  void renderOverlayFrame(Page& page, int fontId, int orientedMarginTop, int orientedMarginRight,
+                          int orientedMarginBottom, int orientedMarginLeft);
   void renderStatusBar() const;
   // Pages laid out per incremental-build pump: on the render path (catching up to the page
   // being shown) and per loop() tick (background build of a large chapter). Kept small so a

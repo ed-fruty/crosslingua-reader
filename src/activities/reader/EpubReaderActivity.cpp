@@ -368,8 +368,8 @@ void EpubReaderActivity::loop() {
     // handleInput sees the release. Swallow the press of an owned button (its release is owned by
     // handleInput above) so the tooltip's stepping / long-press turn takes precedence over the
     // normal page-turn / chapter-skip / orientation paths. The non-owned pair keeps full behavior.
-    const bool tooltipOwnsFront = SETTINGS.tooltipButtons == 0;
-    const bool tooltipOwnsSide = SETTINGS.tooltipButtons == 1;
+    const bool tooltipOwnsFront = SETTINGS.tooltipButtons == CrossPointSettings::OVERLAY_BUTTONS_FRONT;
+    const bool tooltipOwnsSide = SETTINGS.tooltipButtons == CrossPointSettings::OVERLAY_BUTTONS_SIDE;
     const bool ownedButtonHeld = (tooltipOwnsFront && (mappedInput.isPressed(MappedInputManager::Button::Left) ||
                                                        mappedInput.isPressed(MappedInputManager::Button::Right))) ||
                                  (tooltipOwnsSide && (mappedInput.isPressed(MappedInputManager::Button::PageBack) ||
@@ -1545,38 +1545,13 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     currentPageFootnotes = std::move(p->footnotes);
 
     const auto start = millis();
+    // The active translation overlay (PT_TOOLTIP / PT_MODAL) is composited INTO the page's single
+    // refresh inside renderContents(), matching the upstream fork. It is deliberately NOT drawn +
+    // flushed separately here: the old code re-refreshed the whole screen a second time (a slow
+    // HALF_REFRESH) after every sentence step / scroll, which is what made the tooltip blink and
+    // lag. See renderOverlayFrame().
     renderContents(*p, orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
     LOG_DBG("ERS", "Rendered page in %dms", millis() - start);
-
-    // Pre-Translation Modal overlay: drawn over the rendered page when active.
-    // preparePage() runs the selective SAX parse (~5 KB peak heap) the first time
-    // the overlay is rendered for this page; subsequent renders are cached.
-    // The overlay paints fillRect + drawText onto the BW framebuffer, so we push
-    // a second displayBuffer() to flush it. This only fires when the user opens
-    // the modal via longpress, so the extra refresh is not a per-page cost.
-    if (modalOverlay.isActive()) {
-      modalOverlay.render(renderer, *p, SETTINGS.getReaderFontId(), getModalFontId(), orientedMarginLeft,
-                          orientedMarginTop, viewportWidth, viewportHeight);
-      if (modalOverlay.isActive()) {
-        // Overlay painted onto the BW framebuffer -- flush it.
-        renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-      } else {
-        // render() cleared active because this page has no translated paragraphs. Surface a toast
-        // (drawn at the end of render) instead of the old silent close, so the long-press to open
-        // isn't a mysterious no-op.
-        showModalNoTranslationToast = true;
-        modalNoTranslationToastTime = millis();
-      }
-    }
-
-    // Pre-Translation Tooltip overlay: drawn over the rendered page when active. Like the modal it
-    // paints onto the BW framebuffer, so flush with a second displayBuffer(). PT_TOOLTIP and
-    // PT_MODAL are mutually exclusive modes, so at most one of these blocks does anything.
-    if (tooltipOverlay.isActive()) {
-      tooltipOverlay.render(renderer, *p, SETTINGS.getReaderFontId(), getTooltipFontId(), orientedMarginLeft,
-                            orientedMarginTop, viewportWidth, viewportHeight);
-      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-    }
   }
   // Only persist when the position actually changed. render() also runs on menu,
   // bookmark and screenshot re-renders, and writeAtomic is several FAT ops for 6 bytes.
@@ -1645,6 +1620,53 @@ bool EpubReaderActivity::applyDeferredReposition() {
 bool EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageCount) {
   return EpubReaderUtils::saveProgress(*epub, spineIndex, currentPage, pageCount);
 }
+void EpubReaderActivity::renderOverlayFrame(Page& page, const int fontId, const int orientedMarginTop,
+                                            const int orientedMarginRight, const int orientedMarginBottom,
+                                            const int orientedMarginLeft) {
+  const int viewportWidth = renderer.getScreenWidth() - orientedMarginLeft - orientedMarginRight;
+  const int viewportHeight = renderer.getScreenHeight() - orientedMarginTop - orientedMarginBottom;
+
+  // BW frame: the page, the status bar, then the active overlay composited on top. The overlay's
+  // fillRect/drawText land in the BW framebuffer, so they ride the SINGLE refresh below — no
+  // separate flush. (The modal's viewport ends above the status-bar margin, so it never covers it.)
+  page.render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+  renderStatusBar();
+
+  // Mutually exclusive modes, but drawn independently for clarity. The modal may deactivate itself
+  // in render() when the page has no translated paragraphs — surface the toast in that case.
+  bool modalDrew = false;
+  if (modalOverlay.isActive()) {
+    modalOverlay.render(renderer, page, fontId, getModalFontId(), orientedMarginLeft, orientedMarginTop, viewportWidth,
+                        viewportHeight);
+    if (modalOverlay.isActive()) {
+      modalDrew = true;
+    } else {
+      // No translated paragraphs on this page: the modal refused to open. Tell the user (toast is
+      // drawn by render() after renderContents returns) instead of a silent no-op long-press.
+      showModalNoTranslationToast = true;
+      modalNoTranslationToastTime = millis();
+    }
+  }
+  if (tooltipOverlay.isActive()) {
+    tooltipOverlay.render(renderer, page, fontId, getTooltipFontId(), orientedMarginLeft, orientedMarginTop,
+                          viewportWidth, viewportHeight);
+  }
+
+  // One refresh for the whole composited frame: FAST for stepping/scrolling, HALF only when the
+  // periodic full-refresh cadence lands (ghost cleanup) — identical to a normal page turn.
+  ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
+
+  // Grayscale anti-aliasing pass (fork parity) only when the page is actually visible — i.e. NOT
+  // hidden under the full-screen modal. The overlay lives in the BW framebuffer, which
+  // renderAntiAliased store/restores, so a tooltip box survives the pass while the page text gains
+  // AA. Skipping it under the modal avoids re-rendering the hidden page into the gray planes (which
+  // would ghost through the modal) and is faster.
+  if (SETTINGS.textAntiAliasing && !modalDrew) {
+    ReaderUtils::renderAntiAliased(renderer,
+                                   [&]() { page.render(renderer, fontId, orientedMarginLeft, orientedMarginTop); });
+  }
+}
+
 void EpubReaderActivity::renderContents(Page& page, const int orientedMarginTop, const int orientedMarginRight,
                                         const int orientedMarginBottom, const int orientedMarginLeft) {
   const auto t0 = millis();
@@ -1656,6 +1678,17 @@ void EpubReaderActivity::renderContents(Page& page, const int orientedMarginTop,
   page.render(renderer, fontId, orientedMarginLeft, orientedMarginTop);  // scan pass
   scope.endScanAndPrewarm();
   const auto tPrewarm = millis();
+
+  // A translation overlay (PT_TOOLTIP / PT_MODAL) takes the upstream-fork choreography: the overlay
+  // is composited into ONE BW frame and refreshed once (FAST, HALF only on the periodic cadence),
+  // instead of the image / tiled-grayscale machinery below — which is a normal-reading page-turn
+  // optimization, and which (drawing the overlay only afterwards, in a second slow HALF_REFRESH)
+  // was the source of the tooltip's blink-and-lag. Kept in a dedicated path so the normal reading
+  // path stays byte-for-byte unchanged.
+  if (tooltipOverlay.isActive() || modalOverlay.isActive()) {
+    renderOverlayFrame(page, fontId, orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
+    return;
+  }
 
   const bool pageHasImages = page.hasImages();
   const bool pageHasImagesNeedingDecode = pageHasImages && page.hasImagesNeedingDecode();

@@ -13,6 +13,7 @@
 
 #include "SentenceSplitter.h"
 #include "TextNormalize.h"
+#include "TooltipOverlay.h"  // getTooltipFontId() — the modal shares the tooltip's reader-derived font
 #include "activities/translator/LanguagePickerActivity.h"
 #include "fontIds.h"
 
@@ -597,14 +598,15 @@ void ModalOverlay::preparePage(const Page& page) {
 
 // ── Button handling ──────────────────────────────────────────────────────────
 //
-// Upstream dropped the fork's tooltipButtons setting — overlay scroll/close
-// uses side buttons unconditionally. The "longpress-opens-overlay" branch from
-// the fork's handleInput is gone too: that gesture is detected by
-// EpubReaderActivity, which calls ModalOverlay::open() externally.
+// Which pair scrolls/closes the OPEN modal is configurable (SETTINGS.modalButtons):
+// SIDE (default) uses PageBack/PageForward, FRONT uses Left/Right. The "longpress-opens-overlay"
+// gesture is NOT handled here: it is detected by EpubReaderActivity (always on the side pair),
+// which calls ModalOverlay::open() externally. Back always dismisses.
 
 bool ModalOverlay::handleInput(MappedInputManager& input) {
-  const auto nextBtn = MappedInputManager::Button::PageForward;
-  const auto backBtn = MappedInputManager::Button::PageBack;
+  const bool useFrontButtons = (SETTINGS.modalButtons == CrossPointSettings::OVERLAY_BUTTONS_FRONT);
+  const auto nextBtn = useFrontButtons ? MappedInputManager::Button::Right : MappedInputManager::Button::PageForward;
+  const auto backBtn = useFrontButtons ? MappedInputManager::Button::Left : MappedInputManager::Button::PageBack;
 
   // Next button: scroll down one screenful, or close if we're at the end.
   if (input.wasReleased(nextBtn)) {
@@ -889,9 +891,9 @@ void ModalOverlay::render(GfxRenderer& renderer, const Page& page, int fontId, i
 
 // ── Font helper ──────────────────────────────────────────────────────────────
 //
-// Fork's getModalFontId() returned getTooltipFontId() (which lives in the fork's
-// tooltip module). We're not porting Tooltip, so we resolve to upstream's
-// mid-size UI font directly. UI_12_FONT_ID is the most readable mid-size UI
-// font available in upstream (see src/fontIds.h).
+// Fork parity: the modal renders in the SAME reader-derived font as the tooltip
+// (getTooltipFontId — the reader's family, one size smaller than the body text), so it honors
+// the reader's Font Family and Font Size settings. It previously returned a fixed UI_12_FONT_ID,
+// which ignored both (that predated the Tooltip port that brought getTooltipFontId in).
 
-int getModalFontId() { return UI_12_FONT_ID; }
+int getModalFontId() { return getTooltipFontId(); }

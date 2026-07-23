@@ -15,10 +15,10 @@
 // ── Button handling ───────────────────────────────────────────────────────────
 
 bool TooltipOverlay::handleInput(MappedInputManager& input) {
-  const bool useFrontButtons = (SETTINGS.tooltipButtons == 0);
+  const bool useFrontButtons = (SETTINGS.tooltipButtons == CrossPointSettings::OVERLAY_BUTTONS_FRONT);
   const auto nextBtn = useFrontButtons ? MappedInputManager::Button::Right : MappedInputManager::Button::PageForward;
   const auto backBtn = useFrontButtons ? MappedInputManager::Button::Left : MappedInputManager::Button::PageBack;
-  const bool pageTurnMode = (SETTINGS.tooltipBehavior == 1);
+  const bool pageTurnMode = (SETTINGS.tooltipBehavior == CrossPointSettings::TOOLTIP_NAV_TURN_PAGE);
   constexpr unsigned long longPressMs = 700;
 
   // Next button.
