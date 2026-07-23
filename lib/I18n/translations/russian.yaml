@@ -441,6 +441,7 @@ STR_ENGINE_GOOGLE_HTML: "Google (Бесплатно) - HTML"
 
 STR_NO_TRANSLATIONS_FOR_PAGE: "Нет переводов для этой страницы"
 STR_NO_TRANSLATION_SWITCH_NORMAL: "Нет перевода — переключаюсь в обычный режим"
+STR_NO_TRANSLATION: "не переведено"
 
 STR_BACK_TO_CANCEL: "Back: Отмена"
 STR_PRESS_ANY_CONTINUE: "Нажмите любую кнопку, чтобы продолжить"

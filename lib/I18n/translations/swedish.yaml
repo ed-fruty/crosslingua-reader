@@ -466,6 +466,7 @@ STR_ENGINE_GOOGLE_HTML: "Google (Gratis) - HTML"
 
 STR_NO_TRANSLATIONS_FOR_PAGE: "Inga översättningar för denna sida"
 STR_NO_TRANSLATION_SWITCH_NORMAL: "Ingen översättning — växlar till normalt läge"
+STR_NO_TRANSLATION: "inte översatt"
 
 STR_BACK_TO_CANCEL: "Back: Avbryt"
 STR_PRESS_ANY_CONTINUE: "Tryck på valfri knapp för att fortsätta"

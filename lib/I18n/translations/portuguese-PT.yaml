@@ -440,6 +440,7 @@ STR_ENGINE_GOOGLE_HTML: "Google (Grátis) - HTML"
 
 STR_NO_TRANSLATIONS_FOR_PAGE: "Sem traduções para esta página"
 STR_NO_TRANSLATION_SWITCH_NORMAL: "Sem tradução — a mudar para modo Normal"
+STR_NO_TRANSLATION: "não traduzido"
 
 STR_BACK_TO_CANCEL: "Back: Cancelar"
 STR_PRESS_ANY_CONTINUE: "Prima qualquer botão para continuar"

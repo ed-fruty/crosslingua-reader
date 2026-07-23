@@ -362,6 +362,7 @@ STR_ENGINE_GOOGLE_HTML: "Google (Gratuit) - HTML"
 
 STR_NO_TRANSLATIONS_FOR_PAGE: "Aucune traduction pour cette page"
 STR_NO_TRANSLATION_SWITCH_NORMAL: "Aucune traduction — passage au mode Normal"
+STR_NO_TRANSLATION: "non traduit"
 
 STR_BACK_TO_CANCEL: "Back : Annuler"
 STR_PRESS_ANY_CONTINUE: "Appuyez sur une touche pour continuer"

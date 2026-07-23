@@ -125,6 +125,11 @@ class ChapterHtmlSlimParser {
   void flushPendingAnchor();
   void flushPartWordBuffer();
   void makePages();
+  // Pre-Translation (SideBySide, mode 5): if the outermost block currently held in
+  // currentTextBlock is an ORIGINAL paragraph with no translation paired to it, append a
+  // short dim "not translated" marker inline after its source text before it lays out, so
+  // the missing translation is visible but unobtrusive. No-op outside SideBySide mode.
+  void appendSideBySideNoTranslationMarkerIfUnpaired();
   static EpdFontFamily::Style fontStyleForTextDecoration(CssTextDecoration decoration);
   static void applyDirectionToEntry(StyleStackEntry& entry, const CssStyle& css);
   static void applyTextDecorationToEntry(StyleStackEntry& entry, const CssStyle& css);

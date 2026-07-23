@@ -333,6 +333,7 @@ STR_ENGINE_GOOGLE_HTML: "Google (Zdarma) - HTML"
 
 STR_NO_TRANSLATIONS_FOR_PAGE: "Pro tuto stránku nejsou žádné překlady"
 STR_NO_TRANSLATION_SWITCH_NORMAL: "Žádný překlad — přepínám do normálního režimu"
+STR_NO_TRANSLATION: "nepřeloženo"
 
 STR_BACK_TO_CANCEL: "Back: Zrušit"
 STR_PRESS_ANY_CONTINUE: "Pokračujte stisknutím libovolného tlačítka"

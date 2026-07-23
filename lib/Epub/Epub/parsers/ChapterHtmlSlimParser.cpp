@@ -3,6 +3,7 @@
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
+#include <I18n.h>
 #include <Logging.h>
 #include <Utf8.h>
 #include <XmlParserUtils.h>
@@ -18,6 +19,7 @@
 #include "Epub/converters/ImageToFramebufferDecoder.h"
 #include "Epub/htmlEntities.h"
 #include "Epub/hyphenation/Hyphenator.h"
+#include "ParagraphBoundary.h"
 
 // Minimum file size (in bytes) to show indexing popup - smaller chapters don't benefit from it
 constexpr size_t MIN_SIZE_FOR_POPUP = 10 * 1024;  // 10KB
@@ -42,7 +44,10 @@ constexpr size_t TEXT_BLOCK_SOFT_FLUSH_WORDS_WITH_CSS = 320;
 constexpr size_t MAX_ANCHORS_PER_CHAPTER = 1024;
 
 constexpr const char* HEADER_TAGS[] = {"h1", "h2", "h3", "h4", "h5", "h6"};
-constexpr const char* BLOCK_TAGS[] = {"p", "li", "div", "br", "blockquote"};
+// Paragraph-boundary block tags (p, li, div, br, blockquote and h1..h6) now live
+// in the shared paraboundary predicate (ParagraphBoundary.h) so the layout parser
+// and the ModalOverlay SAX reparser cannot diverge. HEADER_TAGS above is retained
+// only for header-specific STYLING (centered + bold), not boundary detection.
 constexpr const char* BOLD_TAGS[] = {"b", "strong"};
 constexpr const char* ITALIC_TAGS[] = {"i", "em"};
 constexpr const char* UNDERLINE_TAGS[] = {"u", "ins"};
@@ -87,9 +92,10 @@ bool isInternalEpubLink(const char* href) {
   return true;
 }
 
-bool isHeaderOrBlock(const char* name) {
-  return matches(name, HEADER_TAGS, std::size(HEADER_TAGS)) || matches(name, BLOCK_TAGS, std::size(BLOCK_TAGS));
-}
+// Single source of truth for "is this a paragraph-boundary tag" — the union of
+// HEADER_TAGS and the container/hard-break block tags. Forwards to the shared
+// paraboundary predicate that the overlay reparser also uses.
+bool isHeaderOrBlock(const char* name) { return paraboundary::isParagraphBlockTag(name); }
 
 bool isTableStructuralTag(const char* name) {
   return strcmp(name, "table") == 0 || strcmp(name, "tr") == 0 || strcmp(name, "td") == 0 || strcmp(name, "th") == 0;
@@ -940,6 +946,12 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     const auto accumulated =
         self->blockStyleStack.back().getCombinedBlockStyle(headerBlockStyle, BlockStyle::CombineAxis::Horizontal);
     self->blockStyleStack.push_back(accumulated);
+    // Pre-Translation (SideBySide): this new outermost block is an original (guard below).
+    // Before startNewTextBlock flushes the previous outermost block, mark it if it was itself
+    // an unpaired original — nothing will pair with it now.
+    if (isOutermostBlock && !currentIsTranslated) {
+      self->appendSideBySideNoTranslationMarkerIfUnpaired();
+    }
     self->startNewTextBlock(accumulated.withoutBottom());
     self->boldUntilDepth = std::min(self->boldUntilDepth, self->depth);
     self->updateEffectiveInlineStyle();
@@ -956,8 +968,10 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       }
       self->currentBlockIsTranslated = currentIsTranslated;
     }
-  } else if (matches(name, BLOCK_TAGS, std::size(BLOCK_TAGS))) {
-    if (strcmp(name, "br") == 0) {
+  } else if (paraboundary::isParagraphBlockTag(name)) {
+    // Reached only for NON-header block tags (headers handled by the branch
+    // above), i.e. exactly the old BLOCK_TAGS set {p, li, div, br, blockquote}.
+    if (paraboundary::isHardBreak(name)) {
       if (self->partWordBufferIndex > 0) {
         // flush word preceding <br/> to currentTextBlock before calling startNewTextBlock
         self->flushPartWordBuffer();
@@ -982,6 +996,12 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       const auto accumulated = self->blockStyleStack.back().getCombinedBlockStyle(userAlignmentBlockStyle,
                                                                                   BlockStyle::CombineAxis::Horizontal);
       self->blockStyleStack.push_back(accumulated);
+      // Pre-Translation (SideBySide): this new outermost block is an original (guard below).
+      // Before startNewTextBlock flushes the previous outermost block, mark it if it was itself
+      // an unpaired original — nothing will pair with it now.
+      if (isOutermostBlock && !currentIsTranslated) {
+        self->appendSideBySideNoTranslationMarkerIfUnpaired();
+      }
       self->startNewTextBlock(accumulated.withoutBottom());
       self->updateEffectiveInlineStyle();
       // Pre-Translation: stamp the paragraph index AFTER startNewTextBlock so the previous block
@@ -1529,6 +1549,9 @@ bool ChapterHtmlSlimParser::finishParse() {
 
   // Process last page if there is still text
   if (currentTextBlock) {
+    // Pre-Translation (SideBySide): the trailing outermost block may be an unpaired original
+    // (no translation followed it before EOF). Mark it before the final layout.
+    appendSideBySideNoTranslationMarkerIfUnpaired();
     makePages();
     if (!pendingAnchorId.empty()) {
       anchorData.push_back({std::move(pendingAnchorId), static_cast<uint16_t>(completedPageCount)});
@@ -1660,5 +1683,40 @@ void ChapterHtmlSlimParser::makePages() {
   // Extra paragraph spacing if enabled (default behavior)
   if (extraParagraphSpacing && !suppressExtraSpacing) {
     currentPageNextY += lineHeight / 2;
+  }
+}
+
+void ChapterHtmlSlimParser::appendSideBySideNoTranslationMarkerIfUnpaired() {
+  // Only SideBySide (mode 5) surfaces the inline marker; every other mode either drops or
+  // pairs content elsewhere.
+  if (translationMode != 5) return;
+  // currentBlockIsTranslated reflects the most-recently-opened outermost block. If it was a
+  // translation, the preceding original is already paired — no marker. If it was an original,
+  // the caller has determined nothing will pair with it (next outermost block is also an
+  // original, or we reached EOF), so it is unpaired.
+  if (currentBlockIsTranslated) return;
+  // No outermost block has opened yet (nothing to mark), or the block is empty/whitespace-only
+  // (which the layout parser never counts as a paragraph — see ParagraphBoundary.h).
+  if (currentBlockParagraphIdx < 0) return;
+  if (!currentTextBlock || currentTextBlock->isEmpty()) return;
+
+  // Option C (unpaired original): append a short dim "not translated" marker inline after the
+  // source text so the gap is visible but unobtrusive. RAM-cheap: a few extra addWord() calls on
+  // the block already being flushed, no new buffers. Dimming uses the same per-word vehicle as
+  // translated text in v2 — the EpdFontFamily::TRANSLATED style bit, which the renderer maps to
+  // the configured translation gray level (see GfxRenderer renderChar*). This is v2's equivalent
+  // of the fork's grayLevel=1 marker.
+  const char* marker = tr(STR_NO_TRANSLATION);
+  std::string markerWord;
+  for (const char* p = marker;; ++p) {
+    if (*p == ' ' || *p == '\0') {
+      if (!markerWord.empty()) {
+        currentTextBlock->addWord(markerWord, EpdFontFamily::TRANSLATED);
+        markerWord.clear();
+      }
+      if (*p == '\0') break;
+    } else {
+      markerWord.push_back(*p);
+    }
   }
 }
