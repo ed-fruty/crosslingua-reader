@@ -66,4 +66,18 @@ int terminatorLenAt(const std::string& text, size_t i);
 // skip trailing quotes when locating a sentence terminator.
 int closingQuoteLenAt(const std::string& text, size_t i);
 
+// Length in bytes of an inter-token whitespace unit starting at `text[i]`, or 0
+// if `text[i]` does not begin one. This is the SSOT for "what separates words /
+// sentences" and is the same set foldForMatch() collapses to a single space:
+//   • ASCII space, tab, CR, LF                         (1 byte)
+//   • U+00A0 NO-BREAK SPACE                             (2 bytes, C2 A0)
+//   • U+2000..U+200A general-punctuation spaces         (3 bytes, E2 80 80..8A)
+//   • U+202F NARROW NO-BREAK SPACE                      (3 bytes, E2 80 AF)
+//   • U+205F MEDIUM MATHEMATICAL SPACE                  (3 bytes, E2 81 9F)
+// Works on raw UTF-8 (the multi-byte forms survive verbatim if the fold is not
+// applied first). Recognizing these is why a sentence terminator followed by an
+// NBSP-style separator — common in translation-service and EPUB text — is still
+// seen as a sentence boundary. Truncated trailing lead bytes report 0.
+int whitespaceLenAt(const std::string& text, size_t i);
+
 }  // namespace textnorm

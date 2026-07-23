@@ -13,6 +13,7 @@ using textnorm::ELLIPSIS_SENTINEL;
 using textnorm::foldForMatch;
 using textnorm::foldForMatchInPlace;
 using textnorm::terminatorLenAt;
+using textnorm::whitespaceLenAt;
 
 static int g_failures = 0;
 static int g_checks = 0;
@@ -169,6 +170,49 @@ int main() {
   expectInt("cq_paren", closingQuoteLenAt(")", 0), 1);
   expectInt("cq_bracket", closingQuoteLenAt("]", 0), 1);
   expectInt("cq_none", closingQuoteLenAt("a", 0), 0);
+
+  // ── whitespaceLenAt (SSOT for inter-token separators) ───────────────────────
+  expectInt("ws_ascii_space", whitespaceLenAt(" ", 0), 1);
+  expectInt("ws_tab", whitespaceLenAt("\t", 0), 1);
+  expectInt("ws_lf", whitespaceLenAt("\n", 0), 1);
+  expectInt("ws_cr", whitespaceLenAt("\r", 0), 1);
+  expectInt("ws_nbsp", whitespaceLenAt("\xC2\xA0", 0), 2);             // U+00A0
+  expectInt("ws_en_space", whitespaceLenAt("\xE2\x80\x82", 0), 3);     // U+2002
+  expectInt("ws_em_space", whitespaceLenAt("\xE2\x80\x83", 0), 3);     // U+2003
+  expectInt("ws_thin_space", whitespaceLenAt("\xE2\x80\x89", 0), 3);   // U+2009
+  expectInt("ws_2000", whitespaceLenAt("\xE2\x80\x80", 0), 3);         // U+2000 (low edge)
+  expectInt("ws_200a", whitespaceLenAt("\xE2\x80\x8A", 0), 3);         // U+200A (high edge)
+  expectInt("ws_narrow_nbsp", whitespaceLenAt("\xE2\x80\xAF", 0), 3);  // U+202F
+  expectInt("ws_math_space", whitespaceLenAt("\xE2\x81\x9F", 0), 3);   // U+205F
+  expectInt("ws_letter", whitespaceLenAt("a", 0), 0);
+  expectInt("ws_dot", whitespaceLenAt(".", 0), 0);
+  expectInt("ws_not_space_200b", whitespaceLenAt("\xE2\x80\x8B", 0), 0);  // U+200B zero-width (not ws)
+  expectInt("ws_oob", whitespaceLenAt("abc", 5), 0);
+  expectInt("ws_trunc_c2", whitespaceLenAt("\xC2", 0), 0);      // lone C2 (no A0)
+  expectInt("ws_trunc_e2", whitespaceLenAt("\xE2\x80", 0), 0);  // truncated 3-byte space
+
+  // ── Fold collapses the same Unicode spaces to a single ASCII space ──────────
+  expectEq("fold_nbsp",
+           foldForMatch("a\xC2\xA0"
+                        "b"),
+           "a b");
+  expectEq("fold_narrow_nbsp",
+           foldForMatch("a\xE2\x80\xAF"
+                        "b"),
+           "a b");
+  expectEq("fold_en_space",
+           foldForMatch("a\xE2\x80\x82"
+                        "b"),
+           "a b");
+  expectEq("fold_math_space",
+           foldForMatch("a\xE2\x81\x9F"
+                        "b"),
+           "a b");
+  // Mixed run of ASCII + Unicode spaces collapses to one space and trims ends.
+  expectEq("fold_mixed_space_run",
+           foldForMatch("\xE2\x80\x83  a\xC2\xA0\xE2\x80\xAF"
+                        "b \xE2\x80\x82"),
+           "a b");
 
   if (g_failures == 0) {
     std::printf("OK: all %d checks passed\n", g_checks);

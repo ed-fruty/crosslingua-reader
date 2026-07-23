@@ -174,7 +174,14 @@ static std::vector<size_t> sentenceEndOffsets(const std::string& text) {
       if (ql == 0) break;
       next += static_cast<size_t>(ql);
     }
-    if (next >= text.size() || text[next] == ' ' || text[next] == '\n' || text[next] == '\r' || text[next] == '\t') {
+    // A complete sentence: terminator (+ trailing quotes) at end-of-string or
+    // followed by any inter-token whitespace. textnorm::whitespaceLenAt is the
+    // SSOT for "what separates" — it spans ASCII space AND Unicode NBSP-style
+    // separators (U+00A0, U+2000..200A, U+202F, U+205F), which translation
+    // services and EPUBs emit. Accepting only ASCII space here previously made
+    // an NBSP-separated boundary invisible, undercounting the sentence and
+    // shifting every downstream tooltip/modal mapping by one.
+    if (next >= text.size() || textnorm::whitespaceLenAt(text, next) > 0) {
       ends.push_back(next);
     }
     i += static_cast<size_t>(tl);
@@ -202,9 +209,15 @@ std::string trimToLastSentences(const std::string& text, int maxSentences) {
   const std::vector<size_t> ends = sentenceEndOffsets(text);
   if (static_cast<int>(ends.size()) <= maxSentences) return text;
   // ends[K] = position after sentence K. Keep the last N of T sentences by
-  // starting just after sentence (T-N-1), then skipping the separating space.
+  // starting just after sentence (T-N-1), then skipping the separating
+  // whitespace (ASCII or Unicode NBSP-style) so the result has no leading
+  // separator byte.
   size_t startFrom = ends[ends.size() - static_cast<size_t>(maxSentences) - 1];
-  while (startFrom < text.size() && text[startFrom] == ' ') startFrom++;
+  while (startFrom < text.size()) {
+    const int wl = textnorm::whitespaceLenAt(text, startFrom);
+    if (wl == 0) break;
+    startFrom += static_cast<size_t>(wl);
+  }
   return text.substr(startFrom);
 }
 

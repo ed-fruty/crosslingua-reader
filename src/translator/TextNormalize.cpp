@@ -6,6 +6,23 @@ namespace {
 inline bool isAsciiWs(uint8_t b) { return b == ' ' || b == '\n' || b == '\r' || b == '\t'; }
 }  // namespace
 
+int whitespaceLenAt(const std::string& text, size_t i) {
+  if (i >= text.size()) return 0;
+  const uint8_t b0 = static_cast<uint8_t>(text[i]);
+  if (isAsciiWs(b0)) return 1;
+  // U+00A0 NO-BREAK SPACE = C2 A0
+  if (b0 == 0xC2 && i + 1 < text.size() && static_cast<uint8_t>(text[i + 1]) == 0xA0) return 2;
+  // 3-byte Unicode spaces (E2 80 80..8A, E2 80 AF, E2 81 9F)
+  if (b0 == 0xE2 && i + 2 < text.size()) {
+    const uint8_t b1 = static_cast<uint8_t>(text[i + 1]);
+    const uint8_t b2 = static_cast<uint8_t>(text[i + 2]);
+    if (b1 == 0x80 && b2 >= 0x80 && b2 <= 0x8A) return 3;  // U+2000..U+200A
+    if (b1 == 0x80 && b2 == 0xAF) return 3;                // U+202F narrow NBSP
+    if (b1 == 0x81 && b2 == 0x9F) return 3;                // U+205F medium math space
+  }
+  return 0;
+}
+
 void foldForMatchInPlace(std::string& s, int limit) {
   const size_t n = s.size();
   size_t r = 0;        // read cursor
@@ -15,17 +32,22 @@ void foldForMatchInPlace(std::string& s, int limit) {
   while (r < n) {
     if (limit >= 0 && static_cast<int>(w) >= limit) break;
     const uint8_t b0 = static_cast<uint8_t>(s[r]);
+    const int wsl = whitespaceLenAt(s, r);
 
-    // ── 2-byte U+00xx (0xC2): NBSP, soft hyphen, « » ────────────────────────
-    if (b0 == 0xC2 && r + 1 < n) {
+    // ── Whitespace (ASCII + Unicode NBSP-style spaces) -> single space ──────
+    // Collapse any run to one space; trailing space(s) are trimmed after the
+    // loop. whitespaceLenAt is the SSOT for which bytes count as a separator.
+    if (wsl > 0) {
+      if (!lastSp) {
+        s[w++] = ' ';
+        lastSp = true;
+      }
+      r += static_cast<size_t>(wsl);
+    }
+    // ── 2-byte U+00xx (0xC2): soft hyphen, « » ──────────────────────────────
+    else if (b0 == 0xC2 && r + 1 < n) {
       const uint8_t b1 = static_cast<uint8_t>(s[r + 1]);
-      if (b1 == 0xA0) {  // NBSP -> whitespace
-        if (!lastSp) {
-          s[w++] = ' ';
-          lastSp = true;
-        }
-        r += 2;
-      } else if (b1 == 0xAD) {  // soft hyphen -> drop (lastSp unchanged: invisible)
+      if (b1 == 0xAD) {  // soft hyphen -> drop (lastSp unchanged: invisible)
         r += 2;
       } else if (b1 == 0xAB || b1 == 0xBB) {  // « » -> "
         s[w++] = '"';
@@ -77,14 +99,6 @@ void foldForMatchInPlace(std::string& s, int limit) {
       }
       lastSp = false;
       r += 3;
-    }
-    // ── ASCII whitespace -> single space ────────────────────────────────────
-    else if (isAsciiWs(b0)) {
-      if (!lastSp) {
-        s[w++] = ' ';
-        lastSp = true;
-      }
-      r += 1;
     }
     // ── ASCII dot run (>=2 dots) -> ellipsis sentinel ───────────────────────
     else if (b0 == '.') {
