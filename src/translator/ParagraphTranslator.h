@@ -2,6 +2,8 @@
 #include <cstdint>
 #include <string>
 
+#include "CrossPointSettings.h"  // TRANSLATION_ENGINE enum, for engineNeedsApiKey()
+
 class TranslationHttpSession;  // network/HttpDownloader.h — reusable keep-alive connection
 
 /**
@@ -26,6 +28,30 @@ class ParagraphTranslator {
                         std::string* errorOut = nullptr, TranslationHttpSession* session = nullptr);
 
   static constexpr size_t MAX_TEXT_BYTES = 1800;
+
+  // Whether the given engine requires a user-supplied API key. Kept co-located
+  // with the engine dispatch in translate() so the two stay in sync when an
+  // engine is added or its auth model changes. Grounded in the actual endpoints:
+  //   - Google engines (GOOGLE_FREE/GOOGLE_V2/GOOGLE_HTML) ship a built-in
+  //     translate-pa key baked into the request — keyless, so `false`.
+  //   - DeepL / DeepL Pro / OpenAI / DeepSeek send the user key as auth.
+  //   - Gemini appends the user key to the request URL (no built-in key), so it
+  //     needs one too.
+  static constexpr bool engineNeedsApiKey(uint8_t engine) {
+    switch (engine) {
+      case CrossPointSettings::ENGINE_DEEPL:
+      case CrossPointSettings::ENGINE_DEEPL_PRO:
+      case CrossPointSettings::ENGINE_OPENAI:
+      case CrossPointSettings::ENGINE_DEEPSEEK:
+      case CrossPointSettings::ENGINE_GEMINI:
+        return true;
+      case CrossPointSettings::ENGINE_GOOGLE_FREE:
+      case CrossPointSettings::ENGINE_GOOGLE_V2:
+      case CrossPointSettings::ENGINE_GOOGLE_HTML:
+      default:
+        return false;
+    }
+  }
 
  private:
   static std::string urlEncode(const std::string& s);

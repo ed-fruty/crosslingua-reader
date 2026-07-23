@@ -19,6 +19,7 @@
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "translator/ParagraphTranslator.h"  // ParagraphTranslator::engineNeedsApiKey()
 
 // Toast duration mirrors EpubReaderActivity's auto-fallback toast.
 static constexpr unsigned long DEFAULT_TOAST_MS = ReaderUtils::BOOKMARK_MESSAGE_DURATION_MS;
@@ -92,6 +93,12 @@ void PreTranslationSubmenuActivity::buildMenuItems() {
     menuItems.push_back({Action::CYCLE_TOOLTIP_BEHAVIOR, StrId::STR_TOOLTIP_NAV});
   }
 
+  // Modal-mode control sits under Display Mode too (only affects PT_MODAL), shown only while that
+  // mode is selected. Mirrors the tooltip-control block above.
+  if (SETTINGS.translationDisplayMode == CrossPointSettings::PT_MODAL) {
+    menuItems.push_back({Action::CYCLE_MODAL_BUTTONS, StrId::STR_MODAL_BUTTONS});
+  }
+
   menuItems.push_back(
       {Action::TRANSLATE_CHAPTER, chapterIsTranslated ? StrId::STR_RETRANSLATE_CHAPTER : StrId::STR_TRANSLATE_CHAPTER});
 
@@ -102,10 +109,21 @@ void PreTranslationSubmenuActivity::buildMenuItems() {
     menuItems.push_back({Action::DELETE_TRANSLATIONS, StrId::STR_DELETE_TRANSLATIONS});
   }
 
-  menuItems.push_back({Action::PICK_TARGET_LANG, StrId::STR_TARGET_LANGUAGE});
-  menuItems.push_back({Action::PICK_SOURCE_LANG, StrId::STR_SOURCE_LANGUAGE});
+  // Target/Source Language rows are intentionally hidden: the target and source languages are
+  // chosen inline in the Translate Chapter / Translate Book flow (LanguagePickerActivity), so
+  // exposing them here too is redundant. The PICK_TARGET_LANG / PICK_SOURCE_LANG actions, their
+  // handlers in onActionSelected(), and the *LangLabel() helpers are deliberately kept intact so
+  // the rows can be resurrected by simply re-adding the two push_back()s below.
+  //   menuItems.push_back({Action::PICK_TARGET_LANG, StrId::STR_TARGET_LANGUAGE});
+  //   menuItems.push_back({Action::PICK_SOURCE_LANG, StrId::STR_SOURCE_LANGUAGE});
   menuItems.push_back({Action::CYCLE_ENGINE, StrId::STR_TRANSLATION_ENGINE});
-  menuItems.push_back({Action::ENTER_API_KEY, StrId::STR_TRANSLATE_API_KEY});
+
+  // API-key entry is only meaningful for engines that authenticate with a user key; keyless
+  // engines (the Google variants ship a built-in key) hide the row entirely. The menu is rebuilt
+  // on every engine change (see CYCLE_ENGINE) so the row appears/disappears immediately.
+  if (ParagraphTranslator::engineNeedsApiKey(SETTINGS.translationEngine)) {
+    menuItems.push_back({Action::ENTER_API_KEY, StrId::STR_TRANSLATE_API_KEY});
+  }
 }
 
 // ─── input ────────────────────────────────────────────────────────────────────
@@ -246,23 +264,37 @@ void PreTranslationSubmenuActivity::onActionSelected(Action a) {
       return;
     }
 
-    case Action::CYCLE_ENGINE:
+    case Action::CYCLE_ENGINE: {
       SETTINGS.translationEngine =
           static_cast<uint8_t>((SETTINGS.translationEngine + 1) % CrossPointSettings::TRANSLATION_ENGINE_COUNT);
       SETTINGS.saveToFile();
+      // The API-key row is shown only for engines that need a key; rebuild so it appears/disappears
+      // as the engine is cycled. The cursor is on the Engine row, which the rebuild preserves.
+      buildMenuItems();
+      if (selectedIndex >= static_cast<int>(menuItems.size())) {
+        selectedIndex = static_cast<int>(menuItems.size()) - 1;
+      }
       requestUpdate();
       return;
+    }
 
     case Action::CYCLE_TOOLTIP_BUTTONS:
-      // 0 = front (Left/Right), 1 = side (PageBack/PageForward).
-      SETTINGS.tooltipButtons = static_cast<uint8_t>((SETTINGS.tooltipButtons + 1) % 2);
+      SETTINGS.tooltipButtons =
+          static_cast<uint8_t>((SETTINGS.tooltipButtons + 1) % CrossPointSettings::OVERLAY_BUTTONS_COUNT);
       SETTINGS.saveToFile();
       requestUpdate();
       return;
 
     case Action::CYCLE_TOOLTIP_BEHAVIOR:
-      // 0 = loop (wrap sentences), 1 = page turn (advance/retreat at a boundary).
-      SETTINGS.tooltipBehavior = static_cast<uint8_t>((SETTINGS.tooltipBehavior + 1) % 2);
+      SETTINGS.tooltipBehavior =
+          static_cast<uint8_t>((SETTINGS.tooltipBehavior + 1) % CrossPointSettings::TOOLTIP_NAVIGATION_COUNT);
+      SETTINGS.saveToFile();
+      requestUpdate();
+      return;
+
+    case Action::CYCLE_MODAL_BUTTONS:
+      SETTINGS.modalButtons =
+          static_cast<uint8_t>((SETTINGS.modalButtons + 1) % CrossPointSettings::OVERLAY_BUTTONS_COUNT);
       SETTINGS.saveToFile();
       requestUpdate();
       return;
@@ -302,11 +334,18 @@ const char* PreTranslationSubmenuActivity::displayModeLabel() const {
 }
 
 const char* PreTranslationSubmenuActivity::tooltipButtonsLabel() const {
-  return I18N.get(SETTINGS.tooltipButtons == 1 ? StrId::STR_SIDE_BUTTONS : StrId::STR_FRONT_BUTTONS);
+  return I18N.get(SETTINGS.tooltipButtons == CrossPointSettings::OVERLAY_BUTTONS_SIDE ? StrId::STR_SIDE_BUTTONS
+                                                                                      : StrId::STR_FRONT_BUTTONS);
 }
 
 const char* PreTranslationSubmenuActivity::tooltipBehaviorLabel() const {
-  return I18N.get(SETTINGS.tooltipBehavior == 1 ? StrId::STR_PAGE_TURN : StrId::STR_LOOP);
+  return I18N.get(SETTINGS.tooltipBehavior == CrossPointSettings::TOOLTIP_NAV_TURN_PAGE ? StrId::STR_PAGE_TURN
+                                                                                        : StrId::STR_LOOP);
+}
+
+const char* PreTranslationSubmenuActivity::modalButtonsLabel() const {
+  return I18N.get(SETTINGS.modalButtons == CrossPointSettings::OVERLAY_BUTTONS_SIDE ? StrId::STR_SIDE_BUTTONS
+                                                                                    : StrId::STR_FRONT_BUTTONS);
 }
 
 const char* PreTranslationSubmenuActivity::engineLabel() const {
@@ -396,6 +435,8 @@ void PreTranslationSubmenuActivity::render(RenderLock&&) {
             return tooltipButtonsLabel();
           case Action::CYCLE_TOOLTIP_BEHAVIOR:
             return tooltipBehaviorLabel();
+          case Action::CYCLE_MODAL_BUTTONS:
+            return modalButtonsLabel();
           case Action::PICK_TARGET_LANG:
             return targetLangLabel();
           case Action::PICK_SOURCE_LANG:
