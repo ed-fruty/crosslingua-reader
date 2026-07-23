@@ -9,6 +9,18 @@
 
 #include "SentenceSplitter.h"
 
+// One TOOLTIP STEP == one translation unit. When the translation engine merges K
+// consecutive source sentences into a SINGLE translated sentence, those K source
+// sentences all resolve to the SAME translation string; grouping them into one step
+// (see groupTranslationSteps in the .cpp) makes stepping advance per translation —
+// never showing the identical tooltip K times — and lets the underline span all K
+// source sentences at once. [firstSentence..lastSentence] are inclusive indices into
+// the page's sentence spans (SentenceSplitResult::spans).
+struct TooltipStep {
+  int16_t firstSentence;
+  int16_t lastSentence;
+};
+
 // Pre-Translation "Tooltip" display mode (PT_TOOLTIP). The reader lays the page out as
 // original-only text (the ChapterHtmlSlimParser drops translated words in this mode, exactly like
 // PT_MODAL / PT_ORIGINAL_ONLY); this overlay then surfaces the translation of ONE sentence at a
@@ -40,7 +52,7 @@ class TooltipOverlay {
   // on every sentence step. Text only: does no rendering and no SD I/O of its own.
   void collectPageGlyphText(const Page& page, std::string& out);
 
-  bool isActive() const { return currentSentenceIndex >= 0; }
+  bool isActive() const { return currentStepIndex >= 0; }
 
   // Set by handleInput when "Page Turn" tooltip behavior reaches a page boundary.
   // EpubReaderActivity checks these after handleInput and triggers the page turn.
@@ -50,8 +62,11 @@ class TooltipOverlay {
   bool activateFromEnd = false;     // start from last sentence (back page turn)
 
  private:
-  int8_t currentSentenceIndex = -1;
-  int8_t skipDirection = 1;  // 1=forward, -1=backward (for auto-skip)
+  // Index of the current TOOLTIP STEP (translation unit) in steps[], NOT a raw source
+  // sentence index. Stepping moves per translation, so a merged group of source
+  // sentences is one stop. -1 = inactive.
+  int8_t currentStepIndex = -1;
+  int8_t skipDirection = 1;  // 1=forward, -1=backward (picks the start step after a page turn)
   bool pagePrepared = false;
 
   std::string translatedHtmlPath;
@@ -61,7 +76,15 @@ class TooltipOverlay {
   int origWordCount = 0;
 
   SentenceSplitResult splits;
-  std::vector<std::string> sentenceTranslations;  // one per split sentence
+  // One entry per split source sentence. A merged group holds the SAME string in every
+  // member slot; grouping (below) collapses those into a single navigable step.
+  std::vector<std::string> sentenceTranslations;
+
+  // Navigation steps: each is a maximal run of consecutive source sentences that display
+  // the SAME translation. stepCount <= splits.count <= MAX_SENTENCES, so this is O(page)
+  // and never heap-allocates.
+  TooltipStep steps[MAX_SENTENCES];
+  int stepCount = 0;
 
   void preparePage(const Page& page);
 

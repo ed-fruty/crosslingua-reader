@@ -22,31 +22,32 @@ bool TooltipOverlay::handleInput(MappedInputManager& input) {
   const bool pageTurnMode = (SETTINGS.tooltipBehavior == CrossPointSettings::TOOLTIP_NAV_TURN_PAGE);
   constexpr unsigned long longPressMs = 700;
 
-  // Next button.
+  // Next button. Steps are translation units (see steps[]/groupTranslationSteps), so one
+  // press advances past a whole merged group rather than re-showing its translation.
   if (input.wasReleased(nextBtn)) {
     // Long press: turn page forward (like non-tooltip mode), dismiss tooltip.
     if (input.getHeldTime() >= longPressMs) {
       pendingPageForward = true;
-      currentSentenceIndex = -1;
+      currentStepIndex = -1;
       return true;
     }
     skipDirection = 1;
-    if (currentSentenceIndex < 0) {
-      currentSentenceIndex = 0;  // activate; auto-skip finds first with translation
+    if (currentStepIndex < 0) {
+      currentStepIndex = 0;  // activate; render lands on the first translated step
       return true;
     }
-    if (currentSentenceIndex < splits.count - 1) {
-      currentSentenceIndex++;
+    if (currentStepIndex < stepCount - 1) {
+      currentStepIndex++;
       return true;
     }
-    // At last sentence.
+    // At last step.
     if (pageTurnMode) {
       pendingPageForward = true;
       activateOnNextPage = true;
-      currentSentenceIndex = -1;
+      currentStepIndex = -1;
     } else {
       // Loop: wrap to first.
-      currentSentenceIndex = 0;
+      currentStepIndex = 0;
     }
     return true;
   }
@@ -56,34 +57,34 @@ bool TooltipOverlay::handleInput(MappedInputManager& input) {
     // Long press: turn page backward (like non-tooltip mode), dismiss tooltip.
     if (input.getHeldTime() >= longPressMs) {
       pendingPageBack = true;
-      currentSentenceIndex = -1;
+      currentStepIndex = -1;
       return true;
     }
     skipDirection = -1;
-    if (currentSentenceIndex < 0) {
-      currentSentenceIndex = 0;  // activate; auto-skip with dir=-1 wraps to last
+    if (currentStepIndex < 0) {
+      currentStepIndex = 0;  // activate; render lands on the first translated step
       return true;
     }
-    if (currentSentenceIndex > 0) {
-      currentSentenceIndex--;
+    if (currentStepIndex > 0) {
+      currentStepIndex--;
       return true;
     }
-    // At first sentence.
+    // At first step.
     if (pageTurnMode) {
       pendingPageBack = true;
       activateOnNextPage = true;
-      currentSentenceIndex = -1;
+      currentStepIndex = -1;
     } else {
       // Loop: wrap to last.
-      currentSentenceIndex = std::max(0, splits.count - 1);
+      currentStepIndex = std::max(0, stepCount - 1);
     }
     return true;
   }
 
   // ESC/Back button: dismiss tooltip if active.
   if (input.wasReleased(MappedInputManager::Button::Back)) {
-    if (currentSentenceIndex >= 0) {
-      currentSentenceIndex = -1;
+    if (currentStepIndex >= 0) {
+      currentStepIndex = -1;
       return true;
     }
     return false;
@@ -95,12 +96,13 @@ bool TooltipOverlay::handleInput(MappedInputManager& input) {
 void TooltipOverlay::onPageChanged() {
   bool shouldActivate = activateOnNextPage;
   int8_t dir = skipDirection;
-  currentSentenceIndex = -1;
+  currentStepIndex = -1;
   skipDirection = 1;
   pagePrepared = false;
   origWordCount = 0;
   sentenceTranslations.clear();
   splits.count = 0;
+  stepCount = 0;
   activateOnNextPage = false;
   activateFromEnd = false;
   pendingPageForward = false;
@@ -108,9 +110,9 @@ void TooltipOverlay::onPageChanged() {
 
   // After a tooltip-triggered page turn, auto-activate on the new page.
   if (shouldActivate) {
-    currentSentenceIndex = 0;  // preparePage will run; auto-skip uses direction
+    currentStepIndex = 0;  // preparePage will run; activateFromEnd picks the end step for a back turn
     skipDirection = dir;
-    activateFromEnd = (dir < 0);  // going back → show last sentence
+    activateFromEnd = (dir < 0);  // going back → show last step
   }
 }
 
@@ -626,6 +628,44 @@ static std::vector<SentEntry> parseAndBuildIndex(const std::string& path, int wa
   return index;
 }
 
+// ── Translation-unit grouping ─────────────────────────────────────────────────
+//
+// Collapse consecutive source sentences that display the SAME translation into one
+// navigation step. Two mapping paths produce such duplicates:
+//   • count mismatch — the engine merged K source sentences into ONE translated
+//     sentence, so addPairToIndex maps each of the K source sentences (distinct keys)
+//     to the SAME translated span, giving K identical translation strings;
+//   • gap-fill — an unmatched sentence inherits a neighbor's translation.
+// Either way the user would otherwise see the identical tooltip several times in a row
+// (the photo-verified PT_TOOLTIP bug). Grouping steps by byte-identical, non-empty
+// translation makes stepping advance per translation and lets the underline span every
+// source sentence in the group. Empty (untranslated) sentences are never a step and
+// break a run — a page-boundary partial sentence therefore stays out of a group's span.
+//
+// Pure: depends only on the translation strings, so the grouping rule is unit-testable
+// on the host (see test/test_sentence_splitter). Returns the number of steps (<= maxSteps).
+static int groupTranslationSteps(const std::vector<std::string>& sentenceTranslations, TooltipStep* out, int maxSteps) {
+  const int total = static_cast<int>(sentenceTranslations.size());
+  int count = 0;
+  int i = 0;
+  while (i < total && count < maxSteps) {
+    if (sentenceTranslations[i].empty()) {
+      i++;  // untranslated sentence: not a step, and it terminates any current run
+      continue;
+    }
+    int j = i;
+    while (j + 1 < total && !sentenceTranslations[j + 1].empty() &&
+           sentenceTranslations[j + 1] == sentenceTranslations[i]) {
+      j++;
+    }
+    out[count].firstSentence = static_cast<int16_t>(i);
+    out[count].lastSentence = static_cast<int16_t>(j);
+    count++;
+    i = j + 1;
+  }
+  return count;
+}
+
 // ── Page preparation ──────────────────────────────────────────────────────────
 
 void TooltipOverlay::collectPageGlyphText(const Page& page, std::string& out) {
@@ -647,6 +687,7 @@ void TooltipOverlay::preparePage(const Page& page) {
   pagePrepared = true;
   origWordCount = 0;
   sentenceTranslations.clear();
+  stepCount = 0;  // stays 0 on any early return below (no paragraph indices / empty index)
 
   // 1. Collect original words from page. v2 flattened TextBlock word storage: iterate by index
   //    (wordCount/wordText), NOT the fork's getWords() container. wordText(i) returns a
@@ -766,6 +807,12 @@ void TooltipOverlay::preparePage(const Page& page) {
   }
 
   LOG_DBG("TIP", "Matched %d/%d sentences (incl gap-fill)", matched, splits.count);
+
+  // 5. Collapse consecutive source sentences sharing one translated sentence into a
+  //    single navigation step (fixes the "same translation shown on each of the merged
+  //    source sentences" bug). Steps drive both navigation and the underline span.
+  stepCount = groupTranslationSteps(sentenceTranslations, steps, MAX_SENTENCES);
+  LOG_DBG("TIP", "Steps: %d translation units (from %d sentences)", stepCount, splits.count);
 }
 
 // ── Sentence bounds and underline ─────────────────────────────────────────────
@@ -943,64 +990,45 @@ static int wrapTooltipLines(GfxRenderer& renderer, int fontId, const char* text,
 
 void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId, int tooltipFontId, int xOffset,
                             int yOffset, int viewportWidth, int viewportHeight) {
-  if (currentSentenceIndex < 0) return;
+  if (currentStepIndex < 0) return;
 
   preparePage(page);
 
-  if (currentSentenceIndex >= splits.count) {
-    currentSentenceIndex = -1;
-    return;
-  }
-
-  // After back-page-turn: jump to last sentence now that splits are populated.
-  if (activateFromEnd && splits.count > 0) {
-    currentSentenceIndex = splits.count - 1;
+  // After a back page-turn: land on the LAST step now that steps are populated.
+  if (activateFromEnd) {
+    currentStepIndex = stepCount > 0 ? stepCount - 1 : 0;
     activateFromEnd = false;
   }
 
-  // Auto-skip sentences without translations (e.g., partial sentences from previous page).
-  // Search in the user's navigation direction, wrapping around.
-  auto hasTranslation = [&](int i) {
-    return i >= 0 && i < splits.count && i < (int)sentenceTranslations.size() && !sentenceTranslations[i].empty();
-  };
+  // Clamp a stale index — stepCount can shrink relative to the page this index was set on.
+  if (stepCount > 0 && currentStepIndex >= stepCount) currentStepIndex = stepCount - 1;
 
-  // Missing-translation marker (Option C parity with ModalOverlay): if the
-  // selected sentence — and every reachable sentence on the page — has no mapped
-  // translation, the source text still shows through under the overlay, but the
-  // tooltip itself would be blank. Show a dim tr(STR_NO_TRANSLATION) instead so
-  // the gap is informative rather than empty. For a correctly-translated book the
-  // auto-skip below always lands on a real translation and this never triggers.
+  // Choose the underline span and the tooltip text for the current step. A step groups one
+  // or more CONSECUTIVE source sentences that share ONE translation (the merged-sentence
+  // case), so the span covers ALL of them (spans are a contiguous partition, so the union is
+  // simply [first.startWord, last.endWord)) and the translation is drawn exactly ONCE.
   bool dim = false;
-  if (!hasTranslation(currentSentenceIndex)) {
-    bool found = false;
-    int n = splits.count;
-    // Walk up to n steps in skipDirection, wrapping around.
-    for (int step = 1; step < n && !found; step++) {
-      int i = ((currentSentenceIndex + skipDirection * step) % n + n) % n;
-      if (hasTranslation(i)) {
-        currentSentenceIndex = i;
-        found = true;
-      }
-    }
-    if (!found) dim = true;  // nothing translated on this page — mark, don't vanish
-  }
-
-  if (currentSentenceIndex >= splits.count) {
-    currentSentenceIndex = -1;
-    return;
-  }
-
-  const auto& span = splits.spans[currentSentenceIndex];
-
-  // Get pre-computed translation for this sentence (or the dim marker when absent).
-  const char* text = (!dim && currentSentenceIndex < (int)sentenceTranslations.size())
-                         ? sentenceTranslations[currentSentenceIndex].c_str()
-                         : "";
-  if (!text || text[0] == '\0') {
-    text = tr(STR_NO_TRANSLATION);  // fail informative, not blank
+  SentenceSpan span{};
+  const char* text = nullptr;
+  if (stepCount == 0) {
+    // Nothing translated on this page (Option C parity with ModalOverlay): the source still
+    // shows through, so surface the marker over the first source sentence rather than a blank
+    // popup. Never triggers for a correctly-translated book. No sentences at all → nothing to do.
+    if (splits.count == 0) return;
+    span = splits.spans[0];
+    text = tr(STR_NO_TRANSLATION);
     dim = true;
+  } else {
+    const TooltipStep& st = steps[currentStepIndex];
+    span.startWord = splits.spans[st.firstSentence].startWord;
+    span.endWord = splits.spans[st.lastSentence].endWord;
+    text = sentenceTranslations[st.firstSentence].c_str();
+    if (!text || text[0] == '\0') {  // defensive: a step always carries a non-empty translation
+      text = tr(STR_NO_TRANSLATION);
+      dim = true;
+    }
   }
-  LOG_DBG("TIP", "Drawing%s: '%.80s'", dim ? " (marker)" : "", text);
+  LOG_DBG("TIP", "Drawing step %d/%d%s: '%.80s'", currentStepIndex, stepCount, dim ? " (marker)" : "", text);
 
   const int lh = renderer.getLineHeight(fontId);
   auto bounds = findSentenceBounds(page, span, fontId, xOffset, yOffset);

@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <string>
+#include <vector>
 
 // Forward declarations — implementation lives in src/translator/SentenceSplitter.cpp.
 // (The native test env has no -I for src/translator, so we declare rather than
@@ -23,6 +24,40 @@ struct SentenceSplitResult {
   int count = 0;
 };
 SentenceSplitResult splitSentences(const char* const* words, int wordCount);
+
+// ── Tooltip translation-unit grouping (mirror of TooltipOverlay.cpp) ─────────
+//
+// groupTranslationSteps is a PURE helper, but its home TU (TooltipOverlay.cpp)
+// pulls GfxRenderer/Page/HalStorage and cannot link on the native host, and the
+// native env's build_src_filter is fixed. So — exactly like the SentenceSplitResult
+// struct mirror above — this is a byte-for-byte copy of the production function kept
+// in sync by hand; it lets the collapse RULE (the photo-verified bug) be asserted on
+// the host. Keep identical to src/translator/TooltipOverlay.cpp::groupTranslationSteps.
+struct TooltipStep {
+  int16_t firstSentence;
+  int16_t lastSentence;
+};
+static int groupTranslationSteps(const std::vector<std::string>& sentenceTranslations, TooltipStep* out, int maxSteps) {
+  const int total = static_cast<int>(sentenceTranslations.size());
+  int count = 0;
+  int i = 0;
+  while (i < total && count < maxSteps) {
+    if (sentenceTranslations[i].empty()) {
+      i++;
+      continue;
+    }
+    int j = i;
+    while (j + 1 < total && !sentenceTranslations[j + 1].empty() &&
+           sentenceTranslations[j + 1] == sentenceTranslations[i]) {
+      j++;
+    }
+    out[count].firstSentence = static_cast<int16_t>(i);
+    out[count].lastSentence = static_cast<int16_t>(j);
+    count++;
+    i = j + 1;
+  }
+  return count;
+}
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -225,6 +260,96 @@ void test_countSentencesBefore_start_of_text(void) {
   TEST_ASSERT_EQUAL(0, countSentencesBefore("A. B. C.", "A. B."));
 }
 
+// ── Tooltip grouping: merged-sentence collapse (the photo-verified PT_TOOLTIP bug) ──
+//
+// Engine merged TWO English source sentences into ONE Ukrainian sentence, so both
+// source sentences resolve to the SAME translation string. Pre-fix the tooltip showed
+// that identical translation twice (once per underlined source sentence). Grouping must
+// collapse them into ONE step whose span covers BOTH source sentences, drawn once.
+static TooltipStep g_steps[TEST_MAX_SENTENCES];
+
+// « = U+00AB (C2 AB), » = U+00BB (C2 BB). The merged Ukrainian sentence, joined with «і».
+static const char* UK_MERGED =
+    "\xC2\xAB\xD0\x9B\xD0\xB0\xD1\x81\xD0\xBA\xD0\xB0\xD0\xB2\xD0\xBE \xD0\xBF\xD1\x80\xD0\xBE\xD1\x81\xD0\xB8\xD0\xBC"
+    "\xD0\xBE \xD0\xBD\xD0\xB0 \xD1\x81\xD1\x82\xD0\xB0\xD0\xBD\xD1\x86\xD1\x96\xD1\x8E 83\xC2\xBB, "
+    "\xE2\x80\x94 \xD1\x81\xD0\xBA\xD0\xB0\xD0\xB7\xD0\xB0\xD0\xB2 \xD0\x9A\xD1\x83\xD0\xBB\xD1\x8C\xD0\xB3\xD0\xB0"
+    "\xD0\xB2\xD0\xB8\xD0\xB9 \xD0\xA0\xD1\x96\xD1\x87\xD0\xB0\xD1\x80\xD0\xB4 \xD1\x96 \xD0\xB2\xD1\x96\xD0\xB4"
+    "\xD0\xBA\xD0\xBB\xD0\xB0\xD0\xB2 \xD0\xBA\xD0\xBD\xD0\xB8\xD0\xB3\xD1\x83.";
+
+// THE fix: two source sentences with the SAME translation → one step spanning [0,1].
+void test_groupSteps_photo_case_two_into_one(void) {
+  std::vector<std::string> tr = {UK_MERGED, UK_MERGED};  // both merged source sentences
+  const int n = groupTranslationSteps(tr, g_steps, TEST_MAX_SENTENCES);
+  TEST_ASSERT_EQUAL(1, n);                         // ONE step, not two identical ones
+  TEST_ASSERT_EQUAL(0, g_steps[0].firstSentence);  // span covers the FIRST source sentence...
+  TEST_ASSERT_EQUAL(1, g_steps[0].lastSentence);   // ...through the SECOND — both underlined
+}
+
+// The merged span (contiguous partition) covers every word of both source sentences.
+void test_groupSteps_photo_span_covers_both_sources(void) {
+  // The English originals, tokenized as laid-out page words.
+  SentenceSplitResult sp = splitWords(
+      {"\"Welcome", "to", "station", "83,\"", "Limp", "Richard", "said.", "He", "put", "his", "book", "down."});
+  TEST_ASSERT_EQUAL(2, sp.count);  // engine sees 2 English sentences (SentenceSplitter SSOT)
+
+  std::vector<std::string> tr = {UK_MERGED, UK_MERGED};
+  const int n = groupTranslationSteps(tr, g_steps, TEST_MAX_SENTENCES);
+  TEST_ASSERT_EQUAL(1, n);
+  // Merged underline span = [spans[first].startWord, spans[last].endWord) = every word.
+  const uint16_t startWord = sp.spans[g_steps[0].firstSentence].startWord;
+  const uint16_t endWord = sp.spans[g_steps[0].lastSentence].endWord;
+  TEST_ASSERT_EQUAL(0, startWord);
+  TEST_ASSERT_EQUAL(12, endWord);  // all 12 words underlined as one unit
+}
+
+// Distinct translations must NOT collapse (normal 1:1 mapping is unchanged).
+void test_groupSteps_distinct_no_merge(void) {
+  std::vector<std::string> tr = {"Alpha.", "Beta."};
+  const int n = groupTranslationSteps(tr, g_steps, TEST_MAX_SENTENCES);
+  TEST_ASSERT_EQUAL(2, n);
+  TEST_ASSERT_EQUAL(0, g_steps[0].firstSentence);
+  TEST_ASSERT_EQUAL(0, g_steps[0].lastSentence);
+  TEST_ASSERT_EQUAL(1, g_steps[1].firstSentence);
+  TEST_ASSERT_EQUAL(1, g_steps[1].lastSentence);
+}
+
+// Three consecutive source sentences merged into one translation → one step [0,2].
+void test_groupSteps_three_way_merge(void) {
+  std::vector<std::string> tr = {"Same.", "Same.", "Same."};
+  const int n = groupTranslationSteps(tr, g_steps, TEST_MAX_SENTENCES);
+  TEST_ASSERT_EQUAL(1, n);
+  TEST_ASSERT_EQUAL(0, g_steps[0].firstSentence);
+  TEST_ASSERT_EQUAL(2, g_steps[0].lastSentence);
+}
+
+// An untranslated sentence is not a step and terminates a run — even between equal
+// translations (a page-boundary partial sentence must not be swallowed into a group).
+void test_groupSteps_empty_breaks_run(void) {
+  std::vector<std::string> tr = {"Same.", "", "Same."};
+  const int n = groupTranslationSteps(tr, g_steps, TEST_MAX_SENTENCES);
+  TEST_ASSERT_EQUAL(2, n);
+  TEST_ASSERT_EQUAL(0, g_steps[0].firstSentence);
+  TEST_ASSERT_EQUAL(0, g_steps[0].lastSentence);
+  TEST_ASSERT_EQUAL(2, g_steps[1].firstSentence);
+  TEST_ASSERT_EQUAL(2, g_steps[1].lastSentence);
+}
+
+// Nothing translated on the page → zero steps (render shows the dim marker instead).
+void test_groupSteps_all_empty_zero_steps(void) {
+  std::vector<std::string> tr = {"", "", ""};
+  TEST_ASSERT_EQUAL(0, groupTranslationSteps(tr, g_steps, TEST_MAX_SENTENCES));
+}
+
+// Inverse case: one source sentence whose translation is the concatenation of several
+// engine sentences is a single non-empty string → exactly one step (drawn once).
+void test_groupSteps_one_source_concatenated_translation(void) {
+  std::vector<std::string> tr = {"First part. Second part. Third part."};
+  const int n = groupTranslationSteps(tr, g_steps, TEST_MAX_SENTENCES);
+  TEST_ASSERT_EQUAL(1, n);
+  TEST_ASSERT_EQUAL(0, g_steps[0].firstSentence);
+  TEST_ASSERT_EQUAL(0, g_steps[0].lastSentence);
+}
+
 int main(int /*argc*/, char** /*argv*/) {
   UNITY_BEGIN();
 
@@ -254,6 +379,14 @@ int main(int /*argc*/, char** /*argv*/) {
   RUN_TEST(test_splitSentences_abbreviation_no_split);
   RUN_TEST(test_splitSentences_two_sentences);
   RUN_TEST(test_splitSentences_guillemet_period);
+
+  RUN_TEST(test_groupSteps_photo_case_two_into_one);
+  RUN_TEST(test_groupSteps_photo_span_covers_both_sources);
+  RUN_TEST(test_groupSteps_distinct_no_merge);
+  RUN_TEST(test_groupSteps_three_way_merge);
+  RUN_TEST(test_groupSteps_empty_breaks_run);
+  RUN_TEST(test_groupSteps_all_empty_zero_steps);
+  RUN_TEST(test_groupSteps_one_source_concatenated_translation);
 
   RUN_TEST(test_trimToSentences_first2);
   RUN_TEST(test_trimToSentences_more_than_exists);
