@@ -10,13 +10,11 @@
 class ModalOverlay {
  public:
   // Public because static XML callbacks in the .cpp need access.
-  // NOTE (port): `paragraphIdx` is NEW vs the fork's struct. The selective SAX parse
-  // returns a *sparse* vector whose entries each carry their actual paragraph index —
-  // entries for paragraphs outside `[wantFirst, wantLast]` are skipped entirely, so
-  // we can no longer index by position.
+  // Sparse: only paragraphs in the current page's [first..last] range get an entry, and each
+  // carries its real paragraph index — so we iterate by paragraphIdx, not by vector position.
   struct ParagraphPair {
-    int16_t paragraphIdx = -1;       // sparse: matches the actual page range only
-    std::string origText;            // empty unless this is a boundary entry (wantFirst or wantLast)
+    int16_t paragraphIdx = -1;       // actual chapter paragraph index this entry represents
+    std::string origText;            // kept ONLY for boundary paragraphs (first/last) — empty otherwise
     std::string translation;         // translated paragraph text
     int16_t origSentenceCount = 0;   // number of sentences in original paragraph
     int16_t transSentenceCount = 0;  // number of sentences in translation
@@ -38,6 +36,15 @@ class ModalOverlay {
   bool isActive() const { return active; }
 
  private:
+  // One paragraph to display in the modal, in reading order. `text` is either a
+  // real translation or — when no translation exists for this paragraph — the
+  // page's own SOURCE text (Option C fallback), in which case render() appends a
+  // short dim STR_NO_TRANSLATION marker so the gap is visible but unobtrusive.
+  struct DisplayPara {
+    std::string text;
+    bool translated = true;  // false => source fallback; render() adds the dim marker line
+  };
+
   bool active = false;
   int16_t scrollOffset = 0;
   int16_t totalContentHeight = 0;
@@ -47,15 +54,14 @@ class ModalOverlay {
 
   std::string translatedHtmlPath;
 
-  // Page-level only: translations for paragraphs visible on current page.
-  // Chapter-level data is NOT cached — parsed on demand per page to save RAM.
-  std::vector<std::string> pageTranslations;
+  // Page-level only: what to show for each VISIBLE source paragraph on the current
+  // page. Dense over the page's [first..last] range (one entry per visible
+  // paragraph — translation OR source fallback), never sparse. Chapter-level data
+  // is NOT cached — parsed on demand per page to save RAM.
+  std::vector<DisplayPara> pageParagraphs;
+  int16_t translatedCount = 0;  // paragraphs on this page with a REAL translation (gates opening)
 
   void preparePage(const Page& page);
-
-  static int measureParagraphHeight(GfxRenderer& renderer, int fontId, const char* text, int maxW, int lh, int spW);
-  static int drawParagraph(GfxRenderer& renderer, int fontId, const char* text, int x, int y, int maxW, int lh, int spW,
-                           int clipTop, int clipBottom);
 };
 
 int getModalFontId();
