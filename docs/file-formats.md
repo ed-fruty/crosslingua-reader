@@ -90,6 +90,17 @@ if (parsedSize != fileSize) {
 
 ## `section.bin`
 
+### Version 36
+
+Version 36 reconciles two lines that had independently numbered their own
+formats: this branch used 32–35 for the Pre-Translation fields (below), while
+upstream `develop` used its own "v32" for lazy image extraction — `ImageBlock`
+now serializes the book-internal source href (`srcPath`) after the cache path,
+so images are header-probed at build time and extracted from the EPUB on first
+render. The two "v32+" layouts are mutually unreadable, so v36 supersedes both:
+the merged format carries the Pre-Translation fields **and** the `srcPath`
+string, and the bump forces a rebuild of sections cached by either line.
+
 ### Version 35
 
 Version 35 is binary-identical to version 34 in structure; it was bumped because
@@ -161,7 +172,7 @@ import std.mem;
 import std.string;
 import std.core;
 
-#define EXPECTED_VERSION 32
+#define EXPECTED_VERSION 36
 #define MAX_STRING_LENGTH 65535
 #define FOOTNOTE_NUMBER_LEN 32
 #define FOOTNOTE_HREF_LEN 96
@@ -244,6 +255,7 @@ struct TextBlock {
 
 struct ImageBlock {
     String imagePath;
+    String srcPath [[comment("v36: book-internal source href; extracted on first render")]];
     s16 width;
     s16 height;
 };
