@@ -166,12 +166,16 @@ bool Section::loadSectionFile(const ReaderRenderSpec& spec) {
     serialization::readPod(file, fileImageRendering);
     serialization::readPod(file, fileFocusReadingEnabled);
 
+    // Match on the EFFECTIVE (post-fallback) mode: an untranslated chapter is laid out and its
+    // header stamped in Normal mode by startBuild(), so it must also be looked up under Normal --
+    // otherwise a non-Normal requested mode never matches the Normal-stamped cache and rebuilds on
+    // every visit. See effectiveTranslationMode().
     if (spec.fontId != fileFontId || spec.lineCompression != fileLineCompression ||
         spec.extraParagraphSpacing != fileExtraParagraphSpacing || spec.paragraphAlignment != fileParagraphAlignment ||
         spec.viewportWidth != fileViewportWidth || spec.viewportHeight != fileViewportHeight ||
         spec.hyphenationEnabled != fileHyphenationEnabled || spec.embeddedStyle != fileEmbeddedStyle ||
-        spec.translationMode != fileTranslationMode || spec.imageRendering != fileImageRendering ||
-        spec.focusReadingEnabled != fileFocusReadingEnabled) {
+        effectiveTranslationMode(spec.translationMode) != fileTranslationMode ||
+        spec.imageRendering != fileImageRendering || spec.focusReadingEnabled != fileFocusReadingEnabled) {
       file.close();
       LOG_ERR("SCT", "Deserialization failed: Parameters do not match");
       clearCache();
@@ -255,10 +259,14 @@ bool Section::hasTranslatedHtml() const {
   return Storage.exists(getTranslatedHtmlPath().c_str());
 }
 
-bool Section::createSectionFile(const ReaderRenderSpec& spec, const std::function<void()>& popupFn,
-                                const std::function<void()>& autoFallbackFn) {
+uint8_t Section::effectiveTranslationMode(const uint8_t requestedMode) const {
+  // Non-Normal mode with no committed translation -> lay out in Normal (0). See the header comment.
+  return (requestedMode != 0 /* PT_NORMAL */ && !hasTranslatedHtml()) ? 0 : requestedMode;
+}
+
+bool Section::createSectionFile(const ReaderRenderSpec& spec, const std::function<void()>& popupFn) {
   // One-shot build: start, then lay out the whole section in a single pass.
-  if (!startBuild(spec, popupFn, autoFallbackFn)) {
+  if (!startBuild(spec, popupFn)) {
     return false;
   }
   if (!buildSomeMore(0)) {  // 0 = build to completion
@@ -267,8 +275,7 @@ bool Section::createSectionFile(const ReaderRenderSpec& spec, const std::functio
   return buildComplete_;
 }
 
-bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void()>& popupFn,
-                         const std::function<void()>& autoFallbackFn) {
+bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void()>& popupFn) {
   if (build_) {
     LOG_ERR("SCT", "startBuild called while a build is already active");
     return false;
@@ -306,16 +313,16 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   // (guaranteed by the atomic ".part" -> rename write); never lay out from a partial.
   const bool usingTranslatedSource = hasTranslatedHtml();
 
-  // Auto-fallback: a non-Normal display mode with no translated HTML would filter for
-  // translated words that do not exist and render a blank chapter. Fall back to Normal so the
-  // chapter still renders, and notify the caller so it can update settings + toast the user.
+  // Per-chapter auto-fallback: a non-Normal display mode with no translated HTML would filter for
+  // translated words that do not exist and render a blank chapter. Lay this chapter out in Normal so
+  // it still renders. This is a layout/cache-key decision only -- the persisted display-mode setting
+  // is untouched (per-chapter), and the reader (which owns the user-facing toast) has already decided
+  // whether to notify on entry. usingTranslatedSource == !hasTranslatedHtml() drives the same
+  // downgrade that loadSectionFile() keys on via effectiveTranslationMode().
   uint8_t effectiveMode = spec.translationMode;
   if (!usingTranslatedSource && effectiveMode != 0 /* Normal */) {
-    LOG_DBG("SCT", "No translation for spine %d; falling back to Normal mode", spineIndex);
+    LOG_DBG("SCT", "No translation for spine %d; laying out in Normal mode", spineIndex);
     effectiveMode = 0;
-    if (autoFallbackFn) {
-      autoFallbackFn();
-    }
   }
   // The header cache-key and the parser both key on the effective (post-fallback) mode.
   ReaderRenderSpec effectiveSpec = spec;

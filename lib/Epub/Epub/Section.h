@@ -23,6 +23,16 @@ class Section {
   void writeSectionFileHeader(const ReaderRenderSpec& spec);
   uint32_t onPageComplete(std::unique_ptr<Page> page);
 
+  // Pre-Translation per-chapter fallback: a non-Normal display mode on a chapter with no committed
+  // translated HTML would filter for translated words that do not exist and render a blank chapter,
+  // so such a chapter is laid out (and cache-keyed) in Normal mode instead. This is the single
+  // source of truth for the fallback, shared by loadSectionFile() (cache-key match) and startBuild()
+  // (layout) so the .bin is written and looked up under the SAME effective mode -- an untranslated
+  // chapter caches under Normal and reloads as a cache HIT, never a permanent key mismatch that
+  // forces a rebuild on every visit. The fallback is per-chapter only: it never touches the
+  // persisted display-mode setting, so re-entering a translated chapter restores the mode.
+  uint8_t effectiveTranslationMode(uint8_t requestedMode) const;
+
   // Page-offset table entry, kept in RAM while an incremental build is running so
   // already-built pages can be located in the partially-written .bin.
   struct PageLutEntry {
@@ -86,8 +96,7 @@ class Section {
   ~Section();
   bool loadSectionFile(const ReaderRenderSpec& spec);
   bool clearCache() const;
-  bool createSectionFile(const ReaderRenderSpec& spec, const std::function<void()>& popupFn = nullptr,
-                         const std::function<void()>& autoFallbackFn = nullptr);
+  bool createSectionFile(const ReaderRenderSpec& spec, const std::function<void()>& popupFn = nullptr);
 
   // Pre-Translation: path to the persisted bilingual HTML for this spine
   // (`<cache>/sections/<spineIndex>.translated.html`). The translator subsystem writes it;
@@ -101,8 +110,7 @@ class Section {
   // builds. createSectionFile() above is the one-shot wrapper over these.
   //   if (!startBuild(...)) fail;
   //   each tick: buildSomeMore(N); render up to pageCount; when isBuildComplete() stop.
-  bool startBuild(const ReaderRenderSpec& spec, const std::function<void()>& popupFn = nullptr,
-                  const std::function<void()>& autoFallbackFn = nullptr);
+  bool startBuild(const ReaderRenderSpec& spec, const std::function<void()>& popupFn = nullptr);
   // Lay out up to maxPages more pages (maxPages <= 0 = build to completion). Returns
   // false on error (the build is abandoned). Sets isBuildComplete() when finished.
   bool buildSomeMore(int maxPages);

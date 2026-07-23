@@ -71,9 +71,10 @@ class EpubReaderActivity final : public Activity {
   // this toast instead of the previous silent no-op. Timed out in loop() like the other toasts.
   bool showModalNoTranslationToast = false;
   unsigned long modalNoTranslationToastTime = 0UL;
-  // Pre-Translation: shown when the current chapter has no translated HTML
-  // but the user picked a non-Normal display mode. Section auto-falls-back to
-  // Normal and triggers this toast via the autoFallbackFn callback.
+  // Pre-Translation: shown when the current chapter has no translated HTML but the user picked a
+  // non-Normal display mode. render() detects this on entry to each chapter and lays the chapter out
+  // in Normal for THAT chapter only (per-chapter fallback -- the display-mode setting is preserved),
+  // toasting so the switch isn't silent.
   bool showingAutoFallbackToast = false;
   unsigned long autoFallbackToastTime = 0UL;
   bool currentPageBookmarked = false;

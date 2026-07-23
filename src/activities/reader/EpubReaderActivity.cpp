@@ -1229,6 +1229,20 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     // section must not suppress watermark-triggered rebuilds for this one.
     partialRebuildStartFailed = false;
 
+    // Pre-Translation per-chapter auto-fallback notification. When a non-Normal display mode is
+    // active but THIS chapter has no committed translation, Section lays it out in Normal (see
+    // Section::effectiveTranslationMode) -- toast the user so the switch isn't silent. This is the
+    // single, cache-state-independent trigger for every user-facing entry into a chapter: the
+    // enclosing `if (!section)` block runs exactly once per section (re)creation, i.e. once per
+    // navigation (TOC/chapter select, next/prev chapter, footnote jump, KOSync return, translator
+    // relaunch, mode-change reposition), and never on background/partial extension builds (those
+    // reuse the existing section). Because the fallback is per-chapter, the setting is NOT changed:
+    // re-entering a translated chapter restores the mode with no rebuild. Gated so there is no toast
+    // when the mode is already Normal and no toast for chapters that do have a translation.
+    if (renderSpec.translationMode != CrossPointSettings::PT_NORMAL && !section->hasTranslatedHtml()) {
+      showAutoFallbackToast();
+    }
+
     // A finalized cache serves every page as-is. A partial cache (suspended build from a
     // previous session) serves its pages instantly too, but a build must still run to lay
     // out the rest -- it re-parses from the top in the background (HTML already cached,
@@ -1253,11 +1267,6 @@ void EpubReaderActivity::render(RenderLock&& lock) {
       } else {
         LOG_DBG("ERS", "Cache not found, building...");
       }
-
-      // Pre-Translation: Section calls this when the chapter has no translated HTML but a
-      // non-Normal display mode is selected -- it resets the mode to Normal and queues a toast.
-      // Only the user-facing build entries below pass it; background/continuation builds don't.
-      const auto autoFallbackFn = [this]() { showAutoFallbackToast(); };
 
       // Jumps that need the final pagination or the anchor map -- explicit page jumps,
       // fragment anchors, percent jumps, and cross-setting progress repositioning -- can't
@@ -1288,7 +1297,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
         // Lend the framebuffer's 48 KB to the blocking full build; restored
         // (white) at scope exit, and the page render below redraws everything.
         GfxRenderer::FrameBufferLoan loan(renderer);
-        if (!section->createSectionFile(renderSpec, popupFn, autoFallbackFn)) {
+        if (!section->createSectionFile(renderSpec, popupFn)) {
           LOG_ERR("ERS", "Failed to persist page data to SD");
           section.reset();
           loan.end();  // restore before anything draws
@@ -1352,7 +1361,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
           // background buildSomeMore chunks in loop() do NOT get the loan: they
           // deliberately interleave with page renders. Restored before render.
           GfxRenderer::FrameBufferLoan loan(renderer);
-          if (!section->startBuild(renderSpec, nullptr, autoFallbackFn)) {
+          if (!section->startBuild(renderSpec, nullptr)) {
             LOG_ERR("ERS", "Failed to start section build");
             section.reset();
             loan.end();  // restore before anything draws (showBuildError renders a popup)
@@ -2096,11 +2105,11 @@ void EpubReaderActivity::updateBookmarkFlag() {
 }
 
 void EpubReaderActivity::showAutoFallbackToast() {
-  // Called by Section when the chapter has no translated HTML but mode != PT_NORMAL.
-  // Persist the fallback so subsequent chapters don't repeat the toast, and queue
-  // a brief on-screen notification.
-  SETTINGS.translationDisplayMode = CrossPointSettings::PT_NORMAL;
-  SETTINGS.saveToFile();
+  // Called from render() on entry to a chapter that has no translated HTML while a non-Normal
+  // display mode is active. The fallback is PER-CHAPTER: the chapter is laid out in Normal (by
+  // Section), but the persisted display-mode setting is deliberately NOT changed, so returning to a
+  // translated chapter restores the mode. This only queues a brief on-screen notification so the
+  // per-chapter switch isn't silent; it is timed out in loop().
   showingAutoFallbackToast = true;
   autoFallbackToastTime = millis();
   requestUpdate();
