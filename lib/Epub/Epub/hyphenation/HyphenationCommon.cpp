@@ -35,15 +35,20 @@ uint32_t toLowerLatinImpl(const uint32_t cp) {
   }
 }
 
-// Convert Cyrillic uppercase letters to lowercase
-// Cyrillic uppercase range 0x0410-0x042F maps to lowercase by adding 0x20
-// Special case: Cyrillic capital IO (0x0401) maps to lowercase io (0x0451)
+// Convert Cyrillic uppercase letters to lowercase.
 uint32_t toLowerCyrillicImpl(const uint32_t cp) {
+  // Extended Cyrillic capitals U+0400-U+040F map to lowercase U+0450-U+045F (+0x50).
+  // Covers Ё (U+0401) and the Ukrainian Є (U+0404), І (U+0406), Ї (U+0407).
+  if (cp >= 0x0400 && cp <= 0x040F) {
+    return cp + 0x50;
+  }
+  // Core Russian А-Я (U+0410-U+042F) map to а-я (+0x20).
   if (cp >= 0x0410 && cp <= 0x042F) {
     return cp + 0x20;
   }
-  if (cp == 0x0401) {
-    return 0x0451;
+  // Ґ (U+0490) -> ґ (U+0491), Ukrainian GHE WITH UPTURN.
+  if (cp == 0x0490) {
+    return 0x0491;
   }
   return cp;
 }
