@@ -177,6 +177,8 @@ void BookTranslatorActivity::scanAlreadyTranslated() {
   const auto& cachePath = epub->getCachePath();
   for (int i = 0; i < totalChapters; i++) {
     const std::string path = cachePath + "/sections/" + std::to_string(i) + ".translated.html";
+    // The final file appears only via the atomic ".part" -> rename commit, so its mere
+    // existence means a complete translation (an interrupted run leaves only a ".part").
     if (Storage.exists(path.c_str())) {
       alreadyTranslatedCount++;
     }
@@ -340,9 +342,11 @@ void BookTranslatorActivity::runTranslation() {
 
     const std::string translatedPath = cachePath + "/sections/" + std::to_string(si) + ".translated.html";
 
-    // Skip if already translated and user chose "Skip Translated". Skipped chapters do
-    // no network work, so they need no framebuffer cycle or repaint (which would cost
-    // a slow E-ink refresh each) — just advance the overall counter and move on.
+    // Skip if already translated and user chose "Skip Translated". The final file exists
+    // only after the atomic ".part" -> rename commit, so its presence means a complete
+    // translation. Skipped chapters do no network work, so they need no framebuffer cycle
+    // or repaint (which would cost a slow E-ink refresh each) — just advance the overall
+    // counter and move on.
     if (skipTranslated && Storage.exists(translatedPath.c_str())) {
       chaptersCompleted = chaptersCompleted + 1;  // ++ on volatile is deprecated in C++20
       LOG_DBG("BKT", "Chapter %d/%d: skipped (already translated)", si + 1, totalChapters);
@@ -366,12 +370,6 @@ void BookTranslatorActivity::runTranslation() {
       boundaryPending = false;
     }
     if (cancelFlag) break;
-
-    // Re-translate path: remove the stale output BEFORE we start so a mid-flight
-    // cancel cannot leave behind a half-stale file mixed with the previous run.
-    if (Storage.exists(translatedPath.c_str())) {
-      Storage.remove(translatedPath.c_str());
-    }
 
     // Extract chapter HTML from the EPUB to a temp scratch file.
     const auto& spineItem = epub->getSpineItem(si);
@@ -398,8 +396,15 @@ void BookTranslatorActivity::runTranslation() {
 
     LOG_DBG("BKT", "Ch %d/%d: href=%s, blocks=%d", si + 1, totalChapters, spineItem.href.c_str(), (int)progressTotal);
 
+    // Write to a ".part" file and only rename it into the final path after a clean result —
+    // the same crash-safe commit protocol as ChapterTranslatorActivity. A power loss
+    // mid-chapter leaves only a ".part" (ignored); the final file appears only via the
+    // rename, so any prior committed translation survives a failed re-translation.
+    const std::string partPath = translatedPath + ".part";
+    Storage.remove(partPath.c_str());  // clear any stale partial from an interrupted run
+
     HalFile outFile;
-    if (!Storage.openFileForWrite("BKT", translatedPath, outFile)) {
+    if (!Storage.openFileForWrite("BKT", partPath, outFile)) {
       Storage.remove(tmpPath.c_str());
       snprintf(statusMsg, sizeof(statusMsg), "Ch %d: failed to create output", si + 1);
       taskFailed = true;
@@ -414,24 +419,46 @@ void BookTranslatorActivity::runTranslation() {
     outFile.close();
     Storage.remove(tmpPath.c_str());
 
-    LOG_DBG("BKT", "Ch %d/%d: translated=%d, skipped=%d, errors=%d, cancelled=%d", si + 1, totalChapters,
-            result.paragraphsTranslated, result.paragraphsSkipped, result.abortedOnErrors ? 1 : 0,
-            result.cancelled ? 1 : 0);
+    LOG_DBG("BKT", "Ch %d/%d: translated=%d, skipped=%d, failed=%d, errors=%d, cancelled=%d", si + 1, totalChapters,
+            result.paragraphsTranslated, result.paragraphsSkipped, result.translateFailures,
+            result.abortedOnErrors ? 1 : 0, result.cancelled ? 1 : 0);
 
     if (cancelFlag || result.cancelled) {
       // Drop the partial output of the in-flight chapter. Finished chapters retain
-      // their .translated.html on disk.
-      Storage.remove(translatedPath.c_str());
+      // their committed .translated.html on disk.
+      Storage.remove(partPath.c_str());
       break;
     }
 
     if (result.abortedOnErrors) {
-      Storage.remove(translatedPath.c_str());
+      Storage.remove(partPath.c_str());
       if (result.errorDetail[0]) {
         snprintf(statusMsg, sizeof(statusMsg), "Ch %d: %s", si + 1, result.errorDetail);
       } else {
         snprintf(statusMsg, sizeof(statusMsg), "Ch %d: too many API errors", si + 1);
       }
+      taskFailed = true;
+      return;
+    }
+
+    // A chapter that HAD translatable content but translated none of it (every paragraph
+    // failed) must not be committed as a bogus ".translated.html" — abort so it can be
+    // retried. (A cover / image-only / all-already-translated chapter has zero failures and
+    // is a valid passthrough, committed below.)
+    if (result.paragraphsTranslated == 0 && result.translateFailures > 0) {
+      Storage.remove(partPath.c_str());
+      snprintf(statusMsg, sizeof(statusMsg), "Ch %d: no paragraphs translated", si + 1);
+      taskFailed = true;
+      return;
+    }
+
+    // Commit atomically: remove any prior final output, then promote ".part" -> final. A
+    // chapter with zero translatable content (cover / image-only / all already translated)
+    // is a valid passthrough result, so it commits like any other.
+    Storage.remove(translatedPath.c_str());
+    if (!Storage.rename(partPath.c_str(), translatedPath.c_str())) {
+      Storage.remove(partPath.c_str());
+      snprintf(statusMsg, sizeof(statusMsg), "Ch %d: failed to finalize", si + 1);
       taskFailed = true;
       return;
     }

@@ -344,12 +344,15 @@ void ChapterTranslatorActivity::runTranslation() {
   const auto sectionsDir = epub->getCachePath() + "/sections";
   Storage.mkdir(sectionsDir.c_str());
 
-  if (Storage.exists(translatedHtmlPath.c_str())) {
-    Storage.remove(translatedHtmlPath.c_str());
-  }
+  // Write to a ".part" file, then atomically rename it into place only on success. This
+  // guarantees a power loss mid-translation never leaves a truncated file at the final path:
+  // the final file appears solely via the post-completion rename, so hasTranslatedHtml()
+  // (which trusts the final file's existence) can never observe a partial.
+  const std::string partPath = translatedHtmlPath + ".part";
+  Storage.remove(partPath.c_str());  // clear any stale partial from an interrupted run
 
   HalFile outFile;
-  if (!Storage.openFileForWrite("CHT", translatedHtmlPath, outFile)) {
+  if (!Storage.openFileForWrite("CHT", partPath, outFile)) {
     Storage.remove(tmpPath.c_str());
     snprintf(statusMsg, sizeof(statusMsg), "Failed to create output file");
     taskFailed = true;
@@ -369,14 +372,15 @@ void ChapterTranslatorActivity::runTranslation() {
 
   if (cancelFlag || lastResult.cancelled) {
     // Partial output is unusable — section loader would render half-translated
-    // content as if it were complete. Delete and mark cancelled.
-    Storage.remove(translatedHtmlPath.c_str());
+    // content as if it were complete. Discard the ".part" and mark cancelled; any
+    // prior committed translation at the final path is left untouched.
+    Storage.remove(partPath.c_str());
     taskDone = true;
     return;
   }
 
   if (lastResult.abortedOnErrors) {
-    Storage.remove(translatedHtmlPath.c_str());
+    Storage.remove(partPath.c_str());
     if (lastResult.errorDetail[0]) {
       snprintf(statusMsg, sizeof(statusMsg), "%s", lastResult.errorDetail);
     } else {
@@ -386,15 +390,30 @@ void ChapterTranslatorActivity::runTranslation() {
     return;
   }
 
-  if (lastResult.paragraphsTranslated == 0) {
-    Storage.remove(translatedHtmlPath.c_str());
+  // Chapter-success semantics: zero translated paragraphs is only a FAILURE when the
+  // chapter actually had translatable content that failed. A cover / image-only /
+  // fully-already-translated chapter legitimately translates nothing — that passthrough
+  // output is a valid result and is committed like any other.
+  if (lastResult.paragraphsTranslated == 0 && (lastResult.translateFailures > 0 || lastResult.abortedOnErrors)) {
+    Storage.remove(partPath.c_str());
     snprintf(statusMsg, sizeof(statusMsg), "No paragraphs translated");
     taskFailed = true;
     return;
   }
 
-  LOG_DBG("CHT", "Translation done: %d translated, %d skipped", lastResult.paragraphsTranslated,
-          lastResult.paragraphsSkipped);
+  // Commit atomically: remove any prior final output, then promote ".part" -> final. The
+  // rename is the commit point — a completed translation is simply "the final file exists";
+  // a crash before the rename leaves only the ".part", which is ignored on the next run.
+  Storage.remove(translatedHtmlPath.c_str());
+  if (!Storage.rename(partPath.c_str(), translatedHtmlPath.c_str())) {
+    Storage.remove(partPath.c_str());
+    snprintf(statusMsg, sizeof(statusMsg), "Failed to finalize output");
+    taskFailed = true;
+    return;
+  }
+
+  LOG_DBG("CHT", "Translation done: %d translated, %d skipped, %d failed", lastResult.paragraphsTranslated,
+          lastResult.paragraphsSkipped, lastResult.translateFailures);
   taskDone = true;
 }
 

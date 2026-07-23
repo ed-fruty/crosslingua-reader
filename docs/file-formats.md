@@ -90,6 +90,13 @@ if (parsedSize != fileSize) {
 
 ## `section.bin`
 
+### Version 34
+
+Version 34 is binary-identical to version 33 in layout; it was bumped because
+Side-by-Side mode now lays out an inline "not translated" marker after
+originals that have no paired translation, changing the cached line content
+for bilingual sections built by earlier versions.
+
 ### Version 33
 
 Each file in `sections/*.bin` stores one laid-out spine section. The header is
@@ -346,3 +353,51 @@ if (parsedSize != fileSize) {
     std::warning(std::format("Unparsed data detected: {} bytes remaining at offset 0x{:X}", fileSize - parsedSize, parsedSize));
 }
 ```
+
+## Translated chapter HTML (`sections/<n>.translated.html`)
+
+When a chapter is translated on the device (or a book ships already bilingual), the
+translated chapter is written as a plain XHTML sidecar next to the cached section,
+named `sections/<spineIndex>.translated.html` inside the book's
+`.crosspoint/epub_<hash>/` directory. Translated paragraphs carry a `lang` /
+`xml:lang` attribute whose value differs from the book's primary language (declared in
+`content.opf`); the layout parser treats those blocks as translations and pairs, dims,
+or filters them according to the active **Translation Mode** (the `translationMode`
+byte in the `section.bin` header). See the
+[Pre-Translation guide](./pre-translation.md#how-it-stores-translations).
+
+The reader prefers this sidecar over re-extracting the original chapter from the EPUB,
+so translated content **survives layout-cache invalidation**: changing the font, size,
+or margins deletes the `.bin` layout cache and rebuilds it from the already-translated
+HTML, without re-contacting the network. Deleting a book's cache directory (or the
+specific `.translated.html`) removes the translation.
+
+### Atomic commit (`.translated.html.part`)
+
+The sidecar is committed atomically. The translator writes to
+`sections/<spineIndex>.translated.html.part` and only renames it into place once a
+clean, complete write has finished. Consequences:
+
+- A finished translation is exactly "the final file exists" —
+  `Section::hasTranslatedHtml()` is a plain existence check on the final path. A power
+  loss mid-translation leaves only a `.part`, never a truncated final file, so the
+  reader never lays out from a partial.
+- `Section::createSectionFile()` builds from the translated source only when
+  `hasTranslatedHtml()` is true, never from a `.part`.
+- A leftover `.part` from an interrupted run is transient; `Section::clearCache()`
+  reclaims it on the next `.bin` invalidation, while the completed final file is
+  preserved across that invalidation.
+
+### Side-by-Side "not translated" marker
+
+`section.bin` layouts built in **Side by Side** mode (`translationMode == 5`) may
+contain extra dim marker words: when a source paragraph has no paired translation, the
+layout parser appends a short, dimmed `tr(STR_NO_TRANSLATION)` marker inline after the
+source text so the gap is visible (see [Side by Side](./pre-translation.md#side-by-side)).
+The marker words reuse the existing per-word `TRANSLATED` style bit for dimming and add
+no new fields, so the serialized structure is unchanged and `SECTION_FILE_VERSION` is
+**not** bumped for it. Because `translationMode` is already part of the cache-busting
+header, a section cached before this change simply lacks the marker until it is next
+rebuilt; it never mismatches the format. (A section with *no* translation at all falls
+back to Normal mode during layout, so the marker only appears in partially-translated
+Side-by-Side sections.)

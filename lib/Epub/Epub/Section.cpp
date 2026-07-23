@@ -25,7 +25,7 @@ namespace {
 //      so a bilingual (e.g. en->uk) book's translated text finally breaks. Hyphenated splits
 //      are baked into the serialized pages, so sections cached under v32 (English-only splits
 //      on Cyrillic text) must be regenerated.
-constexpr uint8_t SECTION_FILE_VERSION = 33;
+constexpr uint8_t SECTION_FILE_VERSION = 34;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
@@ -210,6 +210,17 @@ bool Section::clearCache() const {
   if (Storage.exists(tmpBin.c_str())) {
     Storage.remove(tmpBin.c_str());
   }
+
+  // Remove a stale partial translation if one was left behind by an interrupted run. The
+  // completed translated HTML is intentionally preserved so that translations survive .bin
+  // cache invalidation (font/size changes, re-layout). Only the ".part" is transient: the
+  // translator writes there and renames into place atomically on a clean, complete write, so a
+  // lingering ".part" always means an aborted run and is never a source to lay out from.
+  const auto partPath = getTranslatedHtmlPath() + ".part";
+  if (Storage.exists(partPath.c_str())) {
+    Storage.remove(partPath.c_str());
+  }
+
   if (!Storage.exists(filePath.c_str())) {
     LOG_DBG("SCT", "Cache does not exist, no action needed");
     return true;
@@ -228,7 +239,15 @@ std::string Section::getTranslatedHtmlPath() const {
   return epub->getCachePath() + "/sections/" + std::to_string(spineIndex) + ".translated.html";
 }
 
-bool Section::hasTranslatedHtml() const { return Storage.exists(getTranslatedHtmlPath().c_str()); }
+bool Section::hasTranslatedHtml() const {
+  // The translated HTML is committed atomically: it is written to a ".part" file and only
+  // renamed into place after a clean, complete write. So a finished translation is exactly
+  // "the final file exists" — a power loss mid-translation leaves only a ".part", never a
+  // truncated final file. This also keeps pre-existing translated caches (written before the
+  // atomic-commit change) valid, so users are never forced to re-translate. The stale ".part"
+  // itself is reclaimed by clearCache() on the next .bin invalidation.
+  return Storage.exists(getTranslatedHtmlPath().c_str());
+}
 
 bool Section::createSectionFile(const ReaderRenderSpec& spec, const std::function<void()>& popupFn,
                                 const std::function<void()>& autoFallbackFn) {
@@ -277,7 +296,9 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   // produced one for this spine. It survives layout-cache invalidation (font/size/mode only
   // invalidate the .bin) and is parsed directly instead of the unzipped chapter HTML.
   const auto translatedPath = getTranslatedHtmlPath();
-  const bool usingTranslatedSource = Storage.exists(translatedPath.c_str());
+  // Only build from the translated HTML when it exists as a complete, committed file
+  // (guaranteed by the atomic ".part" -> rename write); never lay out from a partial.
+  const bool usingTranslatedSource = hasTranslatedHtml();
 
   // Auto-fallback: a non-Normal display mode with no translated HTML would filter for
   // translated words that do not exist and render a blank chapter. Fall back to Normal so the
