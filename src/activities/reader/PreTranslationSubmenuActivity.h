@@ -47,6 +47,10 @@ class PreTranslationSubmenuActivity final : public Activity {
     PICK_SOURCE_LANG,
     CYCLE_ENGINE,
     ENTER_API_KEY,
+    // Tooltip-mode (PT_TOOLTIP) controls. Persisted manually via CrossPointSettings toJson/fromJson
+    // (NOT SettingsList.h) so they aren't double-written; edited only from this submenu.
+    CYCLE_TOOLTIP_BUTTONS,
+    CYCLE_TOOLTIP_BEHAVIOR,
   };
 
   explicit PreTranslationSubmenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
@@ -89,6 +93,8 @@ class PreTranslationSubmenuActivity final : public Activity {
   const char* engineLabel() const;
   const char* targetLangLabel() const;
   const char* sourceLangLabel() const;
+  const char* tooltipButtonsLabel() const;
+  const char* tooltipBehaviorLabel() const;
   // Writes a masked representation of the API key into `out`.
   void maskedApiKey(char* out, size_t outSize) const;
 

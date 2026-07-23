@@ -137,9 +137,10 @@ enum class BootResume : uint8_t {
 // startDeepSleep() does not return, so a set latch only ends at the wakeup reset.
 static bool deepSleepInProgress = false;
 
-// Pre-Translation: map the 7-mode display setting to the renderer's 3-level
-// gray value (PT_DARK->1, PT_LIGHT->2, everything else->0). constexpr keeps
-// this as a compile-time lookup with zero runtime/flash overhead.
+// Pre-Translation: map the 8-mode display setting to the renderer's 3-level
+// gray value (PT_DARK->1, PT_LIGHT->2, everything else->0, incl. PT_TOOLTIP
+// which renders original-only in normal black). constexpr keeps this as a
+// compile-time lookup with zero runtime/flash overhead.
 static constexpr uint8_t modeToGray(uint8_t mode) {
   return (mode == CrossPointSettings::PT_DARK) ? 1 : (mode == CrossPointSettings::PT_LIGHT) ? 2 : 0;
 }

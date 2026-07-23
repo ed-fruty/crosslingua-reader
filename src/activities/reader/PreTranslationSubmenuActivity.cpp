@@ -81,9 +81,16 @@ void PreTranslationSubmenuActivity::rebuildAfterReturn() {
 
 void PreTranslationSubmenuActivity::buildMenuItems() {
   menuItems.clear();
-  menuItems.reserve(8);
+  menuItems.reserve(10);
 
   menuItems.push_back({Action::CYCLE_DISPLAY_MODE, StrId::STR_DISPLAY_MODE});
+
+  // Tooltip-mode controls sit directly under Display Mode (they only affect PT_TOOLTIP), shown
+  // only while that mode is selected so they don't clutter the menu for other display modes.
+  if (SETTINGS.translationDisplayMode == CrossPointSettings::PT_TOOLTIP) {
+    menuItems.push_back({Action::CYCLE_TOOLTIP_BUTTONS, StrId::STR_TOOLTIP_BUTTONS});
+    menuItems.push_back({Action::CYCLE_TOOLTIP_BEHAVIOR, StrId::STR_TOOLTIP_NAV});
+  }
 
   menuItems.push_back(
       {Action::TRANSLATE_CHAPTER, chapterIsTranslated ? StrId::STR_RETRANSLATE_CHAPTER : StrId::STR_TRANSLATE_CHAPTER});
@@ -153,6 +160,13 @@ void PreTranslationSubmenuActivity::onActionSelected(Action a) {
       }
       SETTINGS.translationDisplayMode = newMode;
       SETTINGS.saveToFile();
+      // The tooltip-control rows are shown only in PT_TOOLTIP; rebuild so they appear/disappear as
+      // the mode is cycled through. The cursor is on the Display Mode row (index 0), which the
+      // rebuild preserves.
+      buildMenuItems();
+      if (selectedIndex >= static_cast<int>(menuItems.size())) {
+        selectedIndex = static_cast<int>(menuItems.size()) - 1;
+      }
       requestUpdate();
       return;
     }
@@ -239,6 +253,20 @@ void PreTranslationSubmenuActivity::onActionSelected(Action a) {
       requestUpdate();
       return;
 
+    case Action::CYCLE_TOOLTIP_BUTTONS:
+      // 0 = front (Left/Right), 1 = side (PageBack/PageForward).
+      SETTINGS.tooltipButtons = static_cast<uint8_t>((SETTINGS.tooltipButtons + 1) % 2);
+      SETTINGS.saveToFile();
+      requestUpdate();
+      return;
+
+    case Action::CYCLE_TOOLTIP_BEHAVIOR:
+      // 0 = loop (wrap sentences), 1 = page turn (advance/retreat at a boundary).
+      SETTINGS.tooltipBehavior = static_cast<uint8_t>((SETTINGS.tooltipBehavior + 1) % 2);
+      SETTINGS.saveToFile();
+      requestUpdate();
+      return;
+
     case Action::ENTER_API_KEY: {
       // Use the existing on-screen keyboard activity. Persist on confirm; ignore
       // on cancel. Password input mode masks the field while typing.
@@ -266,11 +294,19 @@ void PreTranslationSubmenuActivity::onActionSelected(Action a) {
 const char* PreTranslationSubmenuActivity::displayModeLabel() const {
   static const StrId labels[] = {
       StrId::STR_PT_NORMAL,           StrId::STR_PT_DARK,         StrId::STR_PT_LIGHT, StrId::STR_PT_ORIGINAL_ONLY,
-      StrId::STR_PT_TRANSLATION_ONLY, StrId::STR_PT_SIDE_BY_SIDE, StrId::STR_PT_MODAL,
+      StrId::STR_PT_TRANSLATION_ONLY, StrId::STR_PT_SIDE_BY_SIDE, StrId::STR_PT_MODAL, StrId::STR_PT_TOOLTIP,
   };
   const uint8_t mode = SETTINGS.translationDisplayMode;
   if (mode >= sizeof(labels) / sizeof(labels[0])) return I18N.get(StrId::STR_PT_NORMAL);
   return I18N.get(labels[mode]);
+}
+
+const char* PreTranslationSubmenuActivity::tooltipButtonsLabel() const {
+  return I18N.get(SETTINGS.tooltipButtons == 1 ? StrId::STR_SIDE_BUTTONS : StrId::STR_FRONT_BUTTONS);
+}
+
+const char* PreTranslationSubmenuActivity::tooltipBehaviorLabel() const {
+  return I18N.get(SETTINGS.tooltipBehavior == 1 ? StrId::STR_PAGE_TURN : StrId::STR_LOOP);
 }
 
 const char* PreTranslationSubmenuActivity::engineLabel() const {
@@ -356,6 +392,10 @@ void PreTranslationSubmenuActivity::render(RenderLock&&) {
             return displayModeLabel();
           case Action::CYCLE_ENGINE:
             return engineLabel();
+          case Action::CYCLE_TOOLTIP_BUTTONS:
+            return tooltipButtonsLabel();
+          case Action::CYCLE_TOOLTIP_BEHAVIOR:
+            return tooltipBehaviorLabel();
           case Action::PICK_TARGET_LANG:
             return targetLangLabel();
           case Action::PICK_SOURCE_LANG:

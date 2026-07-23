@@ -345,6 +345,40 @@ void EpubReaderActivity::loop() {
     }
   }
 
+  // Pre-Translation Tooltip (PT_TOOLTIP): the overlay owns its configured nav buttons for
+  // per-sentence stepping. Placed EARLY (before detectPageTurn and the modal overlay, mirroring
+  // the fork) so a nav press can't be preempted by a normal page turn and a Back release dismisses
+  // the tooltip before it would reach the go-home handler. Gated on a live section so it is inert
+  // on the end-of-book screen (where section is null and buttons go back to the last page).
+  if (section && SETTINGS.translationDisplayMode == CrossPointSettings::PT_TOOLTIP) {
+    if (tooltipOverlay.handleInput(mappedInput)) {
+      // handleInput consumed a nav/Back release. If it asked for a page turn (a boundary reached
+      // in Page Turn behavior, or a long-press turn+dismiss), satisfy it via pageTurn() -- which
+      // turns the page/chapter AND calls tooltipOverlay.onPageChanged(), re-arming auto-activation
+      // from the pending flags. Otherwise it was a sentence step / dismiss: just repaint.
+      if (tooltipOverlay.pendingPageForward || tooltipOverlay.pendingPageBack) {
+        pageTurn(tooltipOverlay.pendingPageForward);
+      } else {
+        requestUpdate();
+      }
+      return;
+    }
+    // The tooltip owns one button pair; with the default press-based page turn
+    // (longPressButtonBehavior == OFF) a PRESS of an owned button would turn the page below before
+    // handleInput sees the release. Swallow the press of an owned button (its release is owned by
+    // handleInput above) so the tooltip's stepping / long-press turn takes precedence over the
+    // normal page-turn / chapter-skip / orientation paths. The non-owned pair keeps full behavior.
+    const bool tooltipOwnsFront = SETTINGS.tooltipButtons == 0;
+    const bool tooltipOwnsSide = SETTINGS.tooltipButtons == 1;
+    const bool ownedButtonHeld = (tooltipOwnsFront && (mappedInput.isPressed(MappedInputManager::Button::Left) ||
+                                                       mappedInput.isPressed(MappedInputManager::Button::Right))) ||
+                                 (tooltipOwnsSide && (mappedInput.isPressed(MappedInputManager::Button::PageBack) ||
+                                                      mappedInput.isPressed(MappedInputManager::Button::PageForward)));
+    if (ownedButtonHeld) {
+      return;
+    }
+  }
+
   // Pre-Translation Modal overlay: when active, the overlay consumes side-button
   // releases for scroll/close and the Back release to dismiss. Inactive overlays
   // pass-through (return false) so normal reader input continues.
@@ -422,6 +456,12 @@ void EpubReaderActivity::loop() {
 
   if (showingAutoFallbackToast && (millis() - autoFallbackToastTime) >= ReaderUtils::BOOKMARK_MESSAGE_DURATION_MS) {
     showingAutoFallbackToast = false;
+    requestUpdate();
+  }
+
+  if (showModalNoTranslationToast &&
+      (millis() - modalNoTranslationToastTime) >= ReaderUtils::BOOKMARK_MESSAGE_DURATION_MS) {
+    showModalNoTranslationToast = false;
     requestUpdate();
   }
 
@@ -540,46 +580,51 @@ void EpubReaderActivity::loop() {
     return;
   }
 
-  // Pre-Translation Modal: longpress either side button opens the overlay (PT_MODAL mode only).
-  // ignoreNextSideRelease suppresses the page-turn that would otherwise fire on the matching
-  // release — mirrors the ignoreNextConfirmRelease pattern used for the bookmark longpress.
-  // Gated on PT_MODAL so it only repurposes the side-button longpress when the user has opted
-  // into modal translation display; every other mode keeps develop's chapter-skip / orientation
-  // long-press behavior below unchanged.
-  if (SETTINGS.translationDisplayMode == CrossPointSettings::PT_MODAL && !modalOverlay.isActive()) {
-    const bool sideHeld = mappedInput.isPressed(MappedInputManager::Button::PageForward) ||
-                          mappedInput.isPressed(MappedInputManager::Button::PageBack);
-    constexpr unsigned long MODAL_HOLD_MS = 500;
-    if (sideHeld && mappedInput.getHeldTime() >= MODAL_HOLD_MS) {
-      modalOverlay.open();
-      ignoreNextSideRelease = true;
-      requestUpdate();
+  // Pre-Translation Modal (PT_MODAL only): the side buttons are the overlay's control surface, so
+  // they must be RELEASE-based regardless of longPressButtonBehavior. The default (OFF) turns pages
+  // on PRESS, which would flip the page on the initial press and never let a long-press register --
+  // so the overlay could never open. Handle the side buttons here, before detectPageTurn, and
+  // swallow the press/hold so the normal page-turn / chapter-skip / orientation paths below never
+  // act on them. Deciding OPEN on the RELEASE (not mid-hold, as the previous code did) is also what
+  // makes it reliable: modalOverlay.handleInput() above declines side releases while inactive, so
+  // the same release cannot be double-consumed as a scroll. Front buttons still flow through
+  // detectPageTurn unchanged, so PT_MODAL only repurposes the side buttons -- mirroring develop,
+  // which drives chapter-skip / orientation off the side long-press. Gated on a live section so the
+  // end-of-book screen (section == nullptr) keeps its normal "any button -> last page" behavior.
+  if (section && SETTINGS.translationDisplayMode == CrossPointSettings::PT_MODAL && !modalOverlay.isActive()) {
+    const bool fwdReleased = mappedInput.wasReleased(MappedInputManager::Button::PageForward);
+    const bool backReleased = mappedInput.wasReleased(MappedInputManager::Button::PageBack);
+    if (fwdReleased || backReleased) {
+      if (mappedInput.getHeldTime() >= ReaderUtils::SKIP_HOLD_MS) {
+        modalOverlay.open();  // long press opens the overlay
+        requestUpdate();
+      } else {
+        pageTurn(fwdReleased);  // short press is a normal page turn
+      }
       return;
+    }
+    if (mappedInput.isPressed(MappedInputManager::Button::PageForward) ||
+        mappedInput.isPressed(MappedInputManager::Button::PageBack)) {
+      return;  // swallow the ongoing press so detectPageTurn can't turn the page before release
     }
   }
 
   auto [prevTriggered, nextTriggered, fromTilt] = ReaderUtils::detectPageTurn(mappedInput);
-  // While the Pre-Translation modal overlay is displayed it covers the page; a touch on the
-  // hidden reader underneath must not turn the page (side-button releases are already consumed
-  // by modalOverlay.handleInput() above). Develop-era touch input did not exist on the old branch.
-  prevTriggered = prevTriggered || (touch.prev && !modalOverlay.isActive());
-  nextTriggered = nextTriggered || (touch.next && !modalOverlay.isActive());
-  if (!prevTriggered && !nextTriggered) {
-    // Consume the residual side-button release after a modal-open longpress so the
-    // flag doesn't leak across to a later, unrelated press. Only the release of the
-    // longpress-held side button should clear it.
-    if (ignoreNextSideRelease && (mappedInput.wasReleased(MappedInputManager::Button::PageForward) ||
-                                  mappedInput.wasReleased(MappedInputManager::Button::PageBack))) {
-      ignoreNextSideRelease = false;
-    }
-    return;
+  // While the Pre-Translation modal overlay is displayed it COVERS the page, so nothing underneath
+  // may turn the page: not a touch, not a tilt, and not a physical side-button press. The modal's
+  // own scroll/close runs from modalOverlay.handleInput() above on the button RELEASE -- but in
+  // press-to-turn mode (longPressButtonBehavior == OFF) detectPageTurn fires on the PRESS, which
+  // handleInput (release-based) never sees, so without this guard the very first scroll press would
+  // page the hidden reader and (via pageTurn -> onPageChanged) snap the overlay shut. Suppress every
+  // page-turn trigger while the overlay is active; fold in touch turns only when it is not.
+  if (modalOverlay.isActive()) {
+    prevTriggered = false;
+    nextTriggered = false;
+  } else {
+    prevTriggered = prevTriggered || touch.prev;
+    nextTriggered = nextTriggered || touch.next;
   }
-
-  // If a modal-open longpress just fired, suppress the matching page-turn from the
-  // side-button release (and the chapter-skip / orientation-change long-press branches
-  // that key off the same release).
-  if (ignoreNextSideRelease) {
-    ignoreNextSideRelease = false;
+  if (!prevTriggered && !nextTriggered) {
     return;
   }
 
@@ -613,6 +658,12 @@ void EpubReaderActivity::loop() {
   if (longPress && SETTINGS.longPressButtonBehavior == SETTINGS.CHAPTER_SKIP) {
     if (!nextTriggered && section && section->currentPage > 0) {
       section->currentPage = 0;
+      // Same-section jump to page 0 is still a page change: reset the overlays' cached page state
+      // so a lingering modal/tooltip (e.g. opened via one button pair while chapter-skip is on the
+      // other) doesn't draw the previous page's data. The cross-chapter branch below resets via
+      // render()'s section-load path (section.reset()), so it needs no explicit reset here.
+      modalOverlay.onPageChanged();
+      tooltipOverlay.onPageChanged();
       requestUpdate();
       return;
     }
@@ -1069,6 +1120,7 @@ void EpubReaderActivity::pageTurn(bool isForwardTurn) {
     if (section->currentPage < section->pageCount - 1 || section->isBuilding()) {
       section->currentPage++;
       modalOverlay.onPageChanged();
+      tooltipOverlay.onPageChanged();
     } else {
       // We don't want to delete the section mid-render, so grab the semaphore
       {
@@ -1082,6 +1134,7 @@ void EpubReaderActivity::pageTurn(bool isForwardTurn) {
     if (section->currentPage > 0) {
       section->currentPage--;
       modalOverlay.onPageChanged();
+      tooltipOverlay.onPageChanged();
     } else if (currentSpineIndex > 0) {
       // We don't want to delete the section mid-render, so grab the semaphore
       {
@@ -1363,6 +1416,13 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     modalOverlay.setTranslatedHtmlPath(section->getTranslatedHtmlPath());
     modalOverlay.onSectionChanged();
 
+    // Pre-Translation Tooltip: same chapter binding, from the same translated-HTML sidecar (no
+    // separate .tooltip.html fallback). The tooltip has no onSectionChanged(); onPageChanged()
+    // fully resets its per-page state -- and consumes activateOnNextPage, so a tooltip-triggered
+    // chapter turn re-arms on the new chapter's first page.
+    tooltipOverlay.setTranslatedHtmlPath(section->getTranslatedHtmlPath());
+    tooltipOverlay.onPageChanged();
+
     // A mode-change reposition has served its purpose for this load: it kept cachedChapterTotalPageCount
     // alive past the cacheLoaded reset above and (on a cache miss) forced the full build, so the page
     // count below is final and applyDeferredReposition() can remap. Clear it so a later plain resume
@@ -1497,6 +1557,24 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     if (modalOverlay.isActive()) {
       modalOverlay.render(renderer, *p, SETTINGS.getReaderFontId(), getModalFontId(), orientedMarginLeft,
                           orientedMarginTop, viewportWidth, viewportHeight);
+      if (modalOverlay.isActive()) {
+        // Overlay painted onto the BW framebuffer -- flush it.
+        renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+      } else {
+        // render() cleared active because this page has no translated paragraphs. Surface a toast
+        // (drawn at the end of render) instead of the old silent close, so the long-press to open
+        // isn't a mysterious no-op.
+        showModalNoTranslationToast = true;
+        modalNoTranslationToastTime = millis();
+      }
+    }
+
+    // Pre-Translation Tooltip overlay: drawn over the rendered page when active. Like the modal it
+    // paints onto the BW framebuffer, so flush with a second displayBuffer(). PT_TOOLTIP and
+    // PT_MODAL are mutually exclusive modes, so at most one of these blocks does anything.
+    if (tooltipOverlay.isActive()) {
+      tooltipOverlay.render(renderer, *p, SETTINGS.getReaderFontId(), getTooltipFontId(), orientedMarginLeft,
+                            orientedMarginTop, viewportWidth, viewportHeight);
       renderer.displayBuffer(HalDisplay::HALF_REFRESH);
     }
   }
@@ -1531,6 +1609,12 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     // This message is long in most languages (German/Ukrainian etc.); GUI.drawPopup sizes a
     // single-line box to the full string width and overflows the screen, so wrap it instead.
     GUI.drawWrappedPopup(renderer, tr(STR_NO_TRANSLATION_SWITCH_NORMAL));
+  }
+
+  if (showModalNoTranslationToast) {
+    // The PT_MODAL overlay refused to open on a page with no translated paragraphs; tell the user
+    // rather than doing nothing. Wrapped (fits every orientation) like the other translation toasts.
+    GUI.drawWrappedPopup(renderer, tr(STR_NO_TRANSLATIONS_FOR_PAGE));
   }
 }
 

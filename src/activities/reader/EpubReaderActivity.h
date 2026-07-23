@@ -11,6 +11,7 @@
 #include "ProgressMapper.h"
 #include "activities/Activity.h"
 #include "translator/ModalOverlay.h"
+#include "translator/TooltipOverlay.h"
 
 // Defined in PreTranslationSubmenuActivity.h; forward-declared here so the reader
 // header does not pull in the submenu (and its transitive) headers.
@@ -56,11 +57,20 @@ class EpubReaderActivity final : public Activity {
   bool showDictionaryMessage = false;
   unsigned long dictionaryMessageTime = 0UL;
   bool ignoreNextConfirmRelease = false;
-  // Pre-Translation modal overlay: opened by longpress on either side button (PT_MODAL mode).
-  // ignoreNextSideRelease suppresses the page-turn that would otherwise fire on the matching
-  // release, mirroring the ignoreNextConfirmRelease pattern used by the bookmark longpress.
+  // Pre-Translation modal overlay (PT_MODAL mode). Opened by a long-press RELEASE on either side
+  // button, detected in loop() before detectPageTurn: detecting the OPEN on the release (not
+  // mid-hold) means the same release cannot also be consumed as a scroll by handleInput(), and
+  // returning after open() suppresses the page-turn / chapter-skip / orientation long-press that
+  // would otherwise fire on that release -- so no ignore-next-release latch is needed.
   ModalOverlay modalOverlay;
-  bool ignoreNextSideRelease = false;
+  // Pre-Translation tooltip overlay (PT_TOOLTIP mode). Owns its configured nav buttons for
+  // per-sentence stepping and its own long-press page-turn; see loop()'s tooltip input block.
+  TooltipOverlay tooltipOverlay;
+  // Shown when a PT_MODAL long-press opens the overlay on a page that has NO translated
+  // paragraphs: the overlay refuses (clears its active flag in render()), and the reader surfaces
+  // this toast instead of the previous silent no-op. Timed out in loop() like the other toasts.
+  bool showModalNoTranslationToast = false;
+  unsigned long modalNoTranslationToastTime = 0UL;
   // Pre-Translation: shown when the current chapter has no translated HTML
   // but the user picked a non-Normal display mode. Section auto-falls-back to
   // Normal and triggers this toast via the autoFallbackFn callback.
