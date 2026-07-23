@@ -469,7 +469,7 @@ STR_ENGINE_GOOGLE_V2: "Google v2"
 STR_ENGINE_GOOGLE_HTML: "Google v1"
 
 STR_NO_TRANSLATIONS_FOR_PAGE: "Tidak ada terjemahan untuk halaman ini"
-STR_NO_TRANSLATION_SWITCH_NORMAL: "Tidak ada terjemahan — beralih ke mode Normal"
+STR_NO_TRANSLATION_SWITCH_NORMAL: "Chapter not translated — showing the original. Your Bilingua mode is kept."
 
 STR_BACK_TO_CANCEL: "Kembali: Batal"
 STR_PRESS_ANY_CONTINUE: "Tekan tombol apa saja untuk melanjutkan"

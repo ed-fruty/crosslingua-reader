@@ -360,7 +360,7 @@ STR_ENGINE_GOOGLE_V2: "Google v2"
 STR_ENGINE_GOOGLE_HTML: "Google v1"
 
 STR_NO_TRANSLATIONS_FOR_PAGE: "Nicio traducere pentru această pagină"
-STR_NO_TRANSLATION_SWITCH_NORMAL: "Nicio traducere — se trece la modul Normal"
+STR_NO_TRANSLATION_SWITCH_NORMAL: "Chapter not translated — showing the original. Your Bilingua mode is kept."
 
 STR_BACK_TO_CANCEL: "Back: Anulează"
 STR_PRESS_ANY_CONTINUE: "Apăsați orice buton pentru a continua"

@@ -360,7 +360,7 @@ STR_ENGINE_GOOGLE_V2: "Google v2"
 STR_ENGINE_GOOGLE_HTML: "Google v1"
 
 STR_NO_TRANSLATIONS_FOR_PAGE: "Geen vertalingen voor deze pagina"
-STR_NO_TRANSLATION_SWITCH_NORMAL: "Geen vertaling — overschakelen naar normale modus"
+STR_NO_TRANSLATION_SWITCH_NORMAL: "Chapter not translated — showing the original. Your Bilingua mode is kept."
 
 STR_BACK_TO_CANCEL: "Back: Annuleren"
 STR_PRESS_ANY_CONTINUE: "Druk op een knop om door te gaan"

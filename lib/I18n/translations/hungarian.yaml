@@ -447,7 +447,7 @@ STR_ENGINE_GOOGLE_V2: "Google v2"
 STR_ENGINE_GOOGLE_HTML: "Google v1"
 
 STR_NO_TRANSLATIONS_FOR_PAGE: "Nincs fordítás ehhez az oldalhoz"
-STR_NO_TRANSLATION_SWITCH_NORMAL: "Nincs fordítás — váltás normál módra"
+STR_NO_TRANSLATION_SWITCH_NORMAL: "Chapter not translated — showing the original. Your Bilingua mode is kept."
 
 STR_BACK_TO_CANCEL: "Back: Mégse"
 STR_PRESS_ANY_CONTINUE: "A folytatáshoz nyomjon meg bármilyen gombot"

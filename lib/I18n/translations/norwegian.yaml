@@ -431,7 +431,7 @@ STR_ENGINE_GOOGLE_V2: "Google v2"
 STR_ENGINE_GOOGLE_HTML: "Google v1"
 
 STR_NO_TRANSLATIONS_FOR_PAGE: "Ingen oversettelser for denne siden"
-STR_NO_TRANSLATION_SWITCH_NORMAL: "Ingen oversettelse — bytter til normalmodus"
+STR_NO_TRANSLATION_SWITCH_NORMAL: "Chapter not translated — showing the original. Your Bilingua mode is kept."
 
 STR_BACK_TO_CANCEL: "Tilbake: Avbryt"
 STR_PRESS_ANY_CONTINUE: "Trykk på en hvilken som helst knapp for å fortsette"

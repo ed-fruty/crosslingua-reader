@@ -448,7 +448,7 @@ STR_ENGINE_GOOGLE_V2: "Google v2"
 STR_ENGINE_GOOGLE_HTML: "Google v1"
 
 STR_NO_TRANSLATIONS_FOR_PAGE: "אין תרגומים לעמוד זה"
-STR_NO_TRANSLATION_SWITCH_NORMAL: "אין תרגום — עובר למצב רגיל"
+STR_NO_TRANSLATION_SWITCH_NORMAL: "Chapter not translated — showing the original. Your Bilingua mode is kept."
 
 STR_BACK_TO_CANCEL: "חזור: ביטול"
 STR_PRESS_ANY_CONTINUE: "לחץ על כל כפתור כדי להמשיך"

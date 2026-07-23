@@ -332,7 +332,7 @@ STR_ENGINE_GOOGLE_V2: "Google v2"
 STR_ENGINE_GOOGLE_HTML: "Google v1"
 
 STR_NO_TRANSLATIONS_FOR_PAGE: "Pro tuto stránku nejsou žádné překlady"
-STR_NO_TRANSLATION_SWITCH_NORMAL: "Žádný překlad — přepínám do normálního režimu"
+STR_NO_TRANSLATION_SWITCH_NORMAL: "Chapter not translated — showing the original. Your Bilingua mode is kept."
 STR_NO_TRANSLATION: "nepřeloženo"
 
 STR_BACK_TO_CANCEL: "Back: Zrušit"

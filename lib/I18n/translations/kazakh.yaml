@@ -356,7 +356,7 @@ STR_ENGINE_GOOGLE_V2: "Google v2"
 STR_ENGINE_GOOGLE_HTML: "Google v1"
 
 STR_NO_TRANSLATIONS_FOR_PAGE: "Бұл бет үшін аударма жоқ"
-STR_NO_TRANSLATION_SWITCH_NORMAL: "Аударма жоқ — қалыпты режимге ауысуда"
+STR_NO_TRANSLATION_SWITCH_NORMAL: "Chapter not translated — showing the original. Your Bilingua mode is kept."
 
 STR_BACK_TO_CANCEL: "Back: Болдырмау"
 STR_PRESS_ANY_CONTINUE: "Жалғастыру үшін кез келген түймені басыңыз"

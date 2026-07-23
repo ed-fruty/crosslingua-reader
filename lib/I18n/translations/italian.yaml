@@ -443,7 +443,7 @@ STR_ENGINE_GOOGLE_V2: "Google v2"
 STR_ENGINE_GOOGLE_HTML: "Google v1"
 
 STR_NO_TRANSLATIONS_FOR_PAGE: "Nessuna traduzione per questa pagina"
-STR_NO_TRANSLATION_SWITCH_NORMAL: "Nessuna traduzione — passaggio a modalità Normale"
+STR_NO_TRANSLATION_SWITCH_NORMAL: "Chapter not translated — showing the original. Your Bilingua mode is kept."
 
 STR_BACK_TO_CANCEL: "Back: Annulla"
 STR_PRESS_ANY_CONTINUE: "Premi un tasto qualsiasi per continuare"
