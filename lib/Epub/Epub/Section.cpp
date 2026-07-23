@@ -31,7 +31,14 @@ namespace {
 //      mode-5 section cached under v34 carries an identical header key (translationMode still 5)
 //      and would otherwise be served with the old single-column layout, so the version bump is
 //      the only thing that forces those sections to rebuild.
-constexpr uint8_t SECTION_FILE_VERSION = 35;
+// v36: Merge with upstream develop, which independently numbered its own "v32":
+//      ImageBlock serializes the book-internal source href after the cache path
+//      (lazy extraction: images are header-probed at build time and extracted on
+//      first render). The two lines used 32..35 for different, mutually unreadable
+//      layouts, so v36 supersedes both — the merged format carries the Pre-Translation
+//      fields (v32-v35 above) AND the ImageBlock source href, and the bump forces a
+//      rebuild of any section cached by either line.
+constexpr uint8_t SECTION_FILE_VERSION = 36;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
