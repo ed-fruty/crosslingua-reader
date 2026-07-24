@@ -18,16 +18,10 @@
 #include "activities/translator/LanguagePickerActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
-#include "util/HeapBackpressure.h"
 
 // Sentinel value LanguagePickerActivity returns for the synthetic "Auto-detect" entry.
 // Matches CrossPointSettings::sourceTranslationLanguage's 0xFF sentinel.
 static constexpr uint8_t AUTO_DETECT_SENTINEL = 0xFF;
-
-// Bounded wait for a contiguous 48 KB framebuffer hole before a cosmetic progress
-// repaint at a batch boundary. Kept short: the worker is parked while we wait, so a
-// repaint must never stall translation for long — on timeout we simply skip it.
-static constexpr uint32_t BOUNDARY_FB_WAIT_MS = 1000;
 
 // Display-mode label mapping for the post-success chooser, indexed by
 // CrossPointSettings::translationDisplayMode (PT_NORMAL..PT_TOOLTIP). Mirrors
@@ -543,13 +537,11 @@ void ChapterTranslatorActivity::loop() {
     if (boundaryPending) {
       boundaryPending = false;
       // A mid-chapter batch boundary can momentarily lack a contiguous 48 KB hole (the
-      // keep-alive TLS session is still open), so give the heap a brief, bounded chance
-      // to coalesce and then use the NON-restarting restore: if the buffer can't be
-      // reclaimed, skip this cosmetic repaint (the next boundary retries) rather than
-      // rebooting mid-chapter. Never block translation for a repaint.
-      const size_t fbSize = renderer.getBufferSize();
-      heapbp::waitForHeap(static_cast<uint32_t>(fbSize), static_cast<uint32_t>(fbSize), BOUNDARY_FB_WAIT_MS,
-                          &cancelFlag, "CHT", "framebuffer");
+      // keep-alive TLS session is still open). Waiting here is pointless: the worker is
+      // parked spinning on boundaryAck with the TLS buffers held, so nothing can free
+      // memory while we stall — a wait only freezes the UI with cancel unresponsive. Use
+      // the NON-restarting restore directly: if the buffer can't be reclaimed, skip this
+      // cosmetic repaint (the next boundary retries) rather than rebooting mid-chapter.
       if (tryRestoreFramebuffer()) {
         requestUpdateAndWait();
         releaseFramebuffer();

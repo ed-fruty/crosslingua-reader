@@ -25,10 +25,6 @@
 // Matches CrossPointSettings::sourceTranslationLanguage's 0xFF sentinel.
 static constexpr uint8_t AUTO_DETECT_SENTINEL = 0xFF;
 
-// Bounded wait for a contiguous 48 KB framebuffer hole before a cosmetic progress
-// repaint at a batch/chapter boundary. Kept short: the worker is parked while we wait,
-// so a repaint must never stall translation for long — on timeout we skip it.
-static constexpr uint32_t BOUNDARY_FB_WAIT_MS = 1000;
 // Bounded wait for TLS-ready heap before a chapter's handshake. The per-batch
 // backpressure inside the rewriter is the finer gate and owns the low-memory abort;
 // this just gives a heap fragmented by the previous chapter a chance to recover before
@@ -639,16 +635,15 @@ void BookTranslatorActivity::loop() {
     // so a second loop() pass cannot re-run the cycle.
     if (boundaryPending) {
       boundaryPending = false;
-      // A mid-chapter batch boundary can momentarily lack a contiguous 48 KB hole, so give
-      // the heap a brief, bounded chance to coalesce one, then use the non-restarting
-      // restore and skip the repaint if it still fails (the next boundary retries) rather
-      // than reboot mid-book. When the restore succeeds we always release the buffer again
-      // before acking, so it is never held across the worker's network calls. Chapter
-      // boundaries hit this same path but always have a clean hole. Never block translation
-      // for a repaint — the wait is short.
-      const size_t fbSize = renderer.getBufferSize();
-      heapbp::waitForHeap(static_cast<uint32_t>(fbSize), static_cast<uint32_t>(fbSize), BOUNDARY_FB_WAIT_MS,
-                          &cancelFlag, "BKT", "framebuffer");
+      // A mid-chapter batch boundary can momentarily lack a contiguous 48 KB hole. Waiting
+      // here is pointless: the worker is parked spinning on boundaryAck with the keep-alive
+      // TLS session's buffers held, so nothing can free memory while we stall — a wait only
+      // freezes the UI (with cancel unresponsive, since this very task services input). Go
+      // straight to the non-restarting restore and skip the repaint if there is no hole (the
+      // next boundary retries) rather than reboot mid-book. When the restore succeeds we
+      // always release the buffer again before acking, so it is never held across the
+      // worker's network calls. Chapter boundaries hit this same path but always have a
+      // clean hole.
       if (tryRestoreFramebuffer()) {
         requestUpdateAndWait();
         releaseFramebuffer();

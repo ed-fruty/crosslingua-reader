@@ -303,6 +303,11 @@ void TranslatingHtmlRewriter::flushBatch() {
         }
       }
     }
+  } else {
+    // A batch with nothing to translate issues no network request, so it says nothing
+    // about the heap: only genuinely back-to-back exhausted TLS waits may count toward
+    // the low-memory abort.
+    consecutiveHeapTimeouts = 0;
   }
 
   // Write all entries to output, interleaving translations
