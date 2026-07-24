@@ -408,6 +408,7 @@ STR_XTC_STATUS_BAR: "XTC Durum Çubuğu"
 
 STR_PRE_TRANSLATION: "Bilingua"
 STR_DISPLAY_MODE: "Görüntü Modu"
+STR_CHOOSE_DISPLAY_MODE: "Choose display mode"
 STR_DELETE_TRANSLATIONS: "Çevirileri Sil"
 
 STR_PT_NORMAL: "Normal"

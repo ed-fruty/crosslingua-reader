@@ -319,6 +319,7 @@ STR_ENTER_WIFI_SSID: "Įveskite tinklo pavadinimą (SSID)"
 
 STR_PRE_TRANSLATION: "Bilingua"
 STR_DISPLAY_MODE: "Rodymo režimas"
+STR_CHOOSE_DISPLAY_MODE: "Choose display mode"
 STR_DELETE_TRANSLATIONS: "Ištrinti vertimus"
 
 STR_PT_NORMAL: "Normalus"

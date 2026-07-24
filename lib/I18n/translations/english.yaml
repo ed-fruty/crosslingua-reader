@@ -431,6 +431,7 @@ STR_RECOVERY_MODE_HINT: "Place firmware.bin on SD card root and select it"
 
 STR_PRE_TRANSLATION: "Bilingua"
 STR_DISPLAY_MODE: "Display Mode"
+STR_CHOOSE_DISPLAY_MODE: "Choose display mode"
 STR_DELETE_TRANSLATIONS: "Delete Translations"
 
 STR_PT_NORMAL: "Normal"

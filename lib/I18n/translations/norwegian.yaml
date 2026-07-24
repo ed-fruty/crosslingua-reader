@@ -393,6 +393,7 @@ STR_RECOVERY_MODE_HINT: "Legg firmware.bin i roten av SD-kortet og velg den"
 
 STR_PRE_TRANSLATION: "Bilingua"
 STR_DISPLAY_MODE: "Visningsmodus"
+STR_CHOOSE_DISPLAY_MODE: "Choose display mode"
 STR_DELETE_TRANSLATIONS: "Slett oversettelser"
 
 STR_PT_NORMAL: "Normal"

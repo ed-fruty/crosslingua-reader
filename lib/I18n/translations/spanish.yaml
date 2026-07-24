@@ -431,6 +431,7 @@ STR_ENTER_WIFI_SSID: "Introduce el nombre de la red (SSID)"
 
 STR_PRE_TRANSLATION: "Bilingua"
 STR_DISPLAY_MODE: "Modo de visualización"
+STR_CHOOSE_DISPLAY_MODE: "Choose display mode"
 STR_DELETE_TRANSLATIONS: "Eliminar traducciones"
 
 STR_PT_NORMAL: "Normal"

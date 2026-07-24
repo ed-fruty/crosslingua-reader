@@ -42,6 +42,11 @@ class BookTranslatorActivity final : public Activity {
     WIFI_SELECTION,
     TRANSLATING,
     DONE,
+    // Post-success chooser: when at least one chapter was translated, this replaces the DONE
+    // screen so the user can enable a bilingual display mode without diving back into the
+    // Bilingua submenu (a no-translation fallback leaves the mode at PT_NORMAL). Confirm
+    // persists the highlighted mode; Back skips. Both exit via the normal returnToCaller().
+    CHOOSE_DISPLAY_MODE,
     FAILED,
     CANCELLED,
   };
@@ -62,6 +67,10 @@ class BookTranslatorActivity final : public Activity {
   std::shared_ptr<Epub> epub;  // null until lazy-loaded (metadata-only) in ensureEpubLoaded()
   TranslatorReturnTarget returnTarget;
   State state = SOURCE_LANG_SELECTION;
+
+  // Cursor into the CHOOSE_DISPLAY_MODE list (0..PT_MODE_COUNT-1). Seeded to the current
+  // SETTINGS.translationDisplayMode when the chooser opens so it starts pre-highlighted.
+  int displayModeSelection = 0;
 
   // Language selection. sourceLangCode "auto" => engine-side auto-detect.
   std::string sourceLangCode = "auto";
@@ -133,4 +142,8 @@ class BookTranslatorActivity final : public Activity {
 
   // Display name for the current translation engine (e.g. "Google (Free) - New").
   const char* getEngineName() const;
+
+  // Draws the CHOOSE_DISPLAY_MODE screen (header + the 8-mode list + button hints) via the
+  // UITheme components. Self-contained: clears and flushes its own frame.
+  void renderDisplayModeChooser();
 };

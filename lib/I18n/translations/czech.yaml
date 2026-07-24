@@ -294,6 +294,7 @@ STR_ENTER_WIFI_SSID: "Zadejte název sítě (SSID)"
 
 STR_PRE_TRANSLATION: "Bilingua"
 STR_DISPLAY_MODE: "Režim zobrazení"
+STR_CHOOSE_DISPLAY_MODE: "Choose display mode"
 STR_DELETE_TRANSLATIONS: "Smazat překlady"
 
 STR_PT_NORMAL: "Normální"

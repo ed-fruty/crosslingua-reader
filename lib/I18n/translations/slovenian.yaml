@@ -319,6 +319,7 @@ STR_ENTER_WIFI_SSID: "Vnesite ime omrežja (SSID)"
 
 STR_PRE_TRANSLATION: "Bilingua"
 STR_DISPLAY_MODE: "Način prikaza"
+STR_CHOOSE_DISPLAY_MODE: "Choose display mode"
 STR_DELETE_TRANSLATIONS: "Izbriši prevode"
 
 STR_PT_NORMAL: "Običajno"

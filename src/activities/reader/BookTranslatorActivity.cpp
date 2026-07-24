@@ -23,6 +23,18 @@
 // Matches CrossPointSettings::sourceTranslationLanguage's 0xFF sentinel.
 static constexpr uint8_t AUTO_DETECT_SENTINEL = 0xFF;
 
+// Display-mode label mapping for the post-success chooser, indexed by
+// CrossPointSettings::translationDisplayMode (PT_NORMAL..PT_TOOLTIP). Mirrors
+// PreTranslationSubmenuActivity::displayModeLabel() exactly; kept as a small local copy
+// rather than extracted to avoid churning the submenu (see task notes). A static_assert
+// guards it against PT_MODE_COUNT drifting out of sync.
+static constexpr StrId DISPLAY_MODE_LABELS[] = {
+    StrId::STR_PT_NORMAL,           StrId::STR_PT_DARK,         StrId::STR_PT_LIGHT, StrId::STR_PT_ORIGINAL_ONLY,
+    StrId::STR_PT_TRANSLATION_ONLY, StrId::STR_PT_SIDE_BY_SIDE, StrId::STR_PT_MODAL, StrId::STR_PT_TOOLTIP,
+};
+static_assert(sizeof(DISPLAY_MODE_LABELS) / sizeof(DISPLAY_MODE_LABELS[0]) == CrossPointSettings::PT_MODE_COUNT,
+              "DISPLAY_MODE_LABELS must cover every translationDisplayMode value");
+
 // ─── epub (re)loading ───────────────────────────────────────────────────────
 
 bool BookTranslatorActivity::ensureEpubLoaded() {
@@ -544,7 +556,18 @@ void BookTranslatorActivity::loop() {
 
     if (taskDone) {
       restoreFramebuffer();  // bring the buffer back BEFORE the result screen draws
-      state = cancelFlag ? CANCELLED : DONE;
+      if (cancelFlag) {
+        state = CANCELLED;
+      } else if (chaptersCompleted > 0) {
+        // Success with at least one chapter available: offer the display-mode chooser so the
+        // user can enable a bilingual mode straight away. Pre-highlight the current mode.
+        displayModeSelection = SETTINGS.translationDisplayMode < CrossPointSettings::PT_MODE_COUNT
+                                   ? SETTINGS.translationDisplayMode
+                                   : CrossPointSettings::PT_NORMAL;
+        state = CHOOSE_DISPLAY_MODE;
+      } else {
+        state = DONE;
+      }
       requestUpdate();
     } else if (taskFailed) {
       restoreFramebuffer();
@@ -561,6 +584,38 @@ void BookTranslatorActivity::loop() {
         requestUpdate();
       }
     }
+  }
+
+  // Display-mode chooser: Up/Down move the highlight, Confirm persists the choice (guarded
+  // save, mirroring the Bilingua submenu) and exits, Back skips and exits. Both exits use the
+  // normal return path so the relaunched reader picks up the mode from settings.
+  if (state == CHOOSE_DISPLAY_MODE) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
+      displayModeSelection =
+          (displayModeSelection + CrossPointSettings::PT_MODE_COUNT - 1) % CrossPointSettings::PT_MODE_COUNT;
+      requestUpdate();
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
+      displayModeSelection = (displayModeSelection + 1) % CrossPointSettings::PT_MODE_COUNT;
+      requestUpdate();
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      const uint8_t chosen = static_cast<uint8_t>(displayModeSelection);
+      if (SETTINGS.translationDisplayMode != chosen) {  // guard SPIFFS write on no-op selections
+        SETTINGS.translationDisplayMode = chosen;
+        SETTINGS.saveToFile();
+        LOG_DBG("BKT", "Display mode set to %d after translation", (int)chosen);
+      }
+      returnToCaller();
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+      returnToCaller();
+      return;
+    }
+    return;
   }
 
   // Result screens: any of Confirm/Back leaves. The reader was torn down before this
@@ -585,6 +640,13 @@ void BookTranslatorActivity::render(RenderLock&&) {
   // chapter's network run there is nothing to draw on (drawing would be a
   // use-after-free). The panel retains its last flushed image until the next boundary.
   if (!renderer.hasFrameBuffer()) return;
+
+  // The chooser owns a different, list-based layout via the UITheme components, so it draws
+  // and flushes itself rather than sharing the raw-coordinate result-screen chrome below.
+  if (state == CHOOSE_DISPLAY_MODE) {
+    renderDisplayModeChooser();
+    return;
+  }
 
   renderer.clearScreen();
   const int pageWidth = renderer.getScreenWidth();
@@ -726,6 +788,33 @@ void BookTranslatorActivity::render(RenderLock&&) {
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_OK_BUTTON), "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   }
+
+  renderer.displayBuffer();
+}
+
+void BookTranslatorActivity::renderDisplayModeChooser() {
+  renderer.clearScreen();
+
+  // Same header + list + hints layout the Bilingua submenu uses, so it stays orientation-aware
+  // in all 4 modes via the UITheme safe area / metrics (no hardcoded pixel coordinates).
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, /*hasFrontButtonHints=*/true,
+                                                               /*hasSideButtonHints=*/false);
+
+  GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
+                 tr(STR_CHOOSE_DISPLAY_MODE));
+
+  const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int contentHeight = screen.height - contentTop - metrics.verticalSpacing;
+
+  // Captureless lambda -> no std::function heap allocation; the row string is built from the
+  // static StrId table each frame (transient, like the submenu's list).
+  GUI.drawList(renderer, Rect{screen.x, contentTop, screen.width, contentHeight},
+               static_cast<int>(CrossPointSettings::PT_MODE_COUNT), displayModeSelection,
+               [](int index) -> std::string { return I18N.get(DISPLAY_MODE_LABELS[index]); });
+
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   renderer.displayBuffer();
 }

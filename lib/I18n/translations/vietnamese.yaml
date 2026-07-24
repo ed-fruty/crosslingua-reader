@@ -415,6 +415,7 @@ STR_ENTER_WIFI_SSID: "Nhập tên mạng (SSID)"
 
 STR_PRE_TRANSLATION: "Bilingua"
 STR_DISPLAY_MODE: "Chế độ hiển thị"
+STR_CHOOSE_DISPLAY_MODE: "Choose display mode"
 STR_DELETE_TRANSLATIONS: "Xóa bản dịch"
 
 STR_PT_NORMAL: "Bình thường"

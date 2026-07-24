@@ -410,6 +410,7 @@ STR_ENTER_WIFI_SSID: "הזן שם רשת (SSID)"
 
 STR_PRE_TRANSLATION: "Bilingua"
 STR_DISPLAY_MODE: "מצב תצוגה"
+STR_CHOOSE_DISPLAY_MODE: "Choose display mode"
 STR_DELETE_TRANSLATIONS: "מחק תרגומים"
 
 STR_PT_NORMAL: "רגיל"

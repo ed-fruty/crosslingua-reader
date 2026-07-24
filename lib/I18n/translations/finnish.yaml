@@ -292,6 +292,7 @@ STR_ENTER_WIFI_SSID: "Anna verkon nimi (SSID)"
 
 STR_PRE_TRANSLATION: "Bilingua"
 STR_DISPLAY_MODE: "Näyttötila"
+STR_CHOOSE_DISPLAY_MODE: "Choose display mode"
 STR_DELETE_TRANSLATIONS: "Poista käännökset"
 
 STR_PT_NORMAL: "Normaali"

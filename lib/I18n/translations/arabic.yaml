@@ -395,6 +395,7 @@ STR_RECOVERY_MODE_HINT: "ضع الملف firmware.bin في المجلد الرئ
 
 STR_PRE_TRANSLATION: "Bilingua"
 STR_DISPLAY_MODE: "وضع العرض"
+STR_CHOOSE_DISPLAY_MODE: "Choose display mode"
 STR_DELETE_TRANSLATIONS: "حذف الترجمات"
 
 STR_PT_NORMAL: "عادي"

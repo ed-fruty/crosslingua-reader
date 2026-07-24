@@ -319,6 +319,7 @@ STR_ENTER_WIFI_SSID: "Увядзіце назву сеткі (SSID)"
 
 STR_PRE_TRANSLATION: "Bilingua"
 STR_DISPLAY_MODE: "Рэжым адлюстравання"
+STR_CHOOSE_DISPLAY_MODE: "Choose display mode"
 STR_DELETE_TRANSLATIONS: "Выдаліць пераклады"
 
 STR_PT_NORMAL: "Звычайны"

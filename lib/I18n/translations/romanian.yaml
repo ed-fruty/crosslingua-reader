@@ -322,6 +322,7 @@ STR_ENTER_WIFI_SSID: "Introduceți numele rețelei (SSID)"
 
 STR_PRE_TRANSLATION: "Bilingua"
 STR_DISPLAY_MODE: "Mod de afișare"
+STR_CHOOSE_DISPLAY_MODE: "Choose display mode"
 STR_DELETE_TRANSLATIONS: "Șterge traducerile"
 
 STR_PT_NORMAL: "Normal"
