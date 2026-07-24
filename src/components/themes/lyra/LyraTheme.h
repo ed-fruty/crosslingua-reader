@@ -100,5 +100,13 @@ class LyraTheme : public BaseTheme {
                            const int selectorIndex, bool& coverRendered, bool& coverBufferStored, bool& bufferRestored,
                            std::function<bool()> storeCoverBuffer) const override;
   void drawEmptyRecents(const GfxRenderer& renderer, const Rect rect) const;
+  void drawCoverGrid(GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex, int pageOffset,
+                     const std::function<std::string(int)>& getTitle,
+                     const std::function<std::string(int)>& getThumbPath,
+                     const std::function<bool(int)>& isDirectory) const override;
+  void drawCoverGridSelection(GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex, int pageOffset,
+                              const std::function<std::string(int)>& getTitle,
+                              const std::function<std::string(int)>& getThumbPath,
+                              const std::function<bool(int)>& isDirectory) const override;
   bool showsFileIcons() const override { return true; }
 };

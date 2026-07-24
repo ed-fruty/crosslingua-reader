@@ -1038,3 +1038,129 @@ void BaseTheme::drawOptionPopup(const GfxRenderer& renderer, const char* title, 
     renderer.drawText(optionFontId, textX, textY, labelText, invertText, optionStyle);
   }
 }
+
+namespace {
+constexpr int GRID_COLS = 3;
+constexpr int GRID_ROWS = 3;
+constexpr int GRID_CELL_PADDING = 6;
+constexpr int GRID_TITLE_AREA = 24;  // small-font height + gap below cover
+
+// Blit the cached cover thumb into a cell, letterboxed to preserve aspect. Returns false when no
+// drawable BMP was available (0-byte negative-cache sentinel, unparseable header, or open failure)
+// so the caller can fall back to a folder/placeholder glyph.
+bool drawCellCover(GfxRenderer& renderer, const std::string& thumbPath, int thumbX, int thumbY, int thumbWidth,
+                   int thumbHeight) {
+  if (thumbPath.empty()) return false;
+  HalFile file;
+  bool drew = false;
+  if (Storage.openFileForRead("BSHELF", thumbPath, file)) {
+    if (file.size() > 0) {
+      Bitmap bitmap(file);
+      if (bitmap.parseHeaders() == BmpReaderError::Ok) {
+        int coverX = thumbX;
+        int coverY = thumbY;
+        if (bitmap.getWidth() > 0 && bitmap.getHeight() > 0) {
+          const float imgRatio = static_cast<float>(bitmap.getWidth()) / static_cast<float>(bitmap.getHeight());
+          const float boxRatio = static_cast<float>(thumbWidth) / static_cast<float>(thumbHeight);
+          if (imgRatio > boxRatio) {
+            coverY = thumbY + (thumbHeight - static_cast<int>(thumbWidth / imgRatio)) / 2;
+          } else {
+            coverX = thumbX + (thumbWidth - static_cast<int>(thumbHeight * imgRatio)) / 2;
+          }
+        }
+        renderer.drawBitmap(bitmap, coverX, coverY, thumbWidth, thumbHeight);
+        drew = true;
+      }
+    }
+    file.close();
+  }
+  return drew;
+}
+
+void drawFolderGlyph(GfxRenderer& renderer, int thumbX, int thumbY, int thumbWidth, int thumbHeight, bool state) {
+  const int folderW = 80, bodyH = 50, tabW = 28, tabH = 12;
+  const int folderX = thumbX + (thumbWidth - folderW) / 2;
+  const int folderY = thumbY + (thumbHeight - (bodyH + tabH - 2)) / 2;
+  renderer.drawRoundedRect(folderX, folderY, tabW, tabH, 2, 4, true, true, false, false, state);
+  renderer.drawRoundedRect(folderX, folderY + tabH - 2, folderW, bodyH, 2, 6, state);
+}
+}  // namespace
+
+void BaseTheme::drawCoverGrid(GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex, int pageOffset,
+                              const std::function<std::string(int)>& getTitle,
+                              const std::function<std::string(int)>& getThumbPath,
+                              const std::function<bool(int)>& isDirectory) const {
+  const int cellWidth = rect.width / GRID_COLS;
+  const int cellHeight = rect.height / GRID_ROWS;
+  const int thumbWidth = cellWidth - GRID_CELL_PADDING * 2;
+  const int thumbHeight = cellHeight - GRID_CELL_PADDING * 2 - GRID_TITLE_AREA;
+
+  const int pageEnd = std::min(pageOffset + GRID_COLS * GRID_ROWS, itemCount);
+
+  for (int i = pageOffset; i < pageEnd; i++) {
+    const int gridIdx = i - pageOffset;
+    const int col = gridIdx % GRID_COLS;
+    const int row = gridIdx / GRID_COLS;
+
+    const int cellX = rect.x + col * cellWidth;
+    const int cellY = rect.y + row * cellHeight;
+    const bool selected = (i == selectedIndex);
+
+    if (selected) {
+      renderer.fillRect(cellX + 2, cellY + 2, cellWidth - 4, cellHeight - 4);
+    }
+
+    const int thumbX = cellX + (cellWidth - thumbWidth) / 2;
+    const int thumbY = cellY + GRID_CELL_PADDING;
+
+    const bool dir = isDirectory(i);
+    if (dir || !drawCellCover(renderer, getThumbPath(i), thumbX, thumbY, thumbWidth, thumbHeight)) {
+      if (dir) drawFolderGlyph(renderer, thumbX, thumbY, thumbWidth, thumbHeight, !selected);
+    }
+
+    const std::string title = getTitle(i);
+    const int titleY = thumbY + thumbHeight + 1;
+    const int maxTitleWidth = cellWidth - GRID_CELL_PADDING * 2;
+    const auto truncated = renderer.truncatedText(SMALL_FONT_ID, title.c_str(), maxTitleWidth);
+    const int titleTextWidth = renderer.getTextWidth(SMALL_FONT_ID, truncated.c_str());
+    const int titleX = cellX + (cellWidth - titleTextWidth) / 2;
+    renderer.drawText(SMALL_FONT_ID, titleX, titleY, truncated.c_str(), !selected);
+  }
+}
+
+void BaseTheme::drawCoverGridSelection(GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex,
+                                       int pageOffset, const std::function<std::string(int)>& getTitle,
+                                       const std::function<std::string(int)>& getThumbPath,
+                                       const std::function<bool(int)>& isDirectory) const {
+  if (selectedIndex < pageOffset || selectedIndex >= std::min(pageOffset + GRID_COLS * GRID_ROWS, itemCount)) return;
+
+  const int cellWidth = rect.width / GRID_COLS;
+  const int cellHeight = rect.height / GRID_ROWS;
+  const int thumbWidth = cellWidth - GRID_CELL_PADDING * 2;
+  const int thumbHeight = cellHeight - GRID_CELL_PADDING * 2 - GRID_TITLE_AREA;
+
+  const int gridIdx = selectedIndex - pageOffset;
+  const int col = gridIdx % GRID_COLS;
+  const int row = gridIdx / GRID_COLS;
+
+  const int cellX = rect.x + col * cellWidth;
+  const int cellY = rect.y + row * cellHeight;
+
+  renderer.fillRect(cellX + 2, cellY + 2, cellWidth - 4, cellHeight - 4);
+
+  const int thumbX = cellX + (cellWidth - thumbWidth) / 2;
+  const int thumbY = cellY + GRID_CELL_PADDING;
+
+  const bool dir = isDirectory(selectedIndex);
+  if (dir || !drawCellCover(renderer, getThumbPath(selectedIndex), thumbX, thumbY, thumbWidth, thumbHeight)) {
+    if (dir) drawFolderGlyph(renderer, thumbX, thumbY, thumbWidth, thumbHeight, false);
+  }
+
+  const std::string title = getTitle(selectedIndex);
+  const int titleY = thumbY + thumbHeight + 1;
+  const int maxTitleWidth = cellWidth - GRID_CELL_PADDING * 2;
+  const auto truncated = renderer.truncatedText(SMALL_FONT_ID, title.c_str(), maxTitleWidth);
+  const int titleTextWidth = renderer.getTextWidth(SMALL_FONT_ID, truncated.c_str());
+  const int titleX = cellX + (cellWidth - titleTextWidth) / 2;
+  renderer.drawText(SMALL_FONT_ID, titleX, titleY, truncated.c_str(), false);
+}
