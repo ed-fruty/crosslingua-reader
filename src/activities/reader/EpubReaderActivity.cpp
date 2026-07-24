@@ -48,6 +48,12 @@ constexpr int PAGE_TURN_RATES[] = {1, 1, 3, 6, 12};
 constexpr size_t initialBookmarkCacheCapacity = 16;
 constexpr float bookmarkProgressEpsilon = 0.0001f;
 
+// The auto-fallback toast is a full wrapped sentence ("No translation for this chapter — switched
+// to Normal mode"), not a two-word confirmation like "Bookmark added". Users reported the shared
+// bookmark duration reads too fast for it, so give it its own, roughly double, timeout. Kept
+// separate from ReaderUtils::BOOKMARK_MESSAGE_DURATION_MS so tuning one never affects the other.
+constexpr unsigned long AUTO_FALLBACK_TOAST_MS = 2 * ReaderUtils::BOOKMARK_MESSAGE_DURATION_MS;
+
 int clampPercent(int percent) {
   if (percent < 0) {
     return 0;
@@ -531,7 +537,7 @@ void EpubReaderActivity::loop() {
     requestUpdate();
   }
 
-  if (showingAutoFallbackToast && (millis() - autoFallbackToastTime) >= ReaderUtils::BOOKMARK_MESSAGE_DURATION_MS) {
+  if (showingAutoFallbackToast && (millis() - autoFallbackToastTime) >= AUTO_FALLBACK_TOAST_MS) {
     showingAutoFallbackToast = false;
     requestUpdate();
   }
@@ -1310,17 +1316,39 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     // section must not suppress watermark-triggered rebuilds for this one.
     partialRebuildStartFailed = false;
 
-    // Pre-Translation per-chapter auto-fallback notification. When a non-Normal display mode is
-    // active but THIS chapter has no committed translation, Section lays it out in Normal (see
-    // Section::effectiveTranslationMode) -- toast the user so the switch isn't silent. This is the
-    // single, cache-state-independent trigger for every user-facing entry into a chapter: the
-    // enclosing `if (!section)` block runs exactly once per section (re)creation, i.e. once per
+    // Pre-Translation auto-fallback. A non-Normal display mode is active but THIS chapter has no
+    // committed translation, so Section lays it out in Normal (see Section::effectiveTranslationMode).
+    // Rather than silently downgrading just this one chapter, we PERSIST the switch: set the display
+    // mode to Normal and save it. The user's mental model then matches reality -- the Bilingua menu
+    // shows Normal, every chapter renders the same way, and to get bilingual output again the user
+    // downloads a translation and re-enables the mode they want.
+    //
+    // Why persist instead of the old per-chapter downgrade: the previous design kept the setting
+    // untouched and re-applied the mode on any translated chapter. Paging forward from the Title Page
+    // through several untranslated front-matter chapters therefore re-tripped this trigger on EVERY
+    // chapter, firing the toast again and again. With a real switch the toast fires exactly once:
+    // after it, the setting IS Normal, so the gate below (renderSpec/SETTINGS both Normal) is never
+    // true again until the user deliberately re-enables a bilingual mode.
+    //
+    // Same-pass safety: renderSpec was computed above (readerRenderSpec) from the OLD mode and every
+    // build in this `if (!section)` block uses that captured spec; Section::effectiveTranslationMode
+    // has already mapped this untranslated chapter to the Normal layout and Normal cache key, so the
+    // setting write here changes NO build input for this pass and forces no second rebuild. It also
+    // does not touch pendingModeReposition (that is only for the submenu-return relayout), so no
+    // reposition machinery fires. Subsequent chapter loads recompute renderSpec from SETTINGS and
+    // see PT_NORMAL, gating out further toasts.
+    //
+    // This is the single, cache-state-independent trigger for every user-facing entry into a chapter:
+    // the enclosing `if (!section)` block runs exactly once per section (re)creation, i.e. once per
     // navigation (TOC/chapter select, next/prev chapter, footnote jump, KOSync return, translator
-    // relaunch, mode-change reposition), and never on background/partial extension builds (those
-    // reuse the existing section). Because the fallback is per-chapter, the setting is NOT changed:
-    // re-entering a translated chapter restores the mode with no rebuild. Gated so there is no toast
-    // when the mode is already Normal and no toast for chapters that do have a translation.
+    // relaunch, mode-change reposition), and never on background/partial extension builds (those reuse
+    // the existing section). Gated so there is no toast when the mode is already Normal and none for
+    // chapters that do have a translation.
     if (renderSpec.translationMode != CrossPointSettings::PT_NORMAL && !section->hasTranslatedHtml()) {
+      // Persist the downgrade. Value-change-guarded implicitly: the gate above guarantees the current
+      // mode is non-Normal, so this assignment always changes the value before we write to SPIFFS.
+      SETTINGS.translationDisplayMode = CrossPointSettings::PT_NORMAL;
+      SETTINGS.saveToFile();
       showAutoFallbackToast();
     }
 
@@ -2312,10 +2340,11 @@ void EpubReaderActivity::updateBookmarkFlag() {
 
 void EpubReaderActivity::showAutoFallbackToast() {
   // Called from render() on entry to a chapter that has no translated HTML while a non-Normal
-  // display mode is active. The fallback is PER-CHAPTER: the chapter is laid out in Normal (by
-  // Section), but the persisted display-mode setting is deliberately NOT changed, so returning to a
-  // translated chapter restores the mode. This only queues a brief on-screen notification so the
-  // per-chapter switch isn't silent; it is timed out in loop().
+  // display mode is active. The caller has just PERSISTED the switch to Normal (SETTINGS write), so
+  // this only queues the on-screen notification that tells the user it happened; because the setting
+  // is now Normal the trigger is gated out on every following chapter, so this toast shows once per
+  // downgrade rather than once per untranslated chapter. Timed out in loop() after
+  // AUTO_FALLBACK_TOAST_MS (longer than the bookmark toast -- the message is a full wrapped line).
   showingAutoFallbackToast = true;
   autoFallbackToastTime = millis();
   requestUpdate();

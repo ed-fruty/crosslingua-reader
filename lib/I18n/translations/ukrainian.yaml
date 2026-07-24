@@ -452,7 +452,7 @@ STR_ENGINE_GOOGLE_V2: "Google v2"
 STR_ENGINE_GOOGLE_HTML: "Google v1"
 
 STR_NO_TRANSLATIONS_FOR_PAGE: "Немає перекладів для цієї сторінки"
-STR_NO_TRANSLATION_SWITCH_NORMAL: "Розділ не перекладений — показано оригінал. Твій режим Bilingua збережено."
+STR_NO_TRANSLATION_SWITCH_NORMAL: "Розділ не перекладений — перемкнено на звичайний режим"
 
 STR_BACK_TO_CANCEL: "Back: Скасувати"
 STR_PRESS_ANY_CONTINUE: "Натисніть будь-яку кнопку, щоб продовжити"

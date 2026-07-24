@@ -472,7 +472,7 @@ STR_ENGINE_GOOGLE_V2: "Google v2"
 STR_ENGINE_GOOGLE_HTML: "Google v1"
 
 STR_NO_TRANSLATIONS_FOR_PAGE: "Inga översättningar för denna sida"
-STR_NO_TRANSLATION_SWITCH_NORMAL: "Chapter not translated — showing the original. Your Bilingua mode is kept."
+STR_NO_TRANSLATION_SWITCH_NORMAL: "No translation for this chapter — switched to Normal mode"
 STR_NO_TRANSLATION: "inte översatt"
 
 STR_BACK_TO_CANCEL: "Back: Avbryt"
