@@ -650,6 +650,7 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewriteFromFile(
   HalFile inputFile;
   if (!Storage.openFileForRead("HtmlRW", inputPath, inputFile)) {
     LOG_ERR("HtmlRW", "Failed to open input file: %s", inputPath.c_str());
+    httpSession = nullptr;
     return {0, 0, 0, false, false};
   }
 
@@ -659,6 +660,7 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewriteFromFile(
   if (!parser) {
     LOG_ERR("HtmlRW", "Failed to create expat parser");
     inputFile.close();
+    httpSession = nullptr;
     return {0, 0, 0, false, false};
   }
 
@@ -697,6 +699,9 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewriteFromFile(
   flushBatch();
   writeRaw(pendingHtml);
   pendingHtml.clear();
+  // session (a stack local) dies when this function returns; the member must not
+  // outlive it. flushBatch() above is the last user of the keep-alive connection.
+  httpSession = nullptr;
 
   Result res;
   res.paragraphsTranslated = paragraphsTranslated;
