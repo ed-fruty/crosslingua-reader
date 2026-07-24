@@ -48,12 +48,6 @@ constexpr int PAGE_TURN_RATES[] = {1, 1, 3, 6, 12};
 constexpr size_t initialBookmarkCacheCapacity = 16;
 constexpr float bookmarkProgressEpsilon = 0.0001f;
 
-// The auto-fallback toast is a full wrapped sentence ("No translation for this chapter — switched
-// to Normal mode"), not a two-word confirmation like "Bookmark added". Users reported the shared
-// bookmark duration reads too fast for it, so give it its own, roughly double, timeout. Kept
-// separate from ReaderUtils::BOOKMARK_MESSAGE_DURATION_MS so tuning one never affects the other.
-constexpr unsigned long AUTO_FALLBACK_TOAST_MS = 2 * ReaderUtils::BOOKMARK_MESSAGE_DURATION_MS;
-
 int clampPercent(int percent) {
   if (percent < 0) {
     return 0;
@@ -428,6 +422,22 @@ void EpubReaderActivity::loop() {
     }
   }
 
+  // Pre-Translation fallback dialog is MODAL: while it is displayed it owns the screen and all reader
+  // input. Confirm or Back dismisses it (be forgiving -- either works); every other press is consumed
+  // here so a page turn / menu open / back-nav underneath can't fire. Placed after the background
+  // build tick so a still-building section keeps laying out behind the dialog, but before every input
+  // handler below. The dismiss requestUpdate() repaints the page (the section was built during the
+  // arming render, so it renders immediately) with no popup composited over it.
+  if (fallbackDialogActive) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
+        mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+      fallbackDialogActive = false;
+      ignoreNextConfirmRelease = false;
+      requestUpdate();
+    }
+    return;
+  }
+
   // Pre-Translation Tooltip (PT_TOOLTIP): the overlay owns its configured nav buttons for
   // per-sentence stepping. Placed EARLY (before detectPageTurn and the modal overlay, mirroring
   // the fork) so a nav press can't be preempted by a normal page turn and a Back release dismisses
@@ -534,13 +544,6 @@ void EpubReaderActivity::loop() {
 
   if (showDictionaryMessage && (millis() - dictionaryMessageTime) >= ReaderUtils::BOOKMARK_MESSAGE_DURATION_MS) {
     showDictionaryMessage = false;
-    requestUpdate();
-  }
-
-  if (showingAutoFallbackToast && (millis() - autoFallbackToastTime) >= AUTO_FALLBACK_TOAST_MS) {
-    showingAutoFallbackToast = false;
-    autoFallbackToastSpine = -1;
-    autoFallbackToastPage = -1;
     requestUpdate();
   }
 
@@ -1359,7 +1362,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
         // mode is non-Normal, so this assignment always changes the value before we write to SPIFFS.
         SETTINGS.translationDisplayMode = CrossPointSettings::PT_NORMAL;
         SETTINGS.saveToFile();
-        showAutoFallbackToast();
+        armFallbackDialog();
       }
     }
 
@@ -1630,6 +1633,17 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   // a plain resume / unchanged pagination). If still building, this defers to loop() on completion.
   applyDeferredReposition();
 
+  // Pre-Translation fallback dialog OWNS the screen: draw it as ONE self-contained refresh with no
+  // page composited underneath, then return. This is the whole point of the modal -- the old toast
+  // drew the page (its own, now-async, refresh) and THEN stamped a popup with a SECOND refresh, and
+  // that trailing refresh racing the in-flight page refresh is what wedged the panel. The section was
+  // built above, so when loop() dismisses the dialog (clears fallbackDialogActive + requestUpdate)
+  // the page renders cleanly on the next pass.
+  if (fallbackDialogActive) {
+    drawFallbackDialog();
+    return;
+  }
+
   renderer.clearScreen();
 
   if (section->pageCount == 0) {
@@ -1716,29 +1730,22 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     ScreenshotUtil::takeScreenshot(renderer);
   }
 
+  // These toasts are composited as a SEPARATE e-ink refresh on top of the page renderContents() just
+  // refreshed. renderContents() already drains any in-flight async refresh before it returns, but make
+  // that a hard guarantee at every popup-over-page composite: a popup refresh issued while the panel
+  // is still mid-async-refresh can wedge the controller's BUSY line (the freeze this change fixes for
+  // the fallback notice; the same drawPopup choreography is shared here). waitRefreshComplete() is a
+  // no-op when nothing is pending, so it costs nothing on the common path.
+  if (showBookmarkMessage || showDictionaryMessage || showModalNoTranslationToast) {
+    renderer.waitRefreshComplete();
+  }
+
   if (showBookmarkMessage) {
     GUI.drawPopup(renderer, bookmarkRemoved ? tr(STR_BOOKMARK_REMOVED) : tr(STR_BOOKMARK_ADDED));
   }
 
   if (showDictionaryMessage) {
     GUI.drawPopup(renderer, tr(STR_DICT_NO_DICT_SET));
-  }
-
-  if (showingAutoFallbackToast) {
-    // Bind the toast to the (spine, page) it first appears on (see the header note). The popup is a
-    // SEPARATE refresh composited after the page's own refresh, so re-drawing it on a later render of
-    // a different view flashes it a second time. Draw it only on its arming view; when the view
-    // changes (e.g. a build-completion reposition to another page) the page repaint drops it cleanly
-    // with no reappearance.
-    if (autoFallbackToastSpine < 0) {
-      autoFallbackToastSpine = currentSpineIndex;
-      autoFallbackToastPage = section->currentPage;
-    }
-    if (currentSpineIndex == autoFallbackToastSpine && section->currentPage == autoFallbackToastPage) {
-      // This message is long in most languages (German/Ukrainian etc.); GUI.drawPopup sizes a
-      // single-line box to the full string width and overflows the screen, so wrap it instead.
-      GUI.drawWrappedPopup(renderer, tr(STR_NO_TRANSLATION_SWITCH_NORMAL));
-    }
   }
 
   if (showModalNoTranslationToast) {
@@ -2347,24 +2354,48 @@ void EpubReaderActivity::updateBookmarkFlag() {
   });
 }
 
-void EpubReaderActivity::showAutoFallbackToast() {
-  // Called from render() on entry to a chapter that has no translated HTML while a non-Normal
-  // display mode is active. The caller has just PERSISTED the switch to Normal (SETTINGS write), so
-  // this only queues the on-screen notification that tells the user it happened; because the setting
-  // is now Normal the trigger is gated out on every following chapter, so this toast shows once per
-  // downgrade rather than once per untranslated chapter. Timed out in loop() after
-  // AUTO_FALLBACK_TOAST_MS (longer than the bookmark toast -- the message is a full wrapped line).
-  showingAutoFallbackToast = true;
-  autoFallbackToastTime = millis();
-  // Re-arm the (spine, page) binding; the draw site records it on the next paint.
-  autoFallbackToastSpine = -1;
-  autoFallbackToastPage = -1;
-  // NO requestUpdate() here. This runs from INSIDE render() (the `if (!section)` chapter-entry path),
-  // and that same render pass draws the popup at the draw site below, so the toast already appears
-  // this frame. A requestUpdate() would only schedule a redundant follow-up render that repaints the
-  // page (wiping the popup in its own e-ink refresh) and re-composites the popup -- a visible
-  // disappear/reappear read as the toast firing twice. loop() issues the single clearing render when
-  // AUTO_FALLBACK_TOAST_MS expires.
+void EpubReaderActivity::armFallbackDialog() {
+  // Called from render() on entry to a chapter that has no translated HTML while a non-Normal display
+  // mode is active. The caller has just PERSISTED the switch to Normal (SETTINGS write); this only
+  // arms the modal notice telling the user it happened. Because the setting is now Normal the trigger
+  // is gated out on every following chapter, so the dialog fires exactly once per downgrade.
+  //
+  // No requestUpdate(): this runs from INSIDE the arming render() (the `if (!section)` chapter-entry
+  // path), and that same pass draws the dialog at the draw site in render(). There is no timer -- the
+  // dialog stays until the user dismisses it in loop() (Confirm/Back).
+  fallbackDialogActive = true;
+}
+
+void EpubReaderActivity::drawFallbackDialog() const {
+  // Full-screen confirm/prompt-style modal (matches ClearCacheActivity and the Bilingua submenu):
+  // header + centered wrapped message + a single OK/Back button hint. ONE clearScreen + ONE
+  // displayBuffer, so it never composites a second refresh over a page refresh.
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+
+  renderer.clearScreen();
+  GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
+                 tr(STR_PRE_TRANSLATION));
+
+  // Wrap the (long, often translated) message into the safe area and center it in the body. Uses the
+  // popup box margins so the wrap width matches the rest of the UI.
+  const int sideMargin = metrics.popupMarginX + metrics.popupFrameThickness;
+  const int maxTextW = std::max(1, screen.width - 2 * sideMargin);
+  const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
+  constexpr int DIALOG_MAX_LINES = 4;
+  const auto lines =
+      renderer.wrappedText(UI_12_FONT_ID, tr(STR_NO_TRANSLATION_SWITCH_NORMAL), maxTextW, DIALOG_MAX_LINES);
+  int textY = screen.y + (screen.height - static_cast<int>(lines.size()) * lineHeight) / 2;
+  for (const auto& line : lines) {
+    renderer.drawCenteredText(UI_12_FONT_ID, textY, line.c_str(), true);
+    textY += lineHeight;
+  }
+
+  // OK dismisses via Confirm; Back also dismisses (loop() is forgiving). Labels go through mapLabels
+  // so button remapping and orientation are honored.
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_CONFIRM), "", "");
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  renderer.displayBuffer();
 }
 
 ScreenshotInfo EpubReaderActivity::getScreenshotInfo() const {
