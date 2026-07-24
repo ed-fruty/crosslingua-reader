@@ -8,6 +8,8 @@
 #include <functional>
 #include <string>
 
+#include "util/HeapBackpressure.h"
+
 #if defined(FREEINK_NET_WOLFSSL)
 #include <SecureHttpClient.h>
 
@@ -67,16 +69,14 @@ bool isRedirect(int status) {
 //      allocation to actually succeed even if freeHeap looks sufficient but
 //      is fragmented -> maxAllocHeap floor.
 // Both floors carry margin above the measured numbers so we refuse before
-// hitting the wall, not after.
-constexpr uint32_t MIN_FREE_HEAP_FOR_TLS = 45000;
-constexpr uint32_t MIN_MAX_ALLOC_FOR_TLS = 20000;
-
+// hitting the wall, not after. The threshold values live in HttpDownloader.h
+// (HttpDownloader::MIN_*) so the translation activities can share them.
 bool insufficientHeapForTls() {
   const uint32_t freeHeap = ESP.getFreeHeap();
   const uint32_t maxAllocHeap = ESP.getMaxAllocHeap();
-  if (freeHeap < MIN_FREE_HEAP_FOR_TLS || maxAllocHeap < MIN_MAX_ALLOC_FOR_TLS) {
+  if (freeHeap < HttpDownloader::MIN_FREE_HEAP_FOR_TLS || maxAllocHeap < HttpDownloader::MIN_MAX_ALLOC_FOR_TLS) {
     LOG_ERR("HTTP", "Insufficient heap for TLS handshake: %u bytes free (need %u), %u max alloc block (need %u)",
-            freeHeap, MIN_FREE_HEAP_FOR_TLS, maxAllocHeap, MIN_MAX_ALLOC_FOR_TLS);
+            freeHeap, HttpDownloader::MIN_FREE_HEAP_FOR_TLS, maxAllocHeap, HttpDownloader::MIN_MAX_ALLOC_FOR_TLS);
     return true;
   }
   return false;
@@ -95,14 +95,13 @@ bool insufficientHeapForTls() {
 // transparently on this same call; that re-handshake could then fail under this
 // low floor. That is acceptable — it surfaces as a normal request failure that
 // the caller's retry/backoff handles — and is far rarer than the common case of
-// a live socket we must not needlessly refuse.
-constexpr uint32_t MIN_FREE_HEAP_FOR_REUSE = 12000;
-
+// a live socket we must not needlessly refuse. The threshold lives in
+// HttpDownloader.h (HttpDownloader::MIN_FREE_HEAP_FOR_REUSE).
 bool insufficientHeapForReuse() {
   const uint32_t freeHeap = ESP.getFreeHeap();
-  if (freeHeap < MIN_FREE_HEAP_FOR_REUSE) {
+  if (freeHeap < HttpDownloader::MIN_FREE_HEAP_FOR_REUSE) {
     LOG_ERR("HTTP", "Insufficient heap for reused TLS request: %u bytes free (need %u)", freeHeap,
-            MIN_FREE_HEAP_FOR_REUSE);
+            HttpDownloader::MIN_FREE_HEAP_FOR_REUSE);
     return true;
   }
   return false;
@@ -624,4 +623,27 @@ bool TranslationHttpSession::postJson(const std::string& url, const std::string&
   const char* authName = authHeader.empty() ? nullptr : "Authorization";
   const char* authValue = authHeader.empty() ? nullptr : authHeader.c_str();
   return post(url, jsonBody, "application/json", authName, authValue, outContent);
+}
+
+bool TranslationHttpSession::waitForHeapReady(uint32_t timeoutMs, volatile const bool* cancelFlag) {
+#if defined(FREEINK_NET_WOLFSSL)
+  if (impl) {
+    // Mirror heapRefused()'s floor selection: a request on an already-handshaken
+    // socket pays only the small reuse floor (no handshake churn, no large
+    // cert-flight record), so we must NOT wait for handshake-sized headroom a
+    // kept-alive request will never need — that would needlessly stall (and
+    // eventually abort) normal mid-chapter progress where free heap sits between
+    // the reuse and handshake floors.
+    const uint32_t minFree =
+        impl->everConnected ? HttpDownloader::MIN_FREE_HEAP_FOR_REUSE : HttpDownloader::MIN_FREE_HEAP_FOR_TLS;
+    const uint32_t minBlock = impl->everConnected ? 0u : HttpDownloader::MIN_MAX_ALLOC_FOR_TLS;
+    return heapbp::waitForHeap(minFree, minBlock, timeoutMs, cancelFlag, "HTTP",
+                               impl->everConnected ? "reused TLS heap" : "TLS handshake heap");
+  }
+#endif
+  // No heap guard applies on the esp_http_client build or when no session client
+  // was allocated — proceed immediately (behavior identical to not waiting).
+  (void)timeoutMs;
+  (void)cancelFlag;
+  return true;
 }

@@ -90,6 +90,12 @@ class ChapterTranslatorActivity final : public Activity {
   volatile bool taskDone = false;
   volatile bool taskFailed = false;
   char statusMsg[64] = {};
+  // Set by the worker when the run aborted specifically on low memory (heap
+  // backpressure exhausted). Read on the main task in render() to show the
+  // specific STR_TRANSLATION_LOW_MEMORY message instead of statusMsg (whose
+  // 64-byte buffer cannot hold the translated text). Written before taskFailed
+  // (volatile) is set, so the main task observes it once taskFailed is seen.
+  bool lowMemoryAbort = false;
 
   // Progress tracking (mutex-free: writers update volatile ints, reader copies into locals).
   volatile int progressCurrent = 0;
@@ -149,8 +155,15 @@ class ChapterTranslatorActivity final : public Activity {
   void releaseFramebuffer();
   // Reallocates the framebuffer with retry, restarting as a last resort if it can
   // never be reclaimed. Idempotent. alreadyLocked=true when called from onExit(),
-  // which already holds the RenderLock (the mutex is non-recursive).
+  // which already holds the RenderLock (the mutex is non-recursive). Used only on
+  // paths that MUST draw (result screens, onExit) — never for a cosmetic repaint.
   void restoreFramebuffer(bool alreadyLocked = false);
+  // Non-restarting restore for the periodic batch-boundary repaint. Returns true if
+  // the 48 KB framebuffer is present after the call. A mid-chapter batch boundary can
+  // momentarily lack a contiguous 48 KB hole (the keep-alive TLS session is still
+  // open), so a failed restore just skips that one cosmetic repaint (the next boundary
+  // retries) rather than rebooting mid-chapter. Mirrors BookTranslatorActivity.
+  bool tryRestoreFramebuffer();
 
   // Display name for the current translation engine (e.g. "Google (Free) - New").
   const char* getEngineName() const;

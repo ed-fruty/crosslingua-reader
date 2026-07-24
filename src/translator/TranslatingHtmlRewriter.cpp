@@ -201,7 +201,35 @@ void TranslatingHtmlRewriter::flushBatch() {
                        engine == CrossPointSettings::ENGINE_GEMINI;
   std::vector<std::string> translations;
   if (!translatableIndices.empty()) {
-    if (canBatchMerge && mergedText.size() <= ParagraphTranslator::MAX_TEXT_BYTES) {
+    // ── Heap backpressure ──────────────────────────────────────────────────
+    // Wait (bounded) for the heap to support this batch's TLS request before
+    // firing it. If it never recovers within the window we do NOT allocate (the
+    // design directive: "if memory is insufficient, do not try to allocate; leave
+    // it for the next loop iteration"). We count the exhausted wait and, after
+    // MAX_CONSECUTIVE_HEAP_TIMEOUTS in a row, abort the run cleanly (low-memory).
+    // A healthy wait resets the streak so a run that recovers keeps going.
+    const bool heapReady = !httpSession || httpSession->waitForHeapReady(HEAP_WAIT_TIMEOUT_MS, cancelled);
+    if (!heapReady) {
+      if (cancelled && *cancelled) {
+        wasCancelled = true;  // wait was broken by a user cancel, not a timeout
+      } else {
+        consecutiveHeapTimeouts++;
+        // Count as genuine failures (not silent skips) so a chapter that translated
+        // nothing because of low memory is never committed as a valid passthrough
+        // (the activity's zero-translated-with-failures guard catches it).
+        translateFailures += static_cast<int>(translatableIndices.size());
+        LOG_INF("HtmlRW", "Heap backpressure: batch of %u paragraphs deferred, low memory (%d/%d consecutive)",
+                (unsigned)translatableIndices.size(), consecutiveHeapTimeouts, MAX_CONSECUTIVE_HEAP_TIMEOUTS);
+        if (consecutiveHeapTimeouts >= MAX_CONSECUTIVE_HEAP_TIMEOUTS) {
+          LOG_ERR("HtmlRW", "Aborting: %d consecutive low-memory waits", consecutiveHeapTimeouts);
+          abortedOnErrors = true;
+          abortedLowMemory = true;
+        }
+      }
+      // Fall through untranslated: `translations` stays empty, so the write-out
+      // loop below emits each entry's original HTML only.
+    } else if (canBatchMerge && mergedText.size() <= ParagraphTranslator::MAX_TEXT_BYTES) {
+      consecutiveHeapTimeouts = 0;  // heap healthy -> reset the low-memory streak
       // Single batched API call (LLM/DeepL engines that can handle merged text)
       std::string translated;
       bool ok = false;
@@ -232,6 +260,7 @@ void TranslatingHtmlRewriter::flushBatch() {
         }
       }
     } else {
+      consecutiveHeapTimeouts = 0;  // heap healthy -> reset the low-memory streak
       // Individual calls — either engine doesn't support batch merging, or merged text too large
       LOG_DBG("HtmlRW", "Individual calls: %u paragraphs (canBatch=%d, mergedBytes=%u)",
               (unsigned)translatableIndices.size(), canBatchMerge, (unsigned)mergedText.size());
@@ -552,6 +581,8 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewrite(const char* inp
   consecutiveFailures = 0;
   consecutive429 = 0;
   abortedOnErrors = false;
+  consecutiveHeapTimeouts = 0;
+  abortedLowMemory = false;
   lastError.clear();
   batch.clear();
   pendingHtml.clear();
@@ -597,6 +628,7 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewrite(const char* inp
   res.translateFailures = translateFailures;
   res.cancelled = wasCancelled || (cancelled && *cancelled);
   res.abortedOnErrors = abortedOnErrors;
+  res.abortedLowMemory = abortedLowMemory;
   if (abortedOnErrors && !lastError.empty()) {
     snprintf(res.errorDetail, sizeof(res.errorDetail), "%s", lastError.c_str());
   }
@@ -642,6 +674,8 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewriteFromFile(
   consecutiveFailures = 0;
   consecutive429 = 0;
   abortedOnErrors = false;
+  consecutiveHeapTimeouts = 0;
+  abortedLowMemory = false;
   lastError.clear();
   batch.clear();
   pendingHtml.clear();
@@ -709,6 +743,7 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewriteFromFile(
   res.translateFailures = translateFailures;
   res.cancelled = wasCancelled || (cancelled && *cancelled);
   res.abortedOnErrors = abortedOnErrors;
+  res.abortedLowMemory = abortedLowMemory;
   if (abortedOnErrors && !lastError.empty()) {
     snprintf(res.errorDetail, sizeof(res.errorDetail), "%s", lastError.c_str());
   }

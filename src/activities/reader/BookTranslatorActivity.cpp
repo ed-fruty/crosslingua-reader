@@ -18,10 +18,22 @@
 #include "activities/translator/LanguagePickerActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/HttpDownloader.h"
+#include "util/HeapBackpressure.h"
 
 // Sentinel value LanguagePickerActivity returns for the synthetic "Auto-detect" entry.
 // Matches CrossPointSettings::sourceTranslationLanguage's 0xFF sentinel.
 static constexpr uint8_t AUTO_DETECT_SENTINEL = 0xFF;
+
+// Bounded wait for a contiguous 48 KB framebuffer hole before a cosmetic progress
+// repaint at a batch/chapter boundary. Kept short: the worker is parked while we wait,
+// so a repaint must never stall translation for long — on timeout we skip it.
+static constexpr uint32_t BOUNDARY_FB_WAIT_MS = 1000;
+// Bounded wait for TLS-ready heap before a chapter's handshake. The per-batch
+// backpressure inside the rewriter is the finer gate and owns the low-memory abort;
+// this just gives a heap fragmented by the previous chapter a chance to recover before
+// the next handshake begins.
+static constexpr uint32_t CHAPTER_START_HEAP_WAIT_MS = 12000;
 
 // Display-mode label mapping for the post-success chooser, indexed by
 // CrossPointSettings::translationDisplayMode (PT_NORMAL..PT_TOOLTIP). Mirrors
@@ -241,6 +253,7 @@ void BookTranslatorActivity::startTranslation() {
   cancelFlag = false;
   taskDone = false;
   taskFailed = false;
+  lowMemoryAbort = false;
   currentChapter = 0;
   chaptersCompleted = 0;
   progressCurrent = 0;
@@ -407,6 +420,17 @@ void BookTranslatorActivity::runTranslation() {
     }
     if (cancelFlag) break;
 
+    // Heap backpressure before this chapter's network work: if fragmentation carried over
+    // from a prior chapter left the heap below the handshake floor, wait (bounded) for it
+    // to recover before opening files and starting the TLS handshake, rather than
+    // allocating into a low heap. Best-effort and non-terminal here — the per-batch
+    // backpressure inside the rewriter is the finer gate and owns the low-memory abort.
+    // Services cancelFlag so onExit() never blocks; nothing is open yet, so a cancel here
+    // just breaks with no cleanup.
+    heapbp::waitForHeap(HttpDownloader::MIN_FREE_HEAP_FOR_TLS, HttpDownloader::MIN_MAX_ALLOC_FOR_TLS,
+                        CHAPTER_START_HEAP_WAIT_MS, &cancelFlag, "BKT", "chapter-start TLS heap");
+    if (cancelFlag) break;
+
     // Extract chapter HTML from the EPUB to a temp scratch file.
     const auto& spineItem = epub->getSpineItem(si);
     const std::string tmpPath = cachePath + "/.tmp_book_" + std::to_string(si) + ".html";
@@ -468,7 +492,12 @@ void BookTranslatorActivity::runTranslation() {
 
     if (result.abortedOnErrors) {
       Storage.remove(partPath.c_str());
-      if (result.errorDetail[0]) {
+      if (result.abortedLowMemory) {
+        // Specific low-memory abort: render() draws tr(STR_TRANSLATION_LOW_MEMORY)
+        // directly (the translated text does not fit statusMsg's 64-byte buffer).
+        // Completed chapters remain committed on disk; only this chapter's .part was dropped.
+        lowMemoryAbort = true;
+      } else if (result.errorDetail[0]) {
         snprintf(statusMsg, sizeof(statusMsg), "Ch %d: %s", si + 1, result.errorDetail);
       } else {
         snprintf(statusMsg, sizeof(statusMsg), "Ch %d: too many API errors", si + 1);
@@ -610,11 +639,16 @@ void BookTranslatorActivity::loop() {
     // so a second loop() pass cannot re-run the cycle.
     if (boundaryPending) {
       boundaryPending = false;
-      // A mid-chapter batch boundary can momentarily lack a contiguous 48 KB hole, so use
-      // the non-restarting restore and skip the repaint if it fails (the next boundary
-      // retries) rather than reboot mid-book. When the restore succeeds we always release
-      // the buffer again before acking, so it is never held across the worker's network
-      // calls. Chapter boundaries hit this same path but always have a clean hole.
+      // A mid-chapter batch boundary can momentarily lack a contiguous 48 KB hole, so give
+      // the heap a brief, bounded chance to coalesce one, then use the non-restarting
+      // restore and skip the repaint if it still fails (the next boundary retries) rather
+      // than reboot mid-book. When the restore succeeds we always release the buffer again
+      // before acking, so it is never held across the worker's network calls. Chapter
+      // boundaries hit this same path but always have a clean hole. Never block translation
+      // for a repaint — the wait is short.
+      const size_t fbSize = renderer.getBufferSize();
+      heapbp::waitForHeap(static_cast<uint32_t>(fbSize), static_cast<uint32_t>(fbSize), BOUNDARY_FB_WAIT_MS,
+                          &cancelFlag, "BKT", "framebuffer");
       if (tryRestoreFramebuffer()) {
         requestUpdateAndWait();
         releaseFramebuffer();
@@ -830,12 +864,24 @@ void BookTranslatorActivity::render(RenderLock&&) {
 
   } else if (state == FAILED) {
     renderer.drawCenteredText(UI_12_FONT_ID, 150, tr(STR_TRANSLATION_FAILED), true, EpdFontFamily::BOLD);
-    if (statusMsg[0]) {
+    int doneY = 240;
+    if (lowMemoryAbort) {
+      // Long translated message -> wrap across the content width (statusMsg's
+      // 64-byte buffer can't hold the Ukrainian text, so it is bypassed here).
+      const auto lines = renderer.wrappedText(UI_10_FONT_ID, tr(STR_TRANSLATION_LOW_MEMORY), pageWidth - 80, 4);
+      const int lineH = renderer.getLineHeight(UI_10_FONT_ID);
+      int y = 200;
+      for (const auto& line : lines) {
+        renderer.drawCenteredText(UI_10_FONT_ID, y, line.c_str());
+        y += lineH;
+      }
+      doneY = y + 10;  // push the chapter count below the (multi-line) message
+    } else if (statusMsg[0]) {
       renderer.drawCenteredText(UI_10_FONT_ID, 200, statusMsg);
     }
     char doneStr[64];
     snprintf(doneStr, sizeof(doneStr), "%d / %d chapters completed", (int)chaptersCompleted, totalChapters);
-    renderer.drawCenteredText(UI_10_FONT_ID, 240, doneStr);
+    renderer.drawCenteredText(UI_10_FONT_ID, doneY, doneStr);
     renderer.drawCenteredText(UI_10_FONT_ID, 380, tr(STR_PRESS_ANY_CONTINUE));
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_OK_BUTTON), "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

@@ -18,10 +18,16 @@
 #include "activities/translator/LanguagePickerActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/HeapBackpressure.h"
 
 // Sentinel value LanguagePickerActivity returns for the synthetic "Auto-detect" entry.
 // Matches CrossPointSettings::sourceTranslationLanguage's 0xFF sentinel.
 static constexpr uint8_t AUTO_DETECT_SENTINEL = 0xFF;
+
+// Bounded wait for a contiguous 48 KB framebuffer hole before a cosmetic progress
+// repaint at a batch boundary. Kept short: the worker is parked while we wait, so a
+// repaint must never stall translation for long — on timeout we simply skip it.
+static constexpr uint32_t BOUNDARY_FB_WAIT_MS = 1000;
 
 // Display-mode label mapping for the post-success chooser, indexed by
 // CrossPointSettings::translationDisplayMode (PT_NORMAL..PT_TOOLTIP). Mirrors
@@ -225,6 +231,7 @@ void ChapterTranslatorActivity::startTranslation() {
   cancelFlag = false;
   taskDone = false;
   taskFailed = false;
+  lowMemoryAbort = false;
   lastResult = {};
   progressCurrent = 0;
   progressTotal = 0;
@@ -299,6 +306,21 @@ void ChapterTranslatorActivity::restoreFramebuffer(bool alreadyLocked) {
   // translated HTML is already committed to SD and the reader re-reads it on relaunch.
   LOG_ERR("CHT", "Framebuffer realloc permanently failed; restarting");
   ESP.restart();
+}
+
+bool ChapterTranslatorActivity::tryRestoreFramebuffer() {
+  if (renderer.hasFrameBuffer()) return true;  // already present
+  RenderLock lock;
+  if (renderer.hasFrameBuffer()) return true;  // re-check under the lock
+  if (renderer.restoreFrameBufferAfterNetwork()) {
+    LOG_DBG("MEM", "CT boundary restore: free=%u max=%u", (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
+    return true;
+  }
+  // No contiguous 48 KB hole right now (the keep-alive TLS session is still open mid
+  // chapter). Skip this cosmetic repaint; the next boundary retries. Never restart here —
+  // a mid-chapter reboot would drop the in-flight chapter's work.
+  LOG_DBG("CHT", "Boundary framebuffer restore unavailable; skipping repaint");
+  return false;
 }
 
 void ChapterTranslatorActivity::translationTask(void* param) {
@@ -393,7 +415,11 @@ void ChapterTranslatorActivity::runTranslation() {
 
   if (lastResult.abortedOnErrors) {
     Storage.remove(partPath.c_str());
-    if (lastResult.errorDetail[0]) {
+    if (lastResult.abortedLowMemory) {
+      // Specific low-memory abort: render() draws tr(STR_TRANSLATION_LOW_MEMORY)
+      // directly (the translated text does not fit statusMsg's 64-byte buffer).
+      lowMemoryAbort = true;
+    } else if (lastResult.errorDetail[0]) {
       snprintf(statusMsg, sizeof(statusMsg), "%s", lastResult.errorDetail);
     } else {
       snprintf(statusMsg, sizeof(statusMsg), "Translation failed: too many errors");
@@ -516,9 +542,18 @@ void ChapterTranslatorActivity::loop() {
     // boundaryPending up front so a second loop() pass cannot re-run the cycle.
     if (boundaryPending) {
       boundaryPending = false;
-      restoreFramebuffer();
-      requestUpdateAndWait();
-      releaseFramebuffer();
+      // A mid-chapter batch boundary can momentarily lack a contiguous 48 KB hole (the
+      // keep-alive TLS session is still open), so give the heap a brief, bounded chance
+      // to coalesce and then use the NON-restarting restore: if the buffer can't be
+      // reclaimed, skip this cosmetic repaint (the next boundary retries) rather than
+      // rebooting mid-chapter. Never block translation for a repaint.
+      const size_t fbSize = renderer.getBufferSize();
+      heapbp::waitForHeap(static_cast<uint32_t>(fbSize), static_cast<uint32_t>(fbSize), BOUNDARY_FB_WAIT_MS,
+                          &cancelFlag, "CHT", "framebuffer");
+      if (tryRestoreFramebuffer()) {
+        requestUpdateAndWait();
+        releaseFramebuffer();
+      }
       boundaryAck = true;
       return;
     }
@@ -692,7 +727,17 @@ void ChapterTranslatorActivity::render(RenderLock&&) {
 
   } else if (state == FAILED) {
     renderer.drawCenteredText(UI_12_FONT_ID, 150, tr(STR_TRANSLATION_FAILED), true, EpdFontFamily::BOLD);
-    if (statusMsg[0]) {
+    if (lowMemoryAbort) {
+      // Long translated message -> wrap across the content width (statusMsg's
+      // 64-byte buffer can't hold the Ukrainian text, so it is bypassed here).
+      const auto lines = renderer.wrappedText(UI_10_FONT_ID, tr(STR_TRANSLATION_LOW_MEMORY), pageWidth - 80, 4);
+      const int lineH = renderer.getLineHeight(UI_10_FONT_ID);
+      int y = 200;
+      for (const auto& line : lines) {
+        renderer.drawCenteredText(UI_10_FONT_ID, y, line.c_str());
+        y += lineH;
+      }
+    } else if (statusMsg[0]) {
       renderer.drawCenteredText(UI_10_FONT_ID, 200, statusMsg);
     }
     renderer.drawCenteredText(UI_10_FONT_ID, 380, tr(STR_PRESS_ANY_CONTINUE));

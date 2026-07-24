@@ -1,6 +1,7 @@
 #pragma once
 #include <HalStorage.h>
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -23,6 +24,17 @@ class HttpDownloader {
     FILE_ERROR,
     ABORTED,
   };
+
+  // TLS heap floors, measured on-device via WolfSslAllocDiag (see the rationale
+  // in HttpDownloader.cpp). Exposed so the translation activities can apply the
+  // SAME backpressure thresholds before starting a chapter's handshake as the
+  // request-time guards enforce, keeping the numbers single-sourced.
+  //   MIN_FREE_HEAP_FOR_TLS   total headroom for ~24 KB handshake churn + record.
+  //   MIN_MAX_ALLOC_FOR_TLS   largest contiguous block for the worst-case TLS record.
+  //   MIN_FREE_HEAP_FOR_REUSE small floor for a request on an already-handshaken socket.
+  static constexpr uint32_t MIN_FREE_HEAP_FOR_TLS = 45000;
+  static constexpr uint32_t MIN_MAX_ALLOC_FOR_TLS = 20000;
+  static constexpr uint32_t MIN_FREE_HEAP_FOR_REUSE = 12000;
 
   /**
    * Fetch text content from a URL with optional credentials.
@@ -122,6 +134,17 @@ class TranslationHttpSession {
   // Mirror of HttpDownloader::postJson(...); delegates to post().
   bool postJson(const std::string& url, const std::string& jsonBody, const std::string& authHeader,
                 std::string& outContent);
+
+  // Heap backpressure before a request's TLS (re)connect. Blocks (polling, with a
+  // watchdog-feeding delay) until the heap can support the applicable floor — the
+  // full handshake floor (MIN_FREE_HEAP_FOR_TLS / MIN_MAX_ALLOC_FOR_TLS) before the
+  // first request, the small reuse floor (MIN_FREE_HEAP_FOR_REUSE) once the socket
+  // is established — or until timeoutMs elapses or *cancelFlag (nullable) is set.
+  // Returns true when the heap is ready OR when no guard applies (non-wolfSSL build /
+  // no session), so the caller should proceed; false only on a genuine timeout or
+  // cancel, which the caller counts toward its low-memory termination contract
+  // instead of firing a request that would OOM. Never issues a request itself.
+  bool waitForHeapReady(uint32_t timeoutMs, volatile const bool* cancelFlag);
 
  private:
   struct Impl;                 // owns the kept-alive client (wolfSSL build only)

@@ -90,6 +90,11 @@ class BookTranslatorActivity final : public Activity {
   volatile bool taskDone = false;
   volatile bool taskFailed = false;
   char statusMsg[64] = {};
+  // Set by the worker when the run aborted specifically on low memory (heap
+  // backpressure exhausted). Read on the main task in render() to show the specific
+  // STR_TRANSLATION_LOW_MEMORY message instead of statusMsg (whose 64-byte buffer
+  // cannot hold the translated text). Written before taskFailed (volatile) is set.
+  bool lowMemoryAbort = false;
 
   // Progress tracking (mutex-free: writers update volatile ints, reader copies into locals).
   volatile int currentChapter = 0;     // 0-based chapter being translated

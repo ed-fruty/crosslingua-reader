@@ -27,6 +27,12 @@ class TranslatingHtmlRewriter {
     int translateFailures = 0;
     bool cancelled = false;
     bool abortedOnErrors = false;
+    // Subtype of abortedOnErrors: the run was aborted specifically because the
+    // heap could not sustain the TLS handshake after repeated bounded waits.
+    // Lets the activity show the specific "not enough memory" message instead of
+    // a generic failure, while reusing the identical abort/partial-preservation
+    // path (abortedOnErrors stays true).
+    bool abortedLowMemory = false;
     char errorDetail[64] = {};  // last error message when abortedOnErrors
   };
 
@@ -99,6 +105,20 @@ class TranslatingHtmlRewriter {
   bool abortedOnErrors = false;  // set when consecutiveFailures hits threshold
   std::string lastError;         // last translation error message
   static constexpr int MAX_CONSECUTIVE_FAILURES = 20;
+
+  // ─── Heap backpressure (low-memory wait-then-retry) ─────────────────────────
+  // Before firing a batch's TLS request we wait (bounded) for the heap to support
+  // the handshake rather than allocating into a low/fragmented heap and crashing.
+  // Each exhausted wait (heap never recovered within HEAP_WAIT_TIMEOUT_MS)
+  // increments consecutiveHeapTimeouts; a healthy wait resets it. After
+  // MAX_CONSECUTIVE_HEAP_TIMEOUTS in a row the run aborts cleanly through the same
+  // abortedOnErrors machinery, flagged abortedLowMemory so the caller shows the
+  // specific message. Guarantee: progress pauses at most
+  // MAX_CONSECUTIVE_HEAP_TIMEOUTS * HEAP_WAIT_TIMEOUT_MS, then continues or ends.
+  int consecutiveHeapTimeouts = 0;
+  bool abortedLowMemory = false;
+  static constexpr int MAX_CONSECUTIVE_HEAP_TIMEOUTS = 3;
+  static constexpr uint32_t HEAP_WAIT_TIMEOUT_MS = 12000;  // ~12 s per exhausted wait
 
   // ─── Network retry/backoff (see HttpDownloader::lastHttpCode) ───────────────
   int consecutive429 = 0;  // consecutive HTTP 429 responses; reset on any non-429 outcome
