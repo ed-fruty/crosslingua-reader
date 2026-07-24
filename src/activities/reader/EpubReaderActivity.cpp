@@ -1793,10 +1793,6 @@ void EpubReaderActivity::renderOverlayFrame(Page& page, const int fontId, const 
   // PrewarmScope bumps cacheGeneration()); reuse otherwise. Overlay + status-bar text stay on demand —
   // small, and the overlay's text changes every step, so there is nothing stable to prewarm; this is
   // the same tradeoff the normal reading path already makes for the status bar.
-  // [OVL] per-phase timing probes: one DBG line per composited overlay frame so on-device logs
-  // show exactly which phase eats time on a button press. Negligible cost (millis reads).
-  const unsigned long tFrame0 = millis();
-  unsigned long tPrewarm = 0, tPage = 0, tOverlay = 0, tRefresh = 0;
 
   auto* fcm = renderer.getFontCacheManager();
   const int curPage = section ? section->currentPage : -1;
@@ -1841,14 +1837,12 @@ void EpubReaderActivity::renderOverlayFrame(Page& page, const int fontId, const 
     overlayPrewarmFontId_ = fontId;
     overlayPrewarmGen_ = fcm->cacheGeneration();  // capture AFTER prewarm; any later clear bumps it
   }
-  tPrewarm = millis();
 
   // BW frame: the page, the status bar, then the active overlay composited on top. The overlay's
   // fillRect/drawText land in the BW framebuffer, so they ride the SINGLE refresh below — no
   // separate flush. (The modal's viewport ends above the status-bar margin, so it never covers it.)
   page.render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
   renderStatusBar();
-  tPage = millis();
 
   // Mutually exclusive modes, but drawn independently for clarity. The modal may deactivate itself
   // in render() when the page has no translated paragraphs — surface the toast in that case.
@@ -1870,12 +1864,9 @@ void EpubReaderActivity::renderOverlayFrame(Page& page, const int fontId, const 
                           viewportWidth, viewportHeight);
   }
 
-  tOverlay = millis();
-
   // One refresh for the whole composited frame: FAST for stepping/scrolling, HALF only when the
   // periodic full-refresh cadence lands (ghost cleanup) — identical to a normal page turn.
   ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
-  tRefresh = millis();
 
   // Grayscale anti-aliasing pass (fork parity) only when the page is actually visible — i.e. NOT
   // hidden under the full-screen modal. The overlay lives in the BW framebuffer, which
@@ -1886,10 +1877,6 @@ void EpubReaderActivity::renderOverlayFrame(Page& page, const int fontId, const 
     ReaderUtils::renderAntiAliased(renderer,
                                    [&]() { page.render(renderer, fontId, orientedMarginLeft, orientedMarginTop); });
   }
-  const unsigned long tEnd = millis();
-  LOG_DBG("OVL", "frame: rebuild=%d prewarm=%lums page=%lums overlay=%lums refresh=%lums aa=%lums TOTAL=%lums",
-          cacheStale ? 1 : 0, tPrewarm - tFrame0, tPage - tPrewarm, tOverlay - tPage, tRefresh - tOverlay,
-          tEnd - tRefresh, tEnd - tFrame0);
 }
 
 void EpubReaderActivity::renderContents(Page& page, const int orientedMarginTop, const int orientedMarginRight,

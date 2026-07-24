@@ -65,7 +65,6 @@ void ChapterTranslatorActivity::returnToCaller() {
 
 void ChapterTranslatorActivity::onEnter() {
   Activity::onEnter();
-  LOG_DBG("MEM", "CT onEnter: free=%u max=%u", (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
 
   if (!ensureEpubLoaded()) {
     state = FAILED;
@@ -73,8 +72,6 @@ void ChapterTranslatorActivity::onEnter() {
     requestUpdate();
     return;
   }
-
-  LOG_DBG("MEM", "CT epub loaded: free=%u max=%u", (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
 
   // If the chapter is already translated, show confirmation before proceeding.
   if (alreadyTranslated) {
@@ -245,7 +242,6 @@ void ChapterTranslatorActivity::startTranslation() {
   requestUpdateAndWait();
 
   LOG_DBG("CHT", "State -> TRANSLATING, lang=%s, engine=%d", targetLangCode.c_str(), SETTINGS.translationEngine);
-  LOG_DBG("MEM", "CT pre-task (wifi up): free=%u max=%u", (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
 
   // Free the 48 KB heap framebuffer so the TLS handshake has the contiguous headroom
   // it needs. Released for the entire chapter run; restored in the loop() completion
@@ -324,7 +320,6 @@ void ChapterTranslatorActivity::translationTask(void* param) {
 }
 
 void ChapterTranslatorActivity::runTranslation() {
-  LOG_DBG("MEM", "CT task start: free=%u max=%u", (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
   // ESP32 DHCP can hand back a DNS that doesn't resolve every Google subdomain
   // we hit (translate.google.com vs translate.googleapis.com). Force public DNS.
   IPAddress dns1(8, 8, 8, 8);
@@ -363,7 +358,6 @@ void ChapterTranslatorActivity::runTranslation() {
   // pure SAX pass with no translation work and is cheap relative to step 3.
   progressTotal = TranslatingHtmlRewriter::countBlocksInFile(tmpPath);
   LOG_DBG("CHT", "Translation started, total=%d blocks", (int)progressTotal);
-  LOG_DBG("MEM", "CT pre-rewrite: free=%u max=%u", (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
 
   // Step 3: open the destination path and run the rewriter.
   // Section's createSectionFile() expects the `sections/` subdir to exist; the
