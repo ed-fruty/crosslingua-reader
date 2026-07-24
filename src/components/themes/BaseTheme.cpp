@@ -13,6 +13,7 @@
 
 #include "I18n.h"
 #include "RecentBooksStore.h"
+#include "components/CoverGridLayout.h"
 #include "components/UITheme.h"
 #include "components/icons/bookmark.h"
 #include "fontIds.h"
@@ -1040,10 +1041,10 @@ void BaseTheme::drawOptionPopup(const GfxRenderer& renderer, const char* title, 
 }
 
 namespace {
-constexpr int GRID_COLS = 3;
-constexpr int GRID_ROWS = 3;
-constexpr int GRID_CELL_PADDING = 6;
-constexpr int GRID_TITLE_AREA = 24;  // small-font height + gap below cover
+using covergrid::GRID_CELL_PADDING;
+using covergrid::GRID_COLS;
+using covergrid::GRID_ROWS;
+using covergrid::GRID_TITLE_AREA;
 
 // Blit the cached cover thumb into a cell, letterboxed to preserve aspect. Returns false when no
 // drawable BMP was available (0-byte negative-cache sentinel, unparseable header, or open failure)

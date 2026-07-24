@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "RecentBooksStore.h"
+#include "components/CoverGridLayout.h"
 #include "components/UITheme.h"
 #include "components/icons/book.h"
 #include "components/icons/book24.h"
@@ -584,10 +585,10 @@ void LyraTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
 }
 
 namespace {
-constexpr int GRID_COLS = 3;
-constexpr int GRID_ROWS = 3;
-constexpr int GRID_CELL_PADDING = 6;
-constexpr int GRID_TITLE_AREA = 24;  // small-font height + gap below cover
+using covergrid::GRID_CELL_PADDING;
+using covergrid::GRID_COLS;
+using covergrid::GRID_ROWS;
+using covergrid::GRID_TITLE_AREA;
 
 // See BaseTheme.cpp drawCellCover: blit the 1-bit thumb letterboxed into the cell; false => no
 // drawable cover (empty path, 0-byte sentinel, unparseable, or open failure).

@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "activities/Activity.h"
+#include "components/CoverGridLayout.h"
 #include "util/ButtonNavigator.h"
 
 struct BookShelfEntry {
@@ -46,13 +47,9 @@ class BookShelfActivity final : public Activity {
   void storeGridBuffer(int page);
   void freeGridBuffer();
 
-  // Grid layout constants (must match the theme's drawCoverGrid geometry so thumbs are generated
-  // at display size)
-  static constexpr int GRID_COLS = 3;
-  static constexpr int GRID_ROWS = 3;
-  static constexpr int GRID_PAGE_ITEMS = GRID_COLS * GRID_ROWS;
-  static constexpr int GRID_CELL_PADDING = 6;
-  static constexpr int GRID_TITLE_AREA = 24;
+  // Grid geometry lives in components/CoverGridLayout.h — the single source of truth shared
+  // with the themes' drawCoverGrid, so thumbs are generated at exactly the display size.
+  static constexpr int GRID_PAGE_ITEMS = covergrid::GRID_PAGE_ITEMS;
   static constexpr unsigned long GO_HOME_MS = 1000;
   static constexpr unsigned long TOGGLE_DISPLAY_MS = 1000;
 

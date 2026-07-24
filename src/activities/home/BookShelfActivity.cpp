@@ -214,8 +214,8 @@ void BookShelfActivity::onEnter() {
   const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   const int contentHeight =
       renderer.getScreenHeight() - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
-  const int cellHeight = contentHeight / GRID_ROWS;
-  thumbHeight = cellHeight - GRID_CELL_PADDING * 2 - GRID_TITLE_AREA;
+  const int cellHeight = contentHeight / covergrid::GRID_ROWS;
+  thumbHeight = cellHeight - covergrid::GRID_CELL_PADDING * 2 - covergrid::GRID_TITLE_AREA;
 
   loadFiles();
   selectorIndex = 0;
