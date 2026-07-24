@@ -539,6 +539,8 @@ void EpubReaderActivity::loop() {
 
   if (showingAutoFallbackToast && (millis() - autoFallbackToastTime) >= AUTO_FALLBACK_TOAST_MS) {
     showingAutoFallbackToast = false;
+    autoFallbackToastSpine = -1;
+    autoFallbackToastPage = -1;
     requestUpdate();
   }
 
@@ -1344,12 +1346,21 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     // relaunch, mode-change reposition), and never on background/partial extension builds (those reuse
     // the existing section). Gated so there is no toast when the mode is already Normal and none for
     // chapters that do have a translation.
-    if (renderSpec.translationMode != CrossPointSettings::PT_NORMAL && !section->hasTranslatedHtml()) {
-      // Persist the downgrade. Value-change-guarded implicitly: the gate above guarantees the current
-      // mode is non-Normal, so this assignment always changes the value before we write to SPIFFS.
-      SETTINGS.translationDisplayMode = CrossPointSettings::PT_NORMAL;
-      SETTINGS.saveToFile();
-      showAutoFallbackToast();
+    if (renderSpec.translationMode != CrossPointSettings::PT_NORMAL) {
+      const bool chapterHasTranslation = section->hasTranslatedHtml();
+      if (!chapterHasTranslation) {
+        // Permanent on-device evidence for the auto-fallback. Fires at most once per downgrade (after
+        // it the setting is PT_NORMAL and this gate never re-triggers until the user re-enables a
+        // bilingual mode), so there is no log-flood risk.
+        LOG_INF("ERS", "Pre-Translation auto-fallback: spine=%d oldMode=%d hasTranslatedHtml=%d -> PT_NORMAL",
+                currentSpineIndex, static_cast<int>(renderSpec.translationMode),
+                static_cast<int>(chapterHasTranslation));
+        // Persist the downgrade. Value-change-guarded implicitly: the gate above guarantees the current
+        // mode is non-Normal, so this assignment always changes the value before we write to SPIFFS.
+        SETTINGS.translationDisplayMode = CrossPointSettings::PT_NORMAL;
+        SETTINGS.saveToFile();
+        showAutoFallbackToast();
+      }
     }
 
     // A finalized cache serves every page as-is. A partial cache (suspended build from a
@@ -1714,9 +1725,20 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   }
 
   if (showingAutoFallbackToast) {
-    // This message is long in most languages (German/Ukrainian etc.); GUI.drawPopup sizes a
-    // single-line box to the full string width and overflows the screen, so wrap it instead.
-    GUI.drawWrappedPopup(renderer, tr(STR_NO_TRANSLATION_SWITCH_NORMAL));
+    // Bind the toast to the (spine, page) it first appears on (see the header note). The popup is a
+    // SEPARATE refresh composited after the page's own refresh, so re-drawing it on a later render of
+    // a different view flashes it a second time. Draw it only on its arming view; when the view
+    // changes (e.g. a build-completion reposition to another page) the page repaint drops it cleanly
+    // with no reappearance.
+    if (autoFallbackToastSpine < 0) {
+      autoFallbackToastSpine = currentSpineIndex;
+      autoFallbackToastPage = section->currentPage;
+    }
+    if (currentSpineIndex == autoFallbackToastSpine && section->currentPage == autoFallbackToastPage) {
+      // This message is long in most languages (German/Ukrainian etc.); GUI.drawPopup sizes a
+      // single-line box to the full string width and overflows the screen, so wrap it instead.
+      GUI.drawWrappedPopup(renderer, tr(STR_NO_TRANSLATION_SWITCH_NORMAL));
+    }
   }
 
   if (showModalNoTranslationToast) {
@@ -2347,7 +2369,15 @@ void EpubReaderActivity::showAutoFallbackToast() {
   // AUTO_FALLBACK_TOAST_MS (longer than the bookmark toast -- the message is a full wrapped line).
   showingAutoFallbackToast = true;
   autoFallbackToastTime = millis();
-  requestUpdate();
+  // Re-arm the (spine, page) binding; the draw site records it on the next paint.
+  autoFallbackToastSpine = -1;
+  autoFallbackToastPage = -1;
+  // NO requestUpdate() here. This runs from INSIDE render() (the `if (!section)` chapter-entry path),
+  // and that same render pass draws the popup at the draw site below, so the toast already appears
+  // this frame. A requestUpdate() would only schedule a redundant follow-up render that repaints the
+  // page (wiping the popup in its own e-ink refresh) and re-composites the popup -- a visible
+  // disappear/reappear read as the toast firing twice. loop() issues the single clearing render when
+  // AUTO_FALLBACK_TOAST_MS expires.
 }
 
 ScreenshotInfo EpubReaderActivity::getScreenshotInfo() const {

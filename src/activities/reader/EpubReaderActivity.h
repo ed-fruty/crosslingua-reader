@@ -87,11 +87,20 @@ class EpubReaderActivity final : public Activity {
   bool showModalNoTranslationToast = false;
   unsigned long modalNoTranslationToastTime = 0UL;
   // Pre-Translation: shown when the current chapter has no translated HTML but the user picked a
-  // non-Normal display mode. render() detects this on entry to each chapter and lays the chapter out
-  // in Normal for THAT chapter only (per-chapter fallback -- the display-mode setting is preserved),
-  // toasting so the switch isn't silent.
+  // non-Normal display mode. render() detects this on entry to a chapter and PERSISTS the switch to
+  // Normal (SETTINGS.translationDisplayMode = PT_NORMAL, saved), toasting so the change isn't silent.
+  // Because the setting is now Normal, the trigger is gated out on every following chapter, so the
+  // toast shows exactly once per downgrade.
   bool showingAutoFallbackToast = false;
   unsigned long autoFallbackToastTime = 0UL;
+  // The toast is composited as its OWN e-ink refresh, after renderContents() has already refreshed the
+  // page. So any later render() of a DIFFERENT view while the flag is up (e.g. the background
+  // section-build-completion reposition, which always lands on a different page) repaints the page --
+  // wiping the popup in that refresh -- and then re-composites the popup, a visible disappear/reappear
+  // read as the toast firing twice. Bind the popup to the (spine, page) it first paints on so it is
+  // drawn only on its arming view; -1 means "not yet bound". Reset when the flag clears / re-arms.
+  int autoFallbackToastSpine = -1;
+  int autoFallbackToastPage = -1;
   bool currentPageBookmarked = false;
   // Idle-time glyph prewarm: after a page settles, scan the LIKELY next page
   // (scan mode draws nothing) and load its missing glyphs from SD during idle,
