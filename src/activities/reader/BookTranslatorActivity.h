@@ -98,15 +98,25 @@ class BookTranslatorActivity final : public Activity {
   volatile int progressTotal = 0;
   unsigned long lastProgressUpdate = 0;
 
-  // ─── Chapter-boundary framebuffer handshake ────────────────────────────────
+  // ─── Chapter- and batch-boundary framebuffer handshake ─────────────────────
   // The framebuffer must be freed during each chapter's TLS work but reallocated to
-  // draw progress at chapter boundaries. All framebuffer/render work stays on the
-  // main task (never the worker), so it can never race the render task or onExit()'s
-  // teardown. At a boundary the worker sets boundaryPending and spins until the main
-  // task's loop() has restored the buffer, drawn progress, freed it again, and set
-  // boundaryAck. The spin also breaks on cancelFlag so onExit() never blocks on it.
+  // draw progress at boundaries. Two kinds of boundary drive the same handshake: the
+  // per-chapter boundary in runTranslation() (updates the chapter counter + overall
+  // bar) and the mid-chapter batch boundary in serviceBatchBoundary() (advances the
+  // per-chapter paragraph bar during a single chapter's run). All framebuffer/render
+  // work stays on the main task (never the worker), so it can never race the render
+  // task or onExit()'s teardown. At a boundary the worker sets boundaryPending and
+  // spins until the main task's loop() has restored the buffer, drawn progress, freed
+  // it again, and set boundaryAck. The spin also breaks on cancelFlag so onExit() never
+  // blocks on it.
   volatile bool boundaryPending = false;
   volatile bool boundaryAck = false;
+  // Worker-only cadence bookkeeping for the periodic batch-boundary repaint (touched
+  // solely in serviceBatchBoundary after the main task seeds them in startTranslation;
+  // runTranslation resets lastRepaintProgress at each chapter because progressCurrent
+  // restarts from 0 per chapter — no cross-task sharing beyond that seed/reset).
+  int lastRepaintProgress = 0;
+  unsigned long lastRepaintMillis = 0;
 
   // Reopens a lean, metadata-only Epub from epubPath (the reader released its own before
   // this activity launched). Idempotent; returns false + LOG_ERR if the load fails.
@@ -129,6 +139,14 @@ class BookTranslatorActivity final : public Activity {
   static void translationTask(void* param);
   void runTranslation();
 
+  // Batch-boundary repaint hook passed to the rewriter (mirrors ChapterTranslatorActivity).
+  // The trampoline forwards the rewriter's void* context to the instance method.
+  // serviceBatchBoundary() runs on the worker task: it evaluates the repaint cadence and,
+  // when due, performs the boundaryPending/boundaryAck handshake with the main task's loop()
+  // so the per-chapter progress bar advances mid-chapter.
+  static void batchBoundaryTrampoline(void* ctx);
+  void serviceBatchBoundary();
+
   // ─── Framebuffer lifecycle (main task only) ────────────────────────────────
   // Frees / reallocates the 48 KB heap framebuffer around the network runs so the
   // TLS handshake has contiguous headroom (see the shared design notes for the
@@ -139,6 +157,12 @@ class BookTranslatorActivity final : public Activity {
   // Idempotent. alreadyLocked=true when called from onExit(), which already holds the
   // RenderLock (the mutex is non-recursive).
   void restoreFramebuffer(bool alreadyLocked = false);
+  // Non-restarting restore for the periodic batch-boundary repaint. Returns true if the
+  // 48 KB framebuffer is present after the call. Unlike restoreFramebuffer() it NEVER
+  // restarts on failure: a mid-chapter batch boundary can momentarily lack a contiguous
+  // 48 KB hole (the keep-alive TLS session is still open), so a failed restore just skips
+  // that one cosmetic repaint (the next boundary retries) rather than rebooting mid-book.
+  bool tryRestoreFramebuffer();
 
   // Display name for the current translation engine (e.g. "Google (Free) - New").
   const char* getEngineName() const;

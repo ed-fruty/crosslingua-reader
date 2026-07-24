@@ -249,6 +249,10 @@ void BookTranslatorActivity::startTranslation() {
   statusMsg[0] = '\0';
   boundaryPending = false;
   boundaryAck = false;
+  lastRepaintProgress = 0;
+  // Seed the repaint clock at run start so the first time-based repaint fires ~20 s in,
+  // not immediately at the first batch boundary.
+  lastRepaintMillis = millis();
 
   // Flush the initial "Translating..." screen to the panel BEFORE freeing the
   // framebuffer (blocks until drawn+displayed). Safe here: startTranslation() runs on
@@ -316,6 +320,22 @@ void BookTranslatorActivity::restoreFramebuffer(bool alreadyLocked) {
   ESP.restart();
 }
 
+bool BookTranslatorActivity::tryRestoreFramebuffer() {
+  if (renderer.hasFrameBuffer()) return true;  // already present
+  RenderLock lock;
+  if (renderer.hasFrameBuffer()) return true;  // re-check under the lock
+  if (renderer.restoreFrameBufferAfterNetwork()) {
+    LOG_DBG("MEM", "BKT boundary restore: free=%u max=%u", (unsigned)ESP.getFreeHeap(),
+            (unsigned)ESP.getMaxAllocHeap());
+    return true;
+  }
+  // No contiguous 48 KB hole right now (the keep-alive TLS session is still open mid
+  // chapter). Skip this cosmetic repaint; the next boundary retries. Never restart here —
+  // a mid-book reboot would drop the in-flight chapter's work.
+  LOG_DBG("BKT", "Boundary framebuffer restore unavailable; skipping repaint");
+  return false;
+}
+
 void BookTranslatorActivity::translationTask(void* param) {
   auto* self = static_cast<BookTranslatorActivity*>(param);
   self->runTranslation();
@@ -351,6 +371,10 @@ void BookTranslatorActivity::runTranslation() {
     currentChapter = si;
     progressCurrent = 0;
     progressTotal = 0;
+    // progressCurrent restarts from 0 for this chapter, so reset the batch-repaint
+    // baseline too; otherwise the carried-over value from the previous chapter would
+    // suppress the first few per-chapter repaints.
+    lastRepaintProgress = 0;
 
     const std::string translatedPath = cachePath + "/sections/" + std::to_string(si) + ".translated.html";
 
@@ -425,9 +449,9 @@ void BookTranslatorActivity::runTranslation() {
 
     const char* srcLang = sourceLangCode.c_str();
     TranslatingHtmlRewriter rewriter;
-    const auto result =
-        rewriter.rewriteFromFile(tmpPath, outFile, srcLang, targetLangCode.c_str(), SETTINGS.translationEngine,
-                                 SETTINGS.translateApiKey, &cancelFlag, &progressCurrent);
+    const auto result = rewriter.rewriteFromFile(
+        tmpPath, outFile, srcLang, targetLangCode.c_str(), SETTINGS.translationEngine, SETTINGS.translateApiKey,
+        &cancelFlag, &progressCurrent, &BookTranslatorActivity::batchBoundaryTrampoline, this);
     outFile.close();
     Storage.remove(tmpPath.c_str());
 
@@ -485,6 +509,45 @@ void BookTranslatorActivity::runTranslation() {
   }
 
   taskDone = true;
+}
+
+// ─── periodic progress repaint (worker-side cadence + UI handshake) ────────────
+
+void BookTranslatorActivity::batchBoundaryTrampoline(void* ctx) {
+  static_cast<BookTranslatorActivity*>(ctx)->serviceBatchBoundary();
+}
+
+void BookTranslatorActivity::serviceBatchBoundary() {
+  // Runs on the worker (bookTranslate) task between batches: this batch's TLS/HTTP
+  // transients are freed and progressCurrent is up to date. Bail immediately if we're
+  // cancelling so onExit() (which sets cancelFlag then waits for the task to finish) never
+  // blocks on a spin.
+  if (cancelFlag) return;
+
+  const int current = progressCurrent;
+  const int total = progressTotal;
+  // Repaint every max(5, total/10) blocks -> ~10-15 repaints across a chapter.
+  const int blockThreshold = (total / 10) > 5 ? (total / 10) : 5;
+  const unsigned long now = millis();
+  const bool progressHit = (current - lastRepaintProgress) >= blockThreshold;
+  const bool timeHit = (now - lastRepaintMillis) >= 20000UL;  // millis(); no Date APIs
+  if (!progressHit && !timeHit) return;
+
+  // Hand off to the main task: its loop() restores the framebuffer, draws the updated
+  // progress synchronously, frees it again, then sets boundaryAck. We own no
+  // framebuffer/render state here, so the restore/redraw/release can never race the render
+  // task or onExit()'s teardown. The spin also exits on cancelFlag.
+  boundaryAck = false;
+  boundaryPending = true;
+  while (!boundaryAck && !cancelFlag) {
+    delay(5);
+  }
+  boundaryPending = false;
+
+  // Advance the cadence baselines even if a cancel broke the spin — the next boundary
+  // (if any) then re-evaluates from here rather than firing again instantly.
+  lastRepaintProgress = current;
+  lastRepaintMillis = now;
 }
 
 // ─── engine name helper ──────────────────────────────────────────────────────
@@ -547,9 +610,15 @@ void BookTranslatorActivity::loop() {
     // so a second loop() pass cannot re-run the cycle.
     if (boundaryPending) {
       boundaryPending = false;
-      restoreFramebuffer();
-      requestUpdateAndWait();
-      releaseFramebuffer();
+      // A mid-chapter batch boundary can momentarily lack a contiguous 48 KB hole, so use
+      // the non-restarting restore and skip the repaint if it fails (the next boundary
+      // retries) rather than reboot mid-book. When the restore succeeds we always release
+      // the buffer again before acking, so it is never held across the worker's network
+      // calls. Chapter boundaries hit this same path but always have a clean hole.
+      if (tryRestoreFramebuffer()) {
+        requestUpdateAndWait();
+        releaseFramebuffer();
+      }
       boundaryAck = true;
       return;
     }
@@ -686,7 +755,7 @@ void BookTranslatorActivity::render(RenderLock&&) {
       renderer.drawCenteredText(UI_10_FONT_ID, 50, langLine.c_str());
     }
     char engineLine[80];
-    snprintf(engineLine, sizeof(engineLine), "Engine: %s", getEngineName());
+    snprintf(engineLine, sizeof(engineLine), tr(STR_ENGINE_LABEL_FORMAT), getEngineName());
     renderer.drawCenteredText(UI_10_FONT_ID, 80, engineLine);
 
     renderer.drawCenteredText(UI_10_FONT_ID, 120, tr(STR_TRANSLATING_BOOK));
@@ -697,56 +766,48 @@ void BookTranslatorActivity::render(RenderLock&&) {
     const int chDone = chaptersCompleted;
     const int chIdx = currentChapter + 1;  // 1-based for display
 
-    // Per-chapter section: "Chapter X of Y" + paragraph bar.
-    char chapterStr[48];
-    snprintf(chapterStr, sizeof(chapterStr), "Chapter %d of %d", chIdx, totalChapters);
-    renderer.drawCenteredText(UI_12_FONT_ID, 160, chapterStr, true, EpdFontFamily::BOLD);
-
     const int barX = 90;
     const int barW = pageWidth - 180;
     const int barH = 12;
 
-    // Per-chapter progress bar (paragraphs within current chapter).
-    {
-      const int barY = 200;
+    // Both progress sections are a three-line vertical stack: heading, percentage, bar.
+    // The lines step down by their own font line height (baseline-to-baseline advance), so
+    // the heading never collides with the percentage regardless of the font size or an
+    // orientation-driven metric change — this replaces the old fixed "-22" offset that let
+    // the UI_12 heading overlap the UI_10 percentage. The two section-top anchors stay as
+    // plain Y constants, matching the rest of this screen's fixed layout.
+    const int headingH = renderer.getLineHeight(UI_12_FONT_ID);
+    const int pctH = renderer.getLineHeight(UI_10_FONT_ID);
+
+    // Draws one progress section (heading + percentage + bar) anchored at sectionTop.
+    // Local lambda invoked in place — no std::function storage, so no heap/bloat.
+    const auto drawProgressSection = [&](int sectionTop, const char* heading, int done, int outOf) {
+      renderer.drawCenteredText(UI_12_FONT_ID, sectionTop, heading, true, EpdFontFamily::BOLD);
+      const int pctY = sectionTop + headingH;
+      const int barY = pctY + pctH;
+      if (outOf > 0) {
+        char pctStr[16];
+        const int pct = (int)((long)done * 100 / outOf);
+        snprintf(pctStr, sizeof(pctStr), "%d%%", pct);
+        renderer.drawCenteredText(UI_10_FONT_ID, pctY, pctStr);
+      }
       renderer.drawRect(barX, barY, barW, barH, true);
-      if (total > 0 && current > 0) {
-        int fillW = (barW - 2) * current / total;
+      if (outOf > 0 && done > 0) {
+        int fillW = (barW - 2) * done / outOf;
         if (fillW > barW - 2) fillW = barW - 2;
         if (fillW > 0) {
           renderer.fillRect(barX + 1, barY + 1, fillW, barH - 2, true);
         }
       }
-      // Percentage label above the bar.
-      if (total > 0) {
-        char pctStr[16];
-        const int pct = (int)((long)current * 100 / (total > 0 ? total : 1));
-        snprintf(pctStr, sizeof(pctStr), "%d%%", pct);
-        renderer.drawCenteredText(UI_10_FONT_ID, barY - 22, pctStr);
-      }
-    }
+    };
 
-    // Overall progress label.
-    renderer.drawCenteredText(UI_12_FONT_ID, 260, "Overall:", true, EpdFontFamily::BOLD);
+    // Per-chapter section: "Chapter X of Y" + paragraph bar (paragraphs within this chapter).
+    char chapterStr[48];
+    snprintf(chapterStr, sizeof(chapterStr), tr(STR_CHAPTER_X_OF_Y), chIdx, totalChapters);
+    drawProgressSection(160, chapterStr, current, total);
 
-    // Overall progress bar (chapters completed).
-    {
-      const int barY = 300;
-      renderer.drawRect(barX, barY, barW, barH, true);
-      if (totalChapters > 0 && chDone > 0) {
-        int fillW = (barW - 2) * chDone / totalChapters;
-        if (fillW > barW - 2) fillW = barW - 2;
-        if (fillW > 0) {
-          renderer.fillRect(barX + 1, barY + 1, fillW, barH - 2, true);
-        }
-      }
-      if (totalChapters > 0) {
-        char pctStr[16];
-        const int pct = (int)((long)chDone * 100 / totalChapters);
-        snprintf(pctStr, sizeof(pctStr), "%d%%", pct);
-        renderer.drawCenteredText(UI_10_FONT_ID, barY - 22, pctStr);
-      }
-    }
+    // Overall section: chapters completed across the whole book.
+    drawProgressSection(260, tr(STR_OVERALL_PROGRESS), chDone, totalChapters);
 
     renderer.drawCenteredText(UI_10_FONT_ID, 380, tr(STR_BACK_TO_CANCEL));
     const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), "", "", "");

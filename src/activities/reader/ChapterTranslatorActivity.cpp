@@ -638,7 +638,7 @@ void ChapterTranslatorActivity::render(RenderLock&&) {
     }
 
     char engineLine[80];
-    snprintf(engineLine, sizeof(engineLine), "Engine: %s", getEngineName());
+    snprintf(engineLine, sizeof(engineLine), tr(STR_ENGINE_LABEL_FORMAT), getEngineName());
     renderer.drawCenteredText(UI_10_FONT_ID, 80, engineLine);
 
     renderer.drawCenteredText(UI_10_FONT_ID, 130, tr(STR_TRANSLATING_CHAPTER));
