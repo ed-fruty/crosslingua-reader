@@ -429,9 +429,10 @@ void EpubReaderActivity::loop() {
   // handler below. The dismiss requestUpdate() repaints the page (the section was built during the
   // arming render, so it renders immediately) with no popup composited over it.
   if (fallbackDialogActive) {
-    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
-        mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    if (fallbackDialogDrawn && (mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
+                                mappedInput.wasReleased(MappedInputManager::Button::Back))) {
       fallbackDialogActive = false;
+      fallbackDialogDrawn = false;
       ignoreNextConfirmRelease = false;
       requestUpdate();
     }
@@ -1261,6 +1262,10 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     renderer.clearScreen();
     GUI.drawPopup(renderer, tr(STR_INDEX_FAILED));
     automaticPageTurnActive = false;
+    // A fallback dialog armed earlier in this pass will never be drawn on the error screen;
+    // disarm it so the modal input gate doesn't swallow the first Back press here.
+    fallbackDialogActive = false;
+    fallbackDialogDrawn = false;
   };
 
   // edge case handling for sub-zero spine index
@@ -1641,6 +1646,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   // the page renders cleanly on the next pass.
   if (fallbackDialogActive) {
     drawFallbackDialog();
+    fallbackDialogDrawn = true;
     return;
   }
 

@@ -101,6 +101,10 @@ class EpubReaderActivity final : public Activity {
   // render() draws it as ONE self-contained refresh with no page underneath, and loop() consumes all
   // reader input until the user dismisses it with Confirm/Back. No timer.
   bool fallbackDialogActive = false;
+  // Set once render() has actually painted the dialog. loop() only accepts the dismiss press
+  // when this is true, so a button release racing the arming render (armed but not yet drawn)
+  // cannot silently drop the notice.
+  bool fallbackDialogDrawn = false;
   bool currentPageBookmarked = false;
   // Idle-time glyph prewarm: after a page settles, scan the LIKELY next page
   // (scan mode draws nothing) and load its missing glyphs from SD during idle,
