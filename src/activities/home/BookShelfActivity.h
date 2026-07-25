@@ -1,4 +1,7 @@
 #pragma once
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -32,9 +35,44 @@ class BookShelfActivity final : public Activity {
   std::vector<BookShelfEntry> entries;
   std::unique_ptr<char[]> fileNameBuffer;
 
-  // Cover generation state
-  bool coversLoaded = false;
-  bool coversLoading = false;
+  // ─── Background cover generation ────────────────────────────────────────────
+  // Covers are decoded off the UI by a FreeRTOS worker so navigation never blocks. The worker
+  // NEVER touches the renderer/framebuffer/display — it only produces thumb BMPs on the SD card
+  // (via HalStorage) for the currently visible page. The RENDER task owns entries[] entirely: it
+  // resolves each cell's thumbPath/title from the SD file the worker produced (resolveCachedCovers)
+  // and draws. The SD thumb file's existence IS the per-entry completion signal, so no entry field
+  // is ever written by both tasks. All cross-task state below is volatile scalars, single-writer.
+  TaskHandle_t coverTaskHandle = nullptr;
+  volatile bool coverCancelFlag = false;  // main -> worker: stop at the next book boundary
+  volatile bool coverTaskDone = false;    // worker -> main: loop exited, safe to null the handle
+  volatile bool coverDirty = false;       // worker -> main: a new thumb landed on SD; repaint due
+  volatile int visiblePageOffset = 0;     // main -> worker: which 9-item window to chase
+  volatile int workerActiveIndex = -1;    // worker -> render: entry whose thumb is mid-write; skip it
+  bool coverWorkerPending = false;        // main: (re)launch the worker once the next paint is done
+
+  // Progressive-fill repaint pacing (main task).
+  unsigned long lastCoverRepaintMs = 0;
+  unsigned long lastInteractionMs = 0;
+  size_t lastSelectorIndex = 0;
+
+  // Background floors: skip generation when the heap can't absorb the metadata build + streaming
+  // thumb conversion, leaving headroom for the UI (mirrors EpubReaderActivity's background build).
+  static constexpr size_t COVER_MIN_FREE_HEAP = 32 * 1024;
+  static constexpr size_t COVER_MIN_MAX_ALLOC = 16 * 1024;
+  static constexpr unsigned long COVER_IDLE_TICK_MS = 150;          // wake latency on page change when idle
+  static constexpr unsigned long COVER_GATE_DELAY_MS = 250;         // retry cadence while heap-gated
+  static constexpr unsigned long COVER_REPAINT_IDLE_MS = 400;       // quiet window before a cover repaint
+  static constexpr unsigned long COVER_REPAINT_THROTTLE_MS = 1500;  // min gap between cover repaints
+  static constexpr int COVER_JOIN_TICKS = 100;                      // 100 * 100ms = 10s bounded join
+
+  void startCoverWorker();
+  void joinCoverWorker();
+  static void coverWorkerTrampoline(void* param);
+  void coverWorkerLoop();
+  bool generateOneCover(int index);             // worker: build book.bin + thumb (or 0-byte sentinel) on SD
+  int nextPendingCoverIndex(int offset) const;  // worker: first visible cover-eligible entry lacking a thumb
+  void resolveCachedCovers();                   // render task: adopt thumbs the worker produced
+  bool pageHasPendingCovers() const;            // any visible entry still awaiting a cover
 
   // True when this activity was entered while Confirm was still held (typical when launched from
   // the home menu); swallow that first release so we don't immediately open entry 0.
@@ -59,7 +97,6 @@ class BookShelfActivity final : public Activity {
 
   // Data loading
   void loadFiles();
-  void generateCoversForPage();
   int getPageOffset() const;
   std::string getDisplayTitle(int index) const;
   size_t findEntry(const std::string& name) const;

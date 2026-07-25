@@ -232,14 +232,18 @@ class BaseTheme {
   // 3x3 cover-thumbnail grid used by the BookShelf browser. drawCoverGrid paints the whole page
   // (pass selectedIndex = -1 for a clean, selection-free buffer); drawCoverGridSelection repaints
   // only the single selected cell over an already-painted grid. Neither issues a display refresh.
+  // isPending(i) marks a cover-bearing entry whose thumbnail is still being generated: the cell draws
+  // a loading placeholder instead of the blank of a processed, cover-less book.
   virtual void drawCoverGrid(GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex, int pageOffset,
                              const std::function<std::string(int)>& getTitle,
                              const std::function<std::string(int)>& getThumbPath,
-                             const std::function<bool(int)>& isDirectory) const;
+                             const std::function<bool(int)>& isDirectory,
+                             const std::function<bool(int)>& isPending) const;
   virtual void drawCoverGridSelection(GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex,
                                       int pageOffset, const std::function<std::string(int)>& getTitle,
                                       const std::function<std::string(int)>& getThumbPath,
-                                      const std::function<bool(int)>& isDirectory) const;
+                                      const std::function<bool(int)>& isDirectory,
+                                      const std::function<bool(int)>& isPending) const;
   void drawStatusBar(GfxRenderer& renderer, const float bookProgress, const int currentPage, const int pageCount,
                      std::string title, const int paddingBottom = 0, const int textYOffset = 0,
                      const bool fillMargin = true, const bool isPageBookmarked = false,

@@ -74,7 +74,11 @@ void BookShelfActivity::loadFiles() {
     if (file.isDirectory()) {
       entries.push_back({filename, fullPath, "", "", true, true});
     } else if (isSupportedFile(filename)) {
-      entries.push_back({filename, fullPath, "", "", false, false});
+      // coverProcessed starts true for formats that never carry a cover (txt/md) so they render as
+      // a plain title-only cell immediately; epub/xtc start pending (false) until the worker (or a
+      // pre-existing SD thumb) resolves them, which is what draws the loading placeholder.
+      const bool coverEligible = FsHelpers::hasEpubExtension(filename) || FsHelpers::hasXtcExtension(filename);
+      entries.push_back({filename, fullPath, "", "", false, !coverEligible});
     }
   }
   sortEntries(entries);
@@ -102,111 +106,191 @@ size_t BookShelfActivity::findEntry(const std::string& name) const {
   return 0;
 }
 
-void BookShelfActivity::generateCoversForPage() {
-  // Free the stale page cache BEFORE the metadata/thumb heap spike (memory audit portRule): the
-  // 48KB grid snapshot must not coexist with the metadata build + streaming thumb conversion.
-  freeGridBuffer();
-
+bool BookShelfActivity::pageHasPendingCovers() const {
   const int offset = getPageOffset();
   const int end = std::min(offset + GRID_PAGE_ITEMS, static_cast<int>(entries.size()));
+  for (int i = offset; i < end; i++) {
+    if (!entries[i].coverProcessed) return true;
+  }
+  return false;
+}
 
-  // Quick pass: resolve already-cached entries without showing a popup
-  int uncachedCount = 0;
+// ─── render task: adopt thumbs the worker has produced ────────────────────────
+// Runs inside render() (render task, under the RenderLock). It is the ONLY writer of entry cover
+// fields, so drawCoverGrid's reads never race. For each still-pending, cover-eligible visible entry
+// whose thumb the worker has already written to SD, it sets thumbPath/title and marks it processed;
+// entries still awaiting the worker stay pending (their loading placeholder keeps showing). Cheap
+// and idempotent: resolved entries are skipped, so after the initial fill it is a no-op scan.
+void BookShelfActivity::resolveCachedCovers() {
+  const int offset = getPageOffset();
+  const int end = std::min(offset + GRID_PAGE_ITEMS, static_cast<int>(entries.size()));
+  const int active = workerActiveIndex;  // snapshot: never open a thumb the worker is mid-writing
+
   for (int i = offset; i < end; i++) {
     auto& entry = entries[i];
-    if (entry.coverProcessed) continue;
+    if (entry.coverProcessed || i == active) continue;
 
-    // Directories and text files have no cover
-    if (entry.isDirectory || FsHelpers::hasTxtExtension(entry.filename) ||
-        FsHelpers::hasMarkdownExtension(entry.filename)) {
+    const bool epub = FsHelpers::hasEpubExtension(entry.filename);
+    const bool xtc = FsHelpers::hasXtcExtension(entry.filename);
+    if (!epub && !xtc) {  // defensive: non-cover formats are pre-marked processed in loadFiles()
       entry.coverProcessed = true;
       continue;
     }
 
-    if (FsHelpers::hasEpubExtension(entry.filename)) {
+    std::string thumbPath;
+    if (epub) {
       Epub probe(entry.fullPath, "/.crosspoint");
-      const auto thumbPath = probe.getThumbBmpPath(thumbHeight);
-      if (Storage.exists(thumbPath.c_str())) {
-        HalFile check;
-        if (Storage.openFileForRead("BSHELF", thumbPath, check)) {
-          // A 0-byte file is develop's negative-cache sentinel (no cover) -> keep thumbPath empty
-          if (check.size() > 0) entry.thumbPath = thumbPath;
-          check.close();
-        }
-        // Load the cached title. buildIfMissing=true is safe/fast here: an existing thumb implies
-        // book.bin was already built, so this loads from cache. skipLoadingCss=true (title only).
-        if (probe.load(true, true) && !probe.getTitle().empty()) entry.title = probe.getTitle();
-        entry.coverProcessed = true;
-        continue;
-      }
-    } else if (FsHelpers::hasXtcExtension(entry.filename)) {
+      thumbPath = probe.getThumbBmpPath(thumbHeight);
+      if (!Storage.exists(thumbPath.c_str())) continue;  // worker hasn't reached it yet -> stay pending
+      // buildIfMissing=false: never build on the render task. The thumb's existence implies the
+      // worker already built book.bin, so this is a cheap cache read (skipLoadingCss=true, title only).
+      if (probe.load(false, true) && !probe.getTitle().empty()) entry.title = probe.getTitle();
+    } else {
       Xtc probe(entry.fullPath, "/.crosspoint");
-      const auto thumbPath = probe.getThumbBmpPath(thumbHeight);
-      if (Storage.exists(thumbPath.c_str())) {
-        HalFile check;
-        if (Storage.openFileForRead("BSHELF", thumbPath, check)) {
-          if (check.size() > 0) entry.thumbPath = thumbPath;
-          check.close();
-        }
-        entry.coverProcessed = true;
-        continue;
-      }
+      thumbPath = probe.getThumbBmpPath(thumbHeight);
+      if (!Storage.exists(thumbPath.c_str())) continue;
     }
 
-    uncachedCount++;
-  }
-
-  if (uncachedCount == 0) {
-    coversLoaded = true;
-    coversLoading = false;
-    return;
-  }
-
-  // Progress popup only for genuinely uncached books (metadata build + thumb conversion)
-  const auto popupRect = GUI.drawPopup(renderer, tr(STR_LOADING));
-
-  int processed = 0;
-  for (int i = offset; i < end; i++) {
-    auto& entry = entries[i];
-    if (entry.coverProcessed) continue;
-
-    if (FsHelpers::hasEpubExtension(entry.filename)) {
-      Epub epub(entry.fullPath, "/.crosspoint");
-      // buildIfMissing=true so never-opened books still get a title/cover (develop has no lightweight
-      // metadata-only probe); skipLoadingCss=true since a title/thumbnail needs no CSS.
-      if (epub.load(true, true)) {
-        if (!epub.getTitle().empty()) entry.title = epub.getTitle();
-        if (epub.generateThumbBmp(thumbHeight)) {
-          const auto thumbPath = epub.getThumbBmpPath(thumbHeight);
-          HalFile check;
-          if (Storage.openFileForRead("BSHELF", thumbPath, check)) {
-            if (check.size() > 0) entry.thumbPath = thumbPath;
-            check.close();
-          }
-        }
-      }
-    } else if (FsHelpers::hasXtcExtension(entry.filename)) {
-      Xtc xtc(entry.fullPath, "/.crosspoint");
-      if (xtc.load()) {
-        if (!xtc.getTitle().empty()) entry.title = xtc.getTitle();
-        if (xtc.generateThumbBmp(thumbHeight)) {
-          const auto thumbPath = xtc.getThumbBmpPath(thumbHeight);
-          HalFile check;
-          if (Storage.openFileForRead("BSHELF", thumbPath, check)) {
-            if (check.size() > 0) entry.thumbPath = thumbPath;
-            check.close();
-          }
-        }
-      }
+    // Thumb exists: a >0-byte file is a real cover; a 0-byte file is the negative-cache sentinel
+    // (no drawable cover) -> leave thumbPath empty so the cell falls back to a title-only cell.
+    HalFile check;
+    if (Storage.openFileForRead("BSHELF", thumbPath, check)) {
+      if (check.size() > 0) entry.thumbPath = thumbPath;
+      check.close();
     }
-
     entry.coverProcessed = true;
-    processed++;
-    GUI.fillPopupProgress(renderer, popupRect, processed * 100 / uncachedCount);
+  }
+}
+
+// ─── cover worker (background FreeRTOS task) ──────────────────────────────────
+// Generates the visible page's missing thumbs on SD, one book at a time, following the user's page.
+// It touches ONLY HalStorage and heap — never the renderer/framebuffer/display — so it can run while
+// the main task navigates and the render task paints. entries[] is stable for its whole life: the
+// main task join/cancels it before any loadFiles() (see joinCoverWorker), so reading immutable
+// fields (fullPath/filename/size) is safe without a lock.
+
+void BookShelfActivity::coverWorkerTrampoline(void* param) {
+  auto* self = static_cast<BookShelfActivity*>(param);
+  self->coverWorkerLoop();
+  vTaskDelete(nullptr);
+}
+
+int BookShelfActivity::nextPendingCoverIndex(int offset) const {
+  const int end = std::min(offset + GRID_PAGE_ITEMS, static_cast<int>(entries.size()));
+  for (int i = offset; i < end; i++) {
+    const auto& entry = entries[i];
+    if (entry.isDirectory) continue;
+    const bool epub = FsHelpers::hasEpubExtension(entry.filename);
+    if (!epub && !FsHelpers::hasXtcExtension(entry.filename)) continue;
+    // The SD thumb file is the completion record (real cover, or a 0-byte "no cover" sentinel).
+    // Missing => still needs generation. Probe ctors are cheap (they only hash the path).
+    const std::string thumbPath = epub ? Epub(entry.fullPath, "/.crosspoint").getThumbBmpPath(thumbHeight)
+                                       : Xtc(entry.fullPath, "/.crosspoint").getThumbBmpPath(thumbHeight);
+    if (!Storage.exists(thumbPath.c_str())) return i;
+  }
+  return -1;
+}
+
+bool BookShelfActivity::generateOneCover(int index) {
+  const std::string path = entries[index].fullPath;  // immutable copy; vector is stable while we run
+  const bool epub = FsHelpers::hasEpubExtension(entries[index].filename);
+
+  const unsigned long t0 = millis();
+  const size_t heapBefore = ESP.getFreeHeap();
+  bool ok = false;
+  std::string thumbPath;
+
+  if (epub) {
+    Epub book(path, "/.crosspoint");
+    thumbPath = book.getThumbBmpPath(thumbHeight);
+    // buildIfMissing=true: a never-opened book must still get metadata built; skipLoadingCss=true.
+    if (book.load(true, true)) ok = book.generateThumbBmp(thumbHeight);
+  } else {
+    Xtc book(path, "/.crosspoint");
+    thumbPath = book.getThumbBmpPath(thumbHeight);
+    if (book.load()) ok = book.generateThumbBmp(thumbHeight);
   }
 
-  coversLoaded = true;
-  coversLoading = false;
+  // Guarantee this entry never re-queues: if generation produced no file at all (e.g. the metadata
+  // build failed so generateThumbBmp bailed before writing its own sentinel), drop a 0-byte negative
+  // sentinel ourselves. The render task then reads it as "processed, no drawable cover".
+  if (!thumbPath.empty() && !Storage.exists(thumbPath.c_str())) {
+    HalFile sentinel;
+    if (Storage.openFileForWrite("BSHELF", thumbPath, sentinel)) sentinel.close();
+  }
+
+  LOG_DBG("BSHELF", "cover[%d] gen %lums heap %u->%u ok=%d", index, millis() - t0, (unsigned)heapBefore,
+          (unsigned)ESP.getFreeHeap(), ok);
+  return ok;
+}
+
+void BookShelfActivity::coverWorkerLoop() {
+  int scannedPage = -1;
+  bool pageComplete = false;
+
+  while (!coverCancelFlag) {
+    const int offset = visiblePageOffset;
+    if (offset != scannedPage) {  // user turned the page: chase it, rescan from scratch
+      scannedPage = offset;
+      pageComplete = false;
+    }
+    if (pageComplete) {  // nothing left on this page: idle with zero SD/decode activity (battery)
+      vTaskDelay(pdMS_TO_TICKS(COVER_IDLE_TICK_MS));
+      continue;
+    }
+
+    // Heap gate: never decode into a starved heap — leave the floor for the UI and retry later.
+    if (ESP.getFreeHeap() < COVER_MIN_FREE_HEAP || ESP.getMaxAllocHeap() < COVER_MIN_MAX_ALLOC) {
+      vTaskDelay(pdMS_TO_TICKS(COVER_GATE_DELAY_MS));
+      continue;
+    }
+
+    const int target = nextPendingCoverIndex(offset);
+    if (target < 0) {  // every visible cover exists -> go idle until the page changes
+      pageComplete = true;
+      continue;
+    }
+
+    workerActiveIndex = target;  // tell the render task to skip this thumb while we write it
+    generateOneCover(target);
+    workerActiveIndex = -1;
+    coverDirty = true;  // a new thumb is on SD; the main task will schedule a throttled repaint
+  }
+
+  coverTaskDone = true;  // last touch of `this` before the trampoline vTaskDelete()s us
+}
+
+void BookShelfActivity::startCoverWorker() {
+  joinCoverWorker();  // never double-launch
+  if (entries.empty()) return;
+
+  coverCancelFlag = false;
+  coverTaskDone = false;
+  coverDirty = false;
+  workerActiveIndex = -1;
+  visiblePageOffset = getPageOffset();
+
+#if defined(configNUM_CORES) && configNUM_CORES > 1
+  constexpr BaseType_t coverTaskCore = 1;
+#else
+  constexpr BaseType_t coverTaskCore = 0;
+#endif
+  // Stack 10240: Epub::load (expat XML parse + zip inflate) plus the streaming BMP converter mirror
+  // the work the render task already carries on its 8192 stack. Priority 1 (== render task) so it
+  // never starves input; pinned to the render core to keep long decodes off CPU 0's idle watchdog.
+  xTaskCreatePinnedToCore(&coverWorkerTrampoline, "bshelfCover", 10240, this, 1, &coverTaskHandle, coverTaskCore);
+  if (!coverTaskHandle) LOG_ERR("BSHELF", "OOM: cover worker task");
+}
+
+void BookShelfActivity::joinCoverWorker() {
+  if (!coverTaskHandle) return;
+  coverCancelFlag = true;
+  // Bounded wait. The worker checks cancelFlag between books and while idle, so the only
+  // uninterruptible step is a single generateThumbBmp (order of seconds); the 10s cap covers it
+  // comfortably. Never taps the RenderLock, so this is deadlock-free even when onExit() holds it.
+  for (int i = 0; i < COVER_JOIN_TICKS && !coverTaskDone; i++) delay(100);
+  if (!coverTaskDone) LOG_ERR("BSHELF", "cover worker join timeout");
+  coverTaskHandle = nullptr;
 }
 
 void BookShelfActivity::onEnter() {
@@ -232,9 +316,10 @@ void BookShelfActivity::onEnter() {
 
   loadFiles();
   selectorIndex = 0;
-  coversLoaded = false;
-  coversLoading = false;
+  lastSelectorIndex = 0;
+  lastInteractionMs = millis();
   gridBufferPage = -1;
+  coverWorkerPending = true;  // loop() launches the worker once the first paint is done
 
   // If Confirm was held while this activity opened (typical when launched from the menu), ignore
   // its release so we don't immediately auto-open entry 0.
@@ -264,21 +349,32 @@ void BookShelfActivity::freeGridBuffer() {
 
 void BookShelfActivity::onExit() {
   Activity::onExit();
+  // Stop and join the cover worker BEFORE tearing down entries[] (its backing store) so no
+  // background SD/heap work outlives this activity or races the reader we may be launching into.
+  // The worker never takes the RenderLock, so this join is safe even though onExit() holds it.
+  joinCoverWorker();
   freeGridBuffer();
   entries.clear();
   fileNameBuffer.reset();
 }
 
 void BookShelfActivity::loop() {
+  // Launch the cover worker only once the current listing's first paint is done (!peek()), so the
+  // grid appears instantly with placeholders and the worker's first decode never contends with it.
+  if (coverWorkerPending && !RenderLock::peek()) {
+    coverWorkerPending = false;
+    startCoverWorker();
+  }
+
   // Long press BACK (1s+) jumps to the root folder
   if (mappedInput.isPressed(MappedInputManager::Button::Back) && mappedInput.getHeldTime() >= GO_HOME_MS &&
       basepath != "/") {
+    joinCoverWorker();  // stop background gen before entries[] is rebuilt
     basepath = "/";
     loadFiles();
     selectorIndex = 0;
-    coversLoaded = false;
-    coversLoading = false;
     gridBufferPage = -1;
+    coverWorkerPending = true;
     requestUpdate();
     return;
   }
@@ -302,14 +398,16 @@ void BookShelfActivity::loop() {
     // Short press: open directory or book
     const auto& entry = entries[selectorIndex];
     if (entry.isDirectory) {
+      joinCoverWorker();  // stop background gen before entries[] is rebuilt
       basepath = entry.fullPath;
       loadFiles();
       selectorIndex = 0;
-      coversLoaded = false;
-      coversLoading = false;
       gridBufferPage = -1;
+      coverWorkerPending = true;
       requestUpdate();
     } else {
+      // Join first: the reader needs a clean heap, and no cover work must run while it allocates.
+      joinCoverWorker();
       onSelectBook(entry.fullPath);
     }
     return;
@@ -321,13 +419,14 @@ void BookShelfActivity::loop() {
       if (basepath != "/") {
         const std::string oldPath = basepath;
 
+        joinCoverWorker();  // stop background gen before entries[] is rebuilt
+
         const auto lastSlash = basepath.find_last_of('/');
         basepath = (lastSlash == 0) ? "/" : basepath.substr(0, lastSlash);
 
         loadFiles();
-        coversLoaded = false;
-        coversLoading = false;
         gridBufferPage = -1;
+        coverWorkerPending = true;
 
         // Restore the selector to the directory we just left
         const auto dirName = oldPath.substr(oldPath.find_last_of('/') + 1);
@@ -364,11 +463,34 @@ void BookShelfActivity::loop() {
     requestUpdate();
   });
 
-  // If the page changed, regenerate covers for the new page
+  // If the page changed, force a full repaint of the new window. The worker follows the visible
+  // page on its own via visiblePageOffset (updated below) — no relaunch needed for a page turn.
   if (getPageOffset() != oldPage) {
-    coversLoaded = false;
-    coversLoading = false;
     gridBufferPage = -1;
+  }
+
+  // Treat any selector movement as interaction: it holds off cover repaints (below) so rapid
+  // scrolling stays crisp instead of contending with full cover redraws.
+  if (selectorIndex != lastSelectorIndex) {
+    lastSelectorIndex = selectorIndex;
+    lastInteractionMs = millis();
+  }
+
+  // Point the worker at the window the user is actually looking at.
+  visiblePageOffset = getPageOffset();
+
+  // Progressive fill: when the worker has landed new thumbs and the user has paused, force a full
+  // redraw so the freshly generated covers replace their placeholders. Throttled so a burst of
+  // completions never floods the panel, and gated on an idle input window + a free render slot so a
+  // cover repaint never delays a page turn.
+  if (coverDirty && !RenderLock::peek()) {
+    const unsigned long now = millis();
+    if (now - lastInteractionMs >= COVER_REPAINT_IDLE_MS && now - lastCoverRepaintMs >= COVER_REPAINT_THROTTLE_MS) {
+      coverDirty = false;
+      lastCoverRepaintMs = now;
+      gridBufferPage = -1;  // force the full path so resolveCachedCovers() adopts the new thumbs
+      requestUpdate();
+    }
   }
 }
 
@@ -391,20 +513,27 @@ void BookShelfActivity::render(RenderLock&&) {
     if (index < 0 || index >= static_cast<int>(entries.size())) return false;
     return entries[index].isDirectory;
   };
+  // Pending = a cover-bearing entry whose thumb the worker hasn't produced yet -> loading placeholder
+  // (visually distinct from a processed book that simply has no cover, which draws as a title-only cell).
+  auto getIsPending = [this](int index) -> bool {
+    if (index < 0 || index >= static_cast<int>(entries.size())) return false;
+    const auto& entry = entries[index];
+    return !entry.isDirectory && !entry.coverProcessed;
+  };
 
-  // Generate covers/titles BEFORE drawing so titles are available on the first paint
-  if (!coversLoaded && !coversLoading) {
-    coversLoading = true;
-    generateCoversForPage();
-  }
+  // Adopt any thumbs the background worker has finished (render task owns entries[] cover fields).
+  resolveCachedCovers();
+  const bool pageComplete = !pageHasPendingCovers();
 
   const bool samePage = (gridBufferPage == pageOffset && gridBuffer != nullptr);
 
   if (samePage && !entries.empty()) {
-    // FAST PATH: restore the cached clean page, overlay only the selected cell (single refresh)
+    // FAST PATH: restore the cached clean page, overlay only the selected cell (single refresh).
+    // Only reachable once the page is fully generated (we snapshot solely when complete), so the
+    // cached buffer never captures a stale placeholder.
     memcpy(renderer.getFrameBuffer(), gridBuffer.get(), renderer.getBufferSize());
     GUI.drawCoverGridSelection(renderer, gridRect, static_cast<int>(entries.size()), static_cast<int>(selectorIndex),
-                               pageOffset, getTitle, getThumbPath, getIsDirectory);
+                               pageOffset, getTitle, getThumbPath, getIsDirectory, getIsPending);
     renderer.displayBuffer();
     return;
   }
@@ -422,7 +551,27 @@ void BookShelfActivity::render(RenderLock&&) {
   } else {
     // Draw the grid without a selection (selectedIndex = -1) to obtain a clean buffer
     GUI.drawCoverGrid(renderer, gridRect, static_cast<int>(entries.size()), -1, pageOffset, getTitle, getThumbPath,
-                      getIsDirectory);
+                      getIsDirectory, getIsPending);
+
+    // Unobtrusive global progress caption in the free left of the header while covers still generate;
+    // it disappears once the visible page is complete. Numbers are counts, "Loading" is translated.
+    if (!pageComplete) {
+      const int end = std::min(pageOffset + GRID_PAGE_ITEMS, static_cast<int>(entries.size()));
+      int coverTotal = 0, coverDone = 0;
+      for (int i = pageOffset; i < end; i++) {
+        if (entries[i].isDirectory) continue;
+        if (!FsHelpers::hasEpubExtension(entries[i].filename) && !FsHelpers::hasXtcExtension(entries[i].filename)) {
+          continue;
+        }
+        coverTotal++;
+        if (entries[i].coverProcessed) coverDone++;
+      }
+      if (coverTotal > 0) {
+        char progressBuf[40];
+        snprintf(progressBuf, sizeof(progressBuf), "%s %d/%d", tr(STR_LOADING), coverDone, coverTotal);
+        renderer.drawText(SMALL_FONT_ID, metrics.contentSidePadding, metrics.topPadding + 6, progressBuf);
+      }
+    }
   }
 
   const auto labels = mappedInput.mapLabels(basepath == "/" ? tr(STR_HOME) : tr(STR_BACK), tr(STR_OPEN), tr(STR_DIR_UP),
@@ -430,10 +579,16 @@ void BookShelfActivity::render(RenderLock&&) {
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   if (!entries.empty()) {
-    // Snapshot the clean buffer (before the selection overlay) for fast selection moves
-    storeGridBuffer(pageOffset);
+    if (pageComplete) {
+      // Snapshot the clean buffer (before the selection overlay) for fast selection moves.
+      storeGridBuffer(pageOffset);
+    } else {
+      // Covers still generating: release the 48KB snapshot so the worker's metadata build + streaming
+      // thumb conversion has heap headroom. Selection moves fall back to full redraws until complete.
+      freeGridBuffer();
+    }
     GUI.drawCoverGridSelection(renderer, gridRect, static_cast<int>(entries.size()), static_cast<int>(selectorIndex),
-                               pageOffset, getTitle, getThumbPath, getIsDirectory);
+                               pageOffset, getTitle, getThumbPath, getIsDirectory, getIsPending);
   }
 
   renderer.displayBuffer();

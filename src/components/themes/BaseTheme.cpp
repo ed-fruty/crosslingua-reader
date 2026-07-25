@@ -1085,12 +1085,25 @@ void drawFolderGlyph(GfxRenderer& renderer, int thumbX, int thumbY, int thumbWid
   renderer.drawRoundedRect(folderX, folderY, tabW, tabH, 2, 4, true, true, false, false, state);
   renderer.drawRoundedRect(folderX, folderY + tabH - 2, folderW, bodyH, 2, 6, state);
 }
+
+// Three centered dots: the placeholder for a cover whose thumbnail is still being generated.
+void drawLoadingGlyph(GfxRenderer& renderer, int thumbX, int thumbY, int thumbWidth, int thumbHeight, bool state) {
+  constexpr int dotSize = 8, dotGap = 10;
+  const int totalW = dotSize * 3 + dotGap * 2;
+  int dotX = thumbX + (thumbWidth - totalW) / 2;
+  const int dotY = thumbY + (thumbHeight - dotSize) / 2;
+  for (int i = 0; i < 3; i++) {
+    renderer.fillRect(dotX, dotY, dotSize, dotSize, state);
+    dotX += dotSize + dotGap;
+  }
+}
 }  // namespace
 
 void BaseTheme::drawCoverGrid(GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex, int pageOffset,
                               const std::function<std::string(int)>& getTitle,
                               const std::function<std::string(int)>& getThumbPath,
-                              const std::function<bool(int)>& isDirectory) const {
+                              const std::function<bool(int)>& isDirectory,
+                              const std::function<bool(int)>& isPending) const {
   const int cellWidth = rect.width / GRID_COLS;
   const int cellHeight = rect.height / GRID_ROWS;
   const int thumbWidth = cellWidth - GRID_CELL_PADDING * 2;
@@ -1115,8 +1128,10 @@ void BaseTheme::drawCoverGrid(GfxRenderer& renderer, Rect rect, int itemCount, i
     const int thumbY = cellY + GRID_CELL_PADDING;
 
     const bool dir = isDirectory(i);
-    if (dir || !drawCellCover(renderer, getThumbPath(i), thumbX, thumbY, thumbWidth, thumbHeight)) {
-      if (dir) drawFolderGlyph(renderer, thumbX, thumbY, thumbWidth, thumbHeight, !selected);
+    if (dir) {
+      drawFolderGlyph(renderer, thumbX, thumbY, thumbWidth, thumbHeight, !selected);
+    } else if (!drawCellCover(renderer, getThumbPath(i), thumbX, thumbY, thumbWidth, thumbHeight) && isPending(i)) {
+      drawLoadingGlyph(renderer, thumbX, thumbY, thumbWidth, thumbHeight, !selected);
     }
 
     const std::string title = getTitle(i);
@@ -1132,7 +1147,8 @@ void BaseTheme::drawCoverGrid(GfxRenderer& renderer, Rect rect, int itemCount, i
 void BaseTheme::drawCoverGridSelection(GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex,
                                        int pageOffset, const std::function<std::string(int)>& getTitle,
                                        const std::function<std::string(int)>& getThumbPath,
-                                       const std::function<bool(int)>& isDirectory) const {
+                                       const std::function<bool(int)>& isDirectory,
+                                       const std::function<bool(int)>& isPending) const {
   if (selectedIndex < pageOffset || selectedIndex >= std::min(pageOffset + GRID_COLS * GRID_ROWS, itemCount)) return;
 
   const int cellWidth = rect.width / GRID_COLS;
@@ -1153,8 +1169,11 @@ void BaseTheme::drawCoverGridSelection(GfxRenderer& renderer, Rect rect, int ite
   const int thumbY = cellY + GRID_CELL_PADDING;
 
   const bool dir = isDirectory(selectedIndex);
-  if (dir || !drawCellCover(renderer, getThumbPath(selectedIndex), thumbX, thumbY, thumbWidth, thumbHeight)) {
-    if (dir) drawFolderGlyph(renderer, thumbX, thumbY, thumbWidth, thumbHeight, false);
+  if (dir) {
+    drawFolderGlyph(renderer, thumbX, thumbY, thumbWidth, thumbHeight, false);
+  } else if (!drawCellCover(renderer, getThumbPath(selectedIndex), thumbX, thumbY, thumbWidth, thumbHeight) &&
+             isPending(selectedIndex)) {
+    drawLoadingGlyph(renderer, thumbX, thumbY, thumbWidth, thumbHeight, false);
   }
 
   const std::string title = getTitle(selectedIndex);
