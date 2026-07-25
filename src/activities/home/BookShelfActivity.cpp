@@ -13,6 +13,7 @@
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
+#include "activities/RenderLock.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -124,11 +125,10 @@ bool BookShelfActivity::pageHasPendingCovers() const {
 void BookShelfActivity::resolveCachedCovers() {
   const int offset = getPageOffset();
   const int end = std::min(offset + GRID_PAGE_ITEMS, static_cast<int>(entries.size()));
-  const int active = workerActiveIndex;  // snapshot: never open a thumb the worker is mid-writing
-
   for (int i = offset; i < end; i++) {
     auto& entry = entries[i];
-    if (entry.coverProcessed || i == active) continue;
+    // Live read of the volatile each iteration: never adopt a thumb the worker is mid-writing.
+    if (entry.coverProcessed || i == workerActiveIndex) continue;
 
     const bool epub = FsHelpers::hasEpubExtension(entry.filename);
     const bool xtc = FsHelpers::hasXtcExtension(entry.filename);
@@ -154,10 +154,17 @@ void BookShelfActivity::resolveCachedCovers() {
     // Thumb exists: a >0-byte file is a real cover; a 0-byte file is the negative-cache sentinel
     // (no drawable cover) -> leave thumbPath empty so the cell falls back to a title-only cell.
     HalFile check;
-    if (Storage.openFileForRead("BSHELF", thumbPath, check)) {
-      if (check.size() > 0) entry.thumbPath = thumbPath;
+    size_t thumbSize = 0;
+    const bool opened = Storage.openFileForRead("BSHELF", thumbPath, check);
+    if (opened) {
+      thumbSize = check.size();
       check.close();
     }
+    // Re-check AFTER reading the size: the worker sets workerActiveIndex before its first write,
+    // so if it picked this entry between our top-of-loop check and the read, the size we saw may
+    // be a just-created, still-empty file -- not the sentinel. Retry on the next pass.
+    if (i == workerActiveIndex) continue;
+    if (opened && thumbSize > 0) entry.thumbPath = thumbPath;
     entry.coverProcessed = true;
   }
 }
@@ -175,9 +182,10 @@ void BookShelfActivity::coverWorkerTrampoline(void* param) {
   vTaskDelete(nullptr);
 }
 
-int BookShelfActivity::nextPendingCoverIndex(int offset) const {
+int BookShelfActivity::nextPendingCoverIndex(int offset, uint16_t skipMask) const {
   const int end = std::min(offset + GRID_PAGE_ITEMS, static_cast<int>(entries.size()));
   for (int i = offset; i < end; i++) {
+    if (skipMask & (1u << (i - offset))) continue;  // failed this visit; retried on page re-entry
     const auto& entry = entries[i];
     if (entry.isDirectory) continue;
     const bool epub = FsHelpers::hasEpubExtension(entry.filename);
@@ -221,18 +229,23 @@ bool BookShelfActivity::generateOneCover(int index) {
 
   LOG_DBG("BSHELF", "cover[%d] gen %lums heap %u->%u ok=%d", index, millis() - t0, (unsigned)heapBefore,
           (unsigned)ESP.getFreeHeap(), ok);
-  return ok;
+  // Success for the QUEUE means "a file exists now" (real thumb or sentinel): that is what stops
+  // nextPendingCoverIndex from returning this entry again. Decode failure with a sentinel still
+  // counts; only a failed sentinel write (SD full/error) reports false.
+  return !thumbPath.empty() && Storage.exists(thumbPath.c_str());
 }
 
 void BookShelfActivity::coverWorkerLoop() {
   int scannedPage = -1;
   bool pageComplete = false;
+  uint16_t failedMask = 0;  // slots that produced no file this visit (SD error); bit = index-offset
 
   while (!coverCancelFlag) {
     const int offset = visiblePageOffset;
     if (offset != scannedPage) {  // user turned the page: chase it, rescan from scratch
       scannedPage = offset;
       pageComplete = false;
+      failedMask = 0;
     }
     if (pageComplete) {  // nothing left on this page: idle with zero SD/decode activity (battery)
       vTaskDelay(pdMS_TO_TICKS(COVER_IDLE_TICK_MS));
@@ -245,15 +258,24 @@ void BookShelfActivity::coverWorkerLoop() {
       continue;
     }
 
-    const int target = nextPendingCoverIndex(offset);
-    if (target < 0) {  // every visible cover exists -> go idle until the page changes
+    const int target = nextPendingCoverIndex(offset, failedMask);
+    if (target < 0) {  // every visible cover exists (or failed this visit) -> idle until page change
       pageComplete = true;
       continue;
     }
 
     workerActiveIndex = target;  // tell the render task to skip this thumb while we write it
-    generateOneCover(target);
+    const bool fileProduced = generateOneCover(target);
     workerActiveIndex = -1;
+    if (!fileProduced) {
+      // Neither thumb nor sentinel landed (SD full / write error). Without this mask the same
+      // index would re-queue every pass, re-decoding the same book forever. Skip it for this
+      // page visit (a page re-entry retries) and back off briefly.
+      failedMask |= (1u << (target - offset));
+      LOG_ERR("BSHELF", "cover[%d]: no file produced; skipping for this visit", target);
+      vTaskDelay(pdMS_TO_TICKS(COVER_GATE_DELAY_MS));
+      continue;
+    }
     coverDirty = true;  // a new thumb is on SD; the main task will schedule a throttled repaint
   }
 
@@ -276,20 +298,28 @@ void BookShelfActivity::startCoverWorker() {
   constexpr BaseType_t coverTaskCore = 0;
 #endif
   // Stack 10240: Epub::load (expat XML parse + zip inflate) plus the streaming BMP converter mirror
-  // the work the render task already carries on its 8192 stack. Priority 1 (== render task) so it
-  // never starves input; pinned to the render core to keep long decodes off CPU 0's idle watchdog.
-  xTaskCreatePinnedToCore(&coverWorkerTrampoline, "bshelfCover", 10240, this, 1, &coverTaskHandle, coverTaskCore);
+  // the work the render task already carries on its 8192 stack. Priority 0 (tskIDLE_PRIORITY): on
+  // the single-core C3 this task shares core 0 with main/render/idle, and at idle priority it
+  // round-robins with the idle task, so the idle watchdog stays fed through long CPU-bound decode
+  // stretches while every higher-priority UI task preempts it instantly. (A dual-core target pins
+  // it to core 1 instead.)
+  xTaskCreatePinnedToCore(&coverWorkerTrampoline, "bshelfCover", 10240, this, tskIDLE_PRIORITY, &coverTaskHandle,
+                          coverTaskCore);
   if (!coverTaskHandle) LOG_ERR("BSHELF", "OOM: cover worker task");
 }
 
 void BookShelfActivity::joinCoverWorker() {
   if (!coverTaskHandle) return;
   coverCancelFlag = true;
-  // Bounded wait. The worker checks cancelFlag between books and while idle, so the only
-  // uninterruptible step is a single generateThumbBmp (order of seconds); the 10s cap covers it
-  // comfortably. Never taps the RenderLock, so this is deadlock-free even when onExit() holds it.
-  for (int i = 0; i < COVER_JOIN_TICKS && !coverTaskDone; i++) delay(100);
-  if (!coverTaskDone) LOG_ERR("BSHELF", "cover worker join timeout");
+  // Wait until the worker actually exits: abandoning it on a timeout would leave a live task
+  // dereferencing a deleted `this` (use-after-free). The wait is naturally bounded by ONE
+  // in-flight cover decode -- the worker re-checks coverCancelFlag right after generateOneCover()
+  // and in every idle/gate tick. Never taps the RenderLock, so this is deadlock-free even when
+  // onExit() holds it.
+  for (int i = 1; !coverTaskDone; i++) {
+    delay(20);
+    if (i % 250 == 0) LOG_ERR("BSHELF", "cover worker still joining after %ds", i / 50);
+  }
   coverTaskHandle = nullptr;
 }
 
@@ -370,10 +400,15 @@ void BookShelfActivity::loop() {
   if (mappedInput.isPressed(MappedInputManager::Button::Back) && mappedInput.getHeldTime() >= GO_HOME_MS &&
       basepath != "/") {
     joinCoverWorker();  // stop background gen before entries[] is rebuilt
-    basepath = "/";
-    loadFiles();
-    selectorIndex = 0;
-    gridBufferPage = -1;
+    {
+      // requestUpdate() is deferred, so a previous render can still be mid-flight on the render
+      // task reading entries[]; rebuilding the vector under it is UB. Block it out for the rebuild.
+      RenderLock lock;
+      basepath = "/";
+      loadFiles();
+      selectorIndex = 0;
+      gridBufferPage = -1;
+    }
     coverWorkerPending = true;
     requestUpdate();
     return;
@@ -398,11 +433,15 @@ void BookShelfActivity::loop() {
     // Short press: open directory or book
     const auto& entry = entries[selectorIndex];
     if (entry.isDirectory) {
-      joinCoverWorker();  // stop background gen before entries[] is rebuilt
-      basepath = entry.fullPath;
-      loadFiles();
-      selectorIndex = 0;
-      gridBufferPage = -1;
+      const std::string newPath = entry.fullPath;  // copy before the vector it points into is cleared
+      joinCoverWorker();                           // stop background gen before entries[] is rebuilt
+      {
+        RenderLock lock;  // see go-home handler: no vector rebuild under an in-flight render
+        basepath = newPath;
+        loadFiles();
+        selectorIndex = 0;
+        gridBufferPage = -1;
+      }
       coverWorkerPending = true;
       requestUpdate();
     } else {
@@ -420,18 +459,19 @@ void BookShelfActivity::loop() {
         const std::string oldPath = basepath;
 
         joinCoverWorker();  // stop background gen before entries[] is rebuilt
+        {
+          RenderLock lock;  // see go-home handler: no vector rebuild under an in-flight render
+          const auto lastSlash = basepath.find_last_of('/');
+          basepath = (lastSlash == 0) ? "/" : basepath.substr(0, lastSlash);
 
-        const auto lastSlash = basepath.find_last_of('/');
-        basepath = (lastSlash == 0) ? "/" : basepath.substr(0, lastSlash);
+          loadFiles();
+          gridBufferPage = -1;
 
-        loadFiles();
-        gridBufferPage = -1;
+          // Restore the selector to the directory we just left
+          const auto dirName = oldPath.substr(oldPath.find_last_of('/') + 1);
+          selectorIndex = findEntry(dirName);
+        }
         coverWorkerPending = true;
-
-        // Restore the selector to the directory we just left
-        const auto dirName = oldPath.substr(oldPath.find_last_of('/') + 1);
-        selectorIndex = findEntry(dirName);
-
         requestUpdate();
       } else {
         onGoHome();

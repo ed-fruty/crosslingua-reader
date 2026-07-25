@@ -63,16 +63,16 @@ class BookShelfActivity final : public Activity {
   static constexpr unsigned long COVER_GATE_DELAY_MS = 250;         // retry cadence while heap-gated
   static constexpr unsigned long COVER_REPAINT_IDLE_MS = 400;       // quiet window before a cover repaint
   static constexpr unsigned long COVER_REPAINT_THROTTLE_MS = 1500;  // min gap between cover repaints
-  static constexpr int COVER_JOIN_TICKS = 100;                      // 100 * 100ms = 10s bounded join
 
   void startCoverWorker();
   void joinCoverWorker();
   static void coverWorkerTrampoline(void* param);
   void coverWorkerLoop();
-  bool generateOneCover(int index);             // worker: build book.bin + thumb (or 0-byte sentinel) on SD
-  int nextPendingCoverIndex(int offset) const;  // worker: first visible cover-eligible entry lacking a thumb
-  void resolveCachedCovers();                   // render task: adopt thumbs the worker produced
-  bool pageHasPendingCovers() const;            // any visible entry still awaiting a cover
+  bool generateOneCover(int index);  // worker: build book.bin + thumb (or 0-byte sentinel) on SD
+  int nextPendingCoverIndex(int offset,
+                            uint16_t skipMask) const;  // worker: first visible cover-eligible entry lacking a thumb
+  void resolveCachedCovers();                          // render task: adopt thumbs the worker produced
+  bool pageHasPendingCovers() const;                   // any visible entry still awaiting a cover
 
   // True when this activity was entered while Confirm was still held (typical when launched from
   // the home menu); swallow that first release so we don't immediately open entry 0.
