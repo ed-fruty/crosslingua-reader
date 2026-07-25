@@ -48,6 +48,7 @@ class BookShelfActivity final : public Activity {
   volatile bool coverDirty = false;       // worker -> main: a new thumb landed on SD; repaint due
   volatile int visiblePageOffset = 0;     // main -> worker: which 9-item window to chase
   volatile int workerActiveIndex = -1;    // worker -> render: entry whose thumb is mid-write; skip it
+  volatile bool coverPageActive = false;  // worker -> main: visible page still decoding; hold CPU clock high
   bool coverWorkerPending = false;        // main: (re)launch the worker once the next paint is done
 
   // Progressive-fill repaint pacing (main task).
@@ -68,11 +69,10 @@ class BookShelfActivity final : public Activity {
   void joinCoverWorker();
   static void coverWorkerTrampoline(void* param);
   void coverWorkerLoop();
-  bool generateOneCover(int index);  // worker: build book.bin + thumb (or 0-byte sentinel) on SD
-  int nextPendingCoverIndex(int offset,
-                            uint16_t skipMask) const;  // worker: first visible cover-eligible entry lacking a thumb
-  void resolveCachedCovers();                          // render task: adopt thumbs the worker produced
-  bool pageHasPendingCovers() const;                   // any visible entry still awaiting a cover
+  // worker: build book.bin + thumb (or 0-byte sentinel) on SD at the precomputed thumb path.
+  bool generateOneCover(int index, const std::string& thumbPath);
+  void resolveCachedCovers();         // render task: adopt thumbs the worker produced
+  bool pageHasPendingCovers() const;  // any visible entry still awaiting a cover
 
   // True when this activity was entered while Confirm was still held (typical when launched from
   // the home menu); swallow that first release so we don't immediately open entry 0.
@@ -108,4 +108,12 @@ class BookShelfActivity final : public Activity {
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
+  // Hold the single C3 core at full 160 MHz while the background worker decodes the visible page's
+  // covers. main.cpp downclocks to LOW_POWER_FREQ (10 MHz) after 3 s of no button input
+  // (HalPowerManager::IDLE_POWER_SAVING_MS); without this the CPU-bound JPEG/PNG -> 1-bit decode
+  // crawls ~16x slower. Mirrors EpubReaderActivity's build-time clock hold. Released the instant the
+  // visible page is fully generated so the device idles and downclocks. (Requires the worker at
+  // priority 1 — see startCoverWorker: skipLoopDelay() makes main.cpp yield()-spin at priority 1,
+  // which would starve a priority-0 worker to 0% CPU.)
+  bool skipLoopDelay() override { return coverPageActive; }
 };

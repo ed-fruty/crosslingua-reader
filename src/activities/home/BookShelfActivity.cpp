@@ -182,40 +182,20 @@ void BookShelfActivity::coverWorkerTrampoline(void* param) {
   vTaskDelete(nullptr);
 }
 
-int BookShelfActivity::nextPendingCoverIndex(int offset, uint16_t skipMask) const {
-  const int end = std::min(offset + GRID_PAGE_ITEMS, static_cast<int>(entries.size()));
-  for (int i = offset; i < end; i++) {
-    if (skipMask & (1u << (i - offset))) continue;  // failed this visit; retried on page re-entry
-    const auto& entry = entries[i];
-    if (entry.isDirectory) continue;
-    const bool epub = FsHelpers::hasEpubExtension(entry.filename);
-    if (!epub && !FsHelpers::hasXtcExtension(entry.filename)) continue;
-    // The SD thumb file is the completion record (real cover, or a 0-byte "no cover" sentinel).
-    // Missing => still needs generation. Probe ctors are cheap (they only hash the path).
-    const std::string thumbPath = epub ? Epub(entry.fullPath, "/.crosspoint").getThumbBmpPath(thumbHeight)
-                                       : Xtc(entry.fullPath, "/.crosspoint").getThumbBmpPath(thumbHeight);
-    if (!Storage.exists(thumbPath.c_str())) return i;
-  }
-  return -1;
-}
-
-bool BookShelfActivity::generateOneCover(int index) {
+bool BookShelfActivity::generateOneCover(int index, const std::string& thumbPath) {
   const std::string path = entries[index].fullPath;  // immutable copy; vector is stable while we run
   const bool epub = FsHelpers::hasEpubExtension(entries[index].filename);
 
   const unsigned long t0 = millis();
   const size_t heapBefore = ESP.getFreeHeap();
   bool ok = false;
-  std::string thumbPath;
 
   if (epub) {
     Epub book(path, "/.crosspoint");
-    thumbPath = book.getThumbBmpPath(thumbHeight);
     // buildIfMissing=true: a never-opened book must still get metadata built; skipLoadingCss=true.
     if (book.load(true, true)) ok = book.generateThumbBmp(thumbHeight);
   } else {
     Xtc book(path, "/.crosspoint");
-    thumbPath = book.getThumbBmpPath(thumbHeight);
     if (book.load()) ok = book.generateThumbBmp(thumbHeight);
   }
 
@@ -229,25 +209,52 @@ bool BookShelfActivity::generateOneCover(int index) {
 
   LOG_DBG("BSHELF", "cover[%d] gen %lums heap %u->%u ok=%d", index, millis() - t0, (unsigned)heapBefore,
           (unsigned)ESP.getFreeHeap(), ok);
-  // Success for the QUEUE means "a file exists now" (real thumb or sentinel): that is what stops
-  // nextPendingCoverIndex from returning this entry again. Decode failure with a sentinel still
-  // counts; only a failed sentinel write (SD full/error) reports false.
+  // Success for the QUEUE means "a file exists now" (real thumb or sentinel): the worker settles the
+  // slot so it is never scanned again this page visit. Decode failure with a sentinel still counts;
+  // only a failed sentinel write (SD full/error) reports false.
   return !thumbPath.empty() && Storage.exists(thumbPath.c_str());
 }
 
 void BookShelfActivity::coverWorkerLoop() {
   int scannedPage = -1;
   bool pageComplete = false;
-  uint16_t failedMask = 0;  // slots that produced no file this visit (SD error); bit = index-offset
+  // Per-page cache, (re)computed once whenever the visible 9-item window changes: each slot's thumb
+  // BMP path and whether the slot is already settled (a thumb/sentinel is on SD, or the entry is a
+  // folder / non-cover format). This replaces the old per-pass O(page^2) rescan that reconstructed
+  // an Epub/Xtc probe and Storage.exists()'d every earlier slot on every worker iteration.
+  std::string slotThumbPath[GRID_PAGE_ITEMS];
+  bool slotSettled[GRID_PAGE_ITEMS] = {};
 
   while (!coverCancelFlag) {
     const int offset = visiblePageOffset;
-    if (offset != scannedPage) {  // user turned the page: chase it, rescan from scratch
+    if (offset != scannedPage) {  // user turned the page: chase it, recompute the slot cache once
       scannedPage = offset;
       pageComplete = false;
-      failedMask = 0;
+      const int end = std::min(offset + GRID_PAGE_ITEMS, static_cast<int>(entries.size()));
+      for (int s = 0; s < GRID_PAGE_ITEMS; s++) {
+        const int i = offset + s;
+        slotThumbPath[s].clear();
+        if (i >= end) {  // past the end of the listing
+          slotSettled[s] = true;
+          continue;
+        }
+        const auto& entry = entries[i];
+        const bool epub = FsHelpers::hasEpubExtension(entry.filename);
+        const bool xtc = FsHelpers::hasXtcExtension(entry.filename);
+        if (entry.isDirectory || (!epub && !xtc)) {  // folders / non-cover formats never generate
+          slotSettled[s] = true;
+          continue;
+        }
+        // Probe ctors are cheap (they only hash the path); done once per page visit, not per pass.
+        slotThumbPath[s] = epub ? Epub(entry.fullPath, "/.crosspoint").getThumbBmpPath(thumbHeight)
+                                : Xtc(entry.fullPath, "/.crosspoint").getThumbBmpPath(thumbHeight);
+        // A thumb/sentinel already on SD (prior session) settles the slot without decoding.
+        slotSettled[s] = Storage.exists(slotThumbPath[s].c_str());
+      }
     }
-    if (pageComplete) {  // nothing left on this page: idle with zero SD/decode activity (battery)
+
+    coverPageActive = !pageComplete;  // keep the CPU clock high (skipLoopDelay) only while work remains
+    if (pageComplete) {               // nothing left on this page: idle with zero SD/decode activity (battery)
       vTaskDelay(pdMS_TO_TICKS(COVER_IDLE_TICK_MS));
       continue;
     }
@@ -258,20 +265,29 @@ void BookShelfActivity::coverWorkerLoop() {
       continue;
     }
 
-    const int target = nextPendingCoverIndex(offset, failedMask);
-    if (target < 0) {  // every visible cover exists (or failed this visit) -> idle until page change
+    int slot = -1;  // first unsettled slot: an in-memory scan, no SD I/O
+    for (int s = 0; s < GRID_PAGE_ITEMS; s++) {
+      if (!slotSettled[s]) {
+        slot = s;
+        break;
+      }
+    }
+    if (slot < 0) {  // every visible cover exists (or failed this visit) -> idle until page change
       pageComplete = true;
+      coverPageActive = false;
       continue;
     }
 
+    const int target = offset + slot;
     workerActiveIndex = target;  // tell the render task to skip this thumb while we write it
-    const bool fileProduced = generateOneCover(target);
+    const bool fileProduced = generateOneCover(target, slotThumbPath[slot]);
     workerActiveIndex = -1;
+    // Settle the slot either way so it is never re-scanned this visit. A produced file (real thumb
+    // or 0-byte sentinel) is genuinely done. A hard SD failure (neither landed) is skipped for this
+    // page visit and retried when the user revisits the page — the rescan above re-stats it and,
+    // finding no file, marks it unsettled again. This subsumes the old failedMask.
+    slotSettled[slot] = true;
     if (!fileProduced) {
-      // Neither thumb nor sentinel landed (SD full / write error). Without this mask the same
-      // index would re-queue every pass, re-decoding the same book forever. Skip it for this
-      // page visit (a page re-entry retries) and back off briefly.
-      failedMask |= (1u << (target - offset));
       LOG_ERR("BSHELF", "cover[%d]: no file produced; skipping for this visit", target);
       vTaskDelay(pdMS_TO_TICKS(COVER_GATE_DELAY_MS));
       continue;
@@ -279,6 +295,7 @@ void BookShelfActivity::coverWorkerLoop() {
     coverDirty = true;  // a new thumb is on SD; the main task will schedule a throttled repaint
   }
 
+  coverPageActive = false;
   coverTaskDone = true;  // last touch of `this` before the trampoline vTaskDelete()s us
 }
 
@@ -290,6 +307,7 @@ void BookShelfActivity::startCoverWorker() {
   coverTaskDone = false;
   coverDirty = false;
   workerActiveIndex = -1;
+  coverPageActive = false;
   visiblePageOffset = getPageOffset();
 
 #if defined(configNUM_CORES) && configNUM_CORES > 1
@@ -298,13 +316,17 @@ void BookShelfActivity::startCoverWorker() {
   constexpr BaseType_t coverTaskCore = 0;
 #endif
   // Stack 10240: Epub::load (expat XML parse + zip inflate) plus the streaming BMP converter mirror
-  // the work the render task already carries on its 8192 stack. Priority 0 (tskIDLE_PRIORITY): on
-  // the single-core C3 this task shares core 0 with main/render/idle, and at idle priority it
-  // round-robins with the idle task, so the idle watchdog stays fed through long CPU-bound decode
-  // stretches while every higher-priority UI task preempts it instantly. (A dual-core target pins
-  // it to core 1 instead.)
-  xTaskCreatePinnedToCore(&coverWorkerTrampoline, "bshelfCover", 10240, this, tskIDLE_PRIORITY, &coverTaskHandle,
-                          coverTaskCore);
+  // the work the render task already carries on its 8192 stack. Priority 1 (same as the main loop
+  // and the render task): the covers only decode at full 160 MHz while skipLoopDelay() holds the
+  // clock high, and skipLoopDelay() makes main.cpp yield()-spin the priority-1 main loop — a
+  // priority-0 worker would be starved to 0% CPU under that spin. WDT-safe at priority 1: the task
+  // watchdog's idle-task check is disabled (CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0 unset) and the
+  // only TWDT subscriber is the webserver task, so a CPU-bound priority-1 worker feeds and trips
+  // nothing — exactly as the fork decoded covers on its priority-1 render task and as this reader
+  // runs its priority-1 incremental section build for tens of seconds. SD reads go through
+  // HalStorage, which blocks (yielding the core) on the SPI bus, so higher-priority UI work still
+  // preempts promptly. (A dual-core target pins it to core 1 instead.)
+  xTaskCreatePinnedToCore(&coverWorkerTrampoline, "bshelfCover", 10240, this, 1, &coverTaskHandle, coverTaskCore);
   if (!coverTaskHandle) LOG_ERR("BSHELF", "OOM: cover worker task");
 }
 
