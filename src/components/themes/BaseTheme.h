@@ -101,7 +101,22 @@ struct ThemeMetrics {
   int textFieldLineEndOffset;
 };
 
-enum UIIcon { None = 0, Folder, Text, Image, Book, File, Recent, Settings, Transfer, Library, Wifi, Hotspot, Bookmark };
+enum UIIcon {
+  None = 0,
+  Folder,
+  Text,
+  Image,
+  Book,
+  File,
+  Recent,
+  Settings,
+  Transfer,
+  Library,
+  Wifi,
+  Hotspot,
+  Bookmark,
+  BookShelf
+};
 
 // Default theme implementation (Classic Theme)
 // Additional themes can inherit from this and override methods as needed
@@ -219,6 +234,22 @@ class BaseTheme {
   virtual void drawOptionPopup(const GfxRenderer& renderer, const char* title, const std::vector<std::string>& options,
                                int selectedIndex) const;
   virtual void fillPopupProgress(const GfxRenderer& renderer, const Rect& layout, const int progress) const;
+
+  // 3x3 cover-thumbnail grid used by the BookShelf browser. drawCoverGrid paints the whole page
+  // (pass selectedIndex = -1 for a clean, selection-free buffer); drawCoverGridSelection repaints
+  // only the single selected cell over an already-painted grid. Neither issues a display refresh.
+  // isPending(i) marks a cover-bearing entry whose thumbnail is still being generated: the cell draws
+  // a loading placeholder instead of the blank of a processed, cover-less book.
+  virtual void drawCoverGrid(GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex, int pageOffset,
+                             const std::function<std::string(int)>& getTitle,
+                             const std::function<std::string(int)>& getThumbPath,
+                             const std::function<bool(int)>& isDirectory,
+                             const std::function<bool(int)>& isPending) const;
+  virtual void drawCoverGridSelection(GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex,
+                                      int pageOffset, const std::function<std::string(int)>& getTitle,
+                                      const std::function<std::string(int)>& getThumbPath,
+                                      const std::function<bool(int)>& isDirectory,
+                                      const std::function<bool(int)>& isPending) const;
   void drawStatusBar(GfxRenderer& renderer, const float bookProgress, const int currentPage, const int pageCount,
                      std::string title, const int paddingBottom = 0, const int textYOffset = 0,
                      const bool fillMargin = true, const bool isPageBookmarked = false,

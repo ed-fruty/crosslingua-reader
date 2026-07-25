@@ -12,10 +12,12 @@
 #include <vector>
 
 #include "RecentBooksStore.h"
+#include "components/CoverGridLayout.h"
 #include "components/UITheme.h"
 #include "components/icons/book.h"
 #include "components/icons/book24.h"
 #include "components/icons/bookmark.h"
+#include "components/icons/bookshelf.h"
 #include "components/icons/cover.h"
 #include "components/icons/file24.h"
 #include "components/icons/folder.h"
@@ -71,6 +73,8 @@ const uint8_t* iconForName(UIIcon icon, int size) {
         return TransferIcon;
       case UIIcon::Library:
         return LibraryIcon;
+      case UIIcon::BookShelf:
+        return BookShelfIcon;
       case UIIcon::Wifi:
         return WifiIcon;
       case UIIcon::Hotspot:
@@ -578,4 +582,148 @@ void LyraTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
 
     renderer.drawText(UI_12_FONT_ID, textX, textY, label, true);
   }
+}
+
+namespace {
+using covergrid::GRID_CELL_PADDING;
+using covergrid::GRID_COLS;
+using covergrid::GRID_ROWS;
+using covergrid::GRID_TITLE_AREA;
+
+// See BaseTheme.cpp drawCellCover: blit the 1-bit thumb letterboxed into the cell; false => no
+// drawable cover (empty path, 0-byte sentinel, unparseable, or open failure).
+bool blitCover(GfxRenderer& renderer, const std::string& thumbPath, int thumbX, int thumbY, int thumbWidth,
+               int thumbHeight) {
+  if (thumbPath.empty()) return false;
+  HalFile file;
+  bool drew = false;
+  if (Storage.openFileForRead("BSHELF", thumbPath, file)) {
+    if (file.size() > 0) {
+      Bitmap bitmap(file);
+      if (bitmap.parseHeaders() == BmpReaderError::Ok) {
+        int coverX = thumbX;
+        int coverY = thumbY;
+        if (bitmap.getWidth() > 0 && bitmap.getHeight() > 0) {
+          const float imgRatio = static_cast<float>(bitmap.getWidth()) / static_cast<float>(bitmap.getHeight());
+          const float boxRatio = static_cast<float>(thumbWidth) / static_cast<float>(thumbHeight);
+          if (imgRatio > boxRatio) {
+            coverY = thumbY + (thumbHeight - static_cast<int>(thumbWidth / imgRatio)) / 2;
+          } else {
+            coverX = thumbX + (thumbWidth - static_cast<int>(thumbHeight * imgRatio)) / 2;
+          }
+        }
+        renderer.drawBitmap(bitmap, coverX, coverY, thumbWidth, thumbHeight);
+        drew = true;
+      }
+    }
+    file.close();
+  }
+  return drew;
+}
+
+void drawFolderGlyph(GfxRenderer& renderer, int thumbX, int thumbY, int thumbWidth, int thumbHeight) {
+  const int folderW = 80, bodyH = 50, tabW = 28, tabH = 12;
+  const int folderX = thumbX + (thumbWidth - folderW) / 2;
+  const int folderY = thumbY + (thumbHeight - (bodyH + tabH - 2)) / 2;
+  renderer.drawRoundedRect(folderX, folderY, tabW, tabH, 2, 4, true, true, false, false, true);
+  renderer.drawRoundedRect(folderX, folderY + tabH - 2, folderW, bodyH, 2, 6, true);
+}
+
+// Three centered dots: the placeholder for a cover whose thumbnail is still being generated.
+void drawLoadingGlyph(GfxRenderer& renderer, int thumbX, int thumbY, int thumbWidth, int thumbHeight) {
+  constexpr int dotSize = 8, dotGap = 10;
+  const int totalW = dotSize * 3 + dotGap * 2;
+  int dotX = thumbX + (thumbWidth - totalW) / 2;
+  const int dotY = thumbY + (thumbHeight - dotSize) / 2;
+  for (int i = 0; i < 3; i++) {
+    renderer.fillRoundedRect(dotX, dotY, dotSize, dotSize, 2, Color::Black);
+    dotX += dotSize + dotGap;
+  }
+}
+}  // namespace
+
+void LyraTheme::drawCoverGrid(GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex, int pageOffset,
+                              const std::function<std::string(int)>& getTitle,
+                              const std::function<std::string(int)>& getThumbPath,
+                              const std::function<bool(int)>& isDirectory,
+                              const std::function<bool(int)>& isPending) const {
+  const int cellWidth = rect.width / GRID_COLS;
+  const int cellHeight = rect.height / GRID_ROWS;
+  const int thumbWidth = cellWidth - GRID_CELL_PADDING * 2;
+  const int thumbHeight = cellHeight - GRID_CELL_PADDING * 2 - GRID_TITLE_AREA;
+
+  const int pageEnd = std::min(pageOffset + GRID_COLS * GRID_ROWS, itemCount);
+
+  for (int i = pageOffset; i < pageEnd; i++) {
+    const int gridIdx = i - pageOffset;
+    const int col = gridIdx % GRID_COLS;
+    const int row = gridIdx / GRID_COLS;
+
+    const int cellX = rect.x + col * cellWidth;
+    const int cellY = rect.y + row * cellHeight;
+    const bool selected = (i == selectedIndex);
+
+    if (selected) {
+      renderer.fillRoundedRect(cellX + 2, cellY + 2, cellWidth - 4, cellHeight - 4, cornerRadius, Color::LightGray);
+    }
+
+    const int thumbX = cellX + (cellWidth - thumbWidth) / 2;
+    const int thumbY = cellY + GRID_CELL_PADDING;
+
+    const bool dir = isDirectory(i);
+    if (dir) {
+      drawFolderGlyph(renderer, thumbX, thumbY, thumbWidth, thumbHeight);
+    } else if (!blitCover(renderer, getThumbPath(i), thumbX, thumbY, thumbWidth, thumbHeight) && isPending(i)) {
+      drawLoadingGlyph(renderer, thumbX, thumbY, thumbWidth, thumbHeight);
+    }
+
+    const std::string title = getTitle(i);
+    const int titleY = thumbY + thumbHeight + 1;
+    const int maxTitleWidth = cellWidth - GRID_CELL_PADDING * 2;
+    const auto truncated = renderer.truncatedText(SMALL_FONT_ID, title.c_str(), maxTitleWidth);
+    const int titleTextWidth = renderer.getTextWidth(SMALL_FONT_ID, truncated.c_str());
+    const int titleX = cellX + (cellWidth - titleTextWidth) / 2;
+    renderer.drawText(SMALL_FONT_ID, titleX, titleY, truncated.c_str(), true);
+  }
+}
+
+void LyraTheme::drawCoverGridSelection(GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex,
+                                       int pageOffset, const std::function<std::string(int)>& getTitle,
+                                       const std::function<std::string(int)>& getThumbPath,
+                                       const std::function<bool(int)>& isDirectory,
+                                       const std::function<bool(int)>& isPending) const {
+  if (selectedIndex < pageOffset || selectedIndex >= std::min(pageOffset + GRID_COLS * GRID_ROWS, itemCount)) return;
+
+  const int cellWidth = rect.width / GRID_COLS;
+  const int cellHeight = rect.height / GRID_ROWS;
+  const int thumbWidth = cellWidth - GRID_CELL_PADDING * 2;
+  const int thumbHeight = cellHeight - GRID_CELL_PADDING * 2 - GRID_TITLE_AREA;
+
+  const int gridIdx = selectedIndex - pageOffset;
+  const int col = gridIdx % GRID_COLS;
+  const int row = gridIdx / GRID_COLS;
+
+  const int cellX = rect.x + col * cellWidth;
+  const int cellY = rect.y + row * cellHeight;
+
+  renderer.fillRoundedRect(cellX + 2, cellY + 2, cellWidth - 4, cellHeight - 4, cornerRadius, Color::LightGray);
+
+  const int thumbX = cellX + (cellWidth - thumbWidth) / 2;
+  const int thumbY = cellY + GRID_CELL_PADDING;
+
+  const bool dir = isDirectory(selectedIndex);
+  if (dir) {
+    drawFolderGlyph(renderer, thumbX, thumbY, thumbWidth, thumbHeight);
+  } else if (!blitCover(renderer, getThumbPath(selectedIndex), thumbX, thumbY, thumbWidth, thumbHeight) &&
+             isPending(selectedIndex)) {
+    drawLoadingGlyph(renderer, thumbX, thumbY, thumbWidth, thumbHeight);
+  }
+
+  const std::string title = getTitle(selectedIndex);
+  const int titleY = thumbY + thumbHeight + 1;
+  const int maxTitleWidth = cellWidth - GRID_CELL_PADDING * 2;
+  const auto truncated = renderer.truncatedText(SMALL_FONT_ID, title.c_str(), maxTitleWidth);
+  const int titleTextWidth = renderer.getTextWidth(SMALL_FONT_ID, truncated.c_str());
+  const int titleX = cellX + (cellWidth - titleTextWidth) / 2;
+  renderer.drawText(SMALL_FONT_ID, titleX, titleY, truncated.c_str(), true);
 }
