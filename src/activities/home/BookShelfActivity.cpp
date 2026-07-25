@@ -11,12 +11,24 @@
 #include <algorithm>
 #include <cstring>
 
+#include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
 namespace {
 constexpr size_t NAME_BUFFER_SIZE = 500;
+
+// System/tool folders that are never books; the shelf hides them regardless of the
+// hidden-files setting (matches the spirit of WebDAVHandler's HIDDEN_ITEMS).
+constexpr const char* HIDDEN_ENTRIES[] = {"System Volume Information", "XTCache", "config"};
+
+bool isHiddenSystemEntry(const char* name) {
+  for (const auto* item : HIDDEN_ENTRIES) {
+    if (strcmp(name, item) == 0) return true;
+  }
+  return false;
+}
 
 void sortEntries(std::vector<BookShelfEntry>& entries) {
   std::sort(entries.begin(), entries.end(), [](const BookShelfEntry& a, const BookShelfEntry& b) {
@@ -49,7 +61,8 @@ void BookShelfActivity::loadFiles() {
   entries.reserve(32);  // conservative; grows if the folder is larger
   for (auto file = dir.openNextFile(); file; file = dir.openNextFile()) {
     file.getName(fileNameBuffer.get(), NAME_BUFFER_SIZE);
-    if (fileNameBuffer[0] == '.' || strcmp(fileNameBuffer.get(), "System Volume Information") == 0) {
+    // Dot-entries follow the browser's hidden-files setting; known system folders never show.
+    if ((!SETTINGS.showHiddenFiles && fileNameBuffer[0] == '.') || isHiddenSystemEntry(fileNameBuffer.get())) {
       continue;
     }
 
