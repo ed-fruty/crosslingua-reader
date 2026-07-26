@@ -23,15 +23,16 @@ class Section {
   void writeSectionFileHeader(const ReaderRenderSpec& spec);
   uint32_t onPageComplete(std::unique_ptr<Page> page);
 
-  // Pre-Translation per-chapter fallback: a non-Normal display mode on a chapter with no committed
+  // Pre-Translation per-chapter fallback: a filtering/pairing layout on a chapter with no committed
   // translated HTML would filter for translated words that do not exist and render a blank chapter,
-  // so such a chapter is laid out (and cache-keyed) in Normal mode instead. This is the single
-  // source of truth for the fallback, shared by loadSectionFile() (cache-key match) and startBuild()
-  // (layout) so the .bin is written and looked up under the SAME effective mode -- an untranslated
-  // chapter caches under Normal and reloads as a cache HIT, never a permanent key mismatch that
-  // forces a rebuild on every visit. The fallback is per-chapter only: it never touches the
-  // persisted display-mode setting, so re-entering a translated chapter restores the mode.
-  uint8_t effectiveTranslationMode(uint8_t requestedMode) const;
+  // so such a chapter is laid out (and cache-keyed) as PtLayout::Both instead -- which on an
+  // untranslated chapter is simply the plain original. This is the single source of truth for the
+  // fallback, shared by loadSectionFile() (cache-key match) and startBuild() (layout) so the .bin is
+  // written and looked up under the SAME effective layout -- an untranslated chapter caches under
+  // Both and reloads as a cache HIT, never a permanent key mismatch that forces a rebuild on every
+  // visit. The fallback is per-chapter only: it never touches the persisted display-mode setting,
+  // so re-entering a translated chapter restores the mode.
+  PtLayout effectiveLayout(PtLayout requested) const;
 
   // Page-offset table entry, kept in RAM while an incremental build is running so
   // already-built pages can be located in the partially-written .bin.

@@ -11,6 +11,7 @@
 
 #include "Epub/FootnoteEntry.h"
 #include "Epub/ParsedText.h"
+#include "Epub/PtLayout.h"
 #include "Epub/blocks/ImageBlock.h"
 #include "Epub/blocks/TextBlock.h"
 #include "Epub/css/CssParser.h"
@@ -61,8 +62,9 @@ class ChapterHtmlSlimParser {
   std::string imageBasePath;
   int imageCounter = 0;
 
-  // Pre-Translation feature:
-  uint8_t translationMode = 0;  // 0=Normal, 1=Dark, 2=Light, 3=OrigOnly, 4=TransOnly, 5=SideBySide, 6=Modal
+  // Pre-Translation feature: the page layout to produce. The parser never sees the user's display
+  // mode -- CrossPointSettings::ptLayoutForDisplayMode() collapses the modes onto these layouts.
+  PtLayout ptLayout = PtLayout::Both;
   // Monotonic index over ORIGINAL content paragraphs. Advances once per content-bearing original
   // block regardless of nesting depth, matching the per-content-paragraph granularity of the
   // ModalOverlay/TooltipOverlay reparsers (ParagraphBoundary.h SSOT). Empty/whitespace-only blocks
@@ -150,12 +152,12 @@ class ChapterHtmlSlimParser {
   void startNewTextBlock(const BlockStyle& blockStyle);
   void flushPendingAnchor();
   void flushPartWordBuffer();
-  // Pre-Translation: true when the block currently being parsed is one the active translationMode
+  // Pre-Translation: true when the block currently being parsed is one the active ptLayout
   // drops, so its words never reach the layout engine. Shared by flushPartWordBuffer (which drops
   // the word) and the <ruby>/<rt> handlers (which must not annotate words that were never added).
   bool wordIsFiltered() const;
   void makePages();
-  // Pre-Translation (SideBySide, mode 5): two-column table layout. makePagesTableMode routes an
+  // Pre-Translation (PtLayout::SideBySide): two-column table layout. makePagesTableMode routes an
   // outermost block to either buffering (an original, held in bufferedOriginalBlock) or pairing
   // (a translation, laid beside the buffered original). renderSideBySide lays a buffered original
   // and its paired translation into two half-width columns, emitting them as lockstep PageLine
@@ -164,7 +166,7 @@ class ChapterHtmlSlimParser {
   void makePagesTableMode();
   void flushBufferedOriginal();
   void renderSideBySide(std::unique_ptr<ParsedText> leftBlock, std::unique_ptr<ParsedText> rightBlock);
-  // Pre-Translation (SideBySide, mode 5): if the outermost block currently held in
+  // Pre-Translation (PtLayout::SideBySide): if the outermost block currently held in
   // currentTextBlock is an ORIGINAL paragraph with no translation paired to it, append a
   // short dim "not translated" marker inline after its source text before it lays out, so
   // the missing translation is visible but unobtrusive. No-op outside SideBySide mode.
@@ -191,7 +193,7 @@ class ChapterHtmlSlimParser {
                                  const std::string& imageBasePath, const uint8_t imageRendering = 0,
                                  std::vector<std::string> tocAnchors = {},
                                  const std::function<void()>& popupFn = nullptr, const CssParser* cssParser = nullptr,
-                                 const uint8_t translationMode = 0, const std::string& bookPrimaryLang = "")
+                                 const PtLayout ptLayout = PtLayout::Both, const std::string& bookPrimaryLang = "")
 
       : epub(epub),
         filepath(filepath),
@@ -211,7 +213,7 @@ class ChapterHtmlSlimParser {
         imageRendering(imageRendering),
         contentBase(contentBase),
         imageBasePath(imageBasePath),
-        translationMode(translationMode),
+        ptLayout(ptLayout),
         bookPrimaryLang(bookPrimaryLang),
         tocAnchors(std::move(tocAnchors)) {}
 

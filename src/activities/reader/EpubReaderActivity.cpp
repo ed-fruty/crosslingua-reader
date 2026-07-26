@@ -1005,10 +1005,11 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       break;
     }
     case EpubReaderMenuActivity::MenuAction::PRE_TRANSLATION: {
-      // Remember the layout-affecting display mode as it was before opening the submenu.
-      // The submenu can change SETTINGS.translationDisplayMode live (cycle mode / delete
-      // translations), and translationMode is part of the ReaderRenderSpec cache key, so a
-      // change means the in-RAM Section now holds a stale layout that must be rebuilt.
+      // Remember the display mode as it was before opening the submenu. The submenu can change
+      // SETTINGS.translationDisplayMode live (cycle mode / delete translations), and the mode's
+      // PtLayout is part of the ReaderRenderSpec cache key, so a change means the in-RAM Section
+      // may hold a stale layout and must be re-resolved (a cache HIT when the new mode shares the
+      // old mode's layout).
       const uint8_t modeBeforeSubmenu = SETTINGS.translationDisplayMode;
       startActivityForResult(
           std::make_unique<PreTranslationSubmenuActivity>(renderer, mappedInput, epub, currentSpineIndex),
@@ -1030,7 +1031,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
               // Display mode changed inside the submenu: force a section re-layout the same
               // way applyOrientation() does after an orientation change. Preserve the reading
               // position, drop the Section, and let render() rebuild against the new spec --
-              // the translationMode cache key makes the rebuild reuse the right cached layout
+              // the PtLayout cache key makes the rebuild reuse the right cached layout
               // (or build it), and applyDeferredReposition() remaps the page once the new page
               // count is known. The renderer's translation gray level tracks
               // SETTINGS.translationDisplayMode in main.cpp's loop() every tick, so it stays
@@ -1341,8 +1342,8 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     // true again until the user deliberately re-enables a bilingual mode.
     //
     // Same-pass safety: renderSpec was computed above (readerRenderSpec) from the OLD mode and every
-    // build in this `if (!section)` block uses that captured spec; Section::effectiveTranslationMode
-    // has already mapped this untranslated chapter to the Normal layout and Normal cache key, so the
+    // build in this `if (!section)` block uses that captured spec; Section::effectiveLayout has
+    // already mapped this untranslated chapter to the Both layout and the Both cache key, so the
     // setting write here changes NO build input for this pass and forces no second rebuild. It also
     // does not touch pendingModeReposition (that is only for the submenu-return relayout), so no
     // reposition machinery fires. Subsequent chapter loads recompute renderSpec from SETTINGS and
@@ -1354,15 +1355,20 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     // relaunch, mode-change reposition), and never on background/partial extension builds (those reuse
     // the existing section). Gated so there is no toast when the mode is already Normal and none for
     // chapters that do have a translation.
-    if (renderSpec.translationMode != CrossPointSettings::PT_NORMAL) {
+    //
+    // Gated on the DISPLAY MODE, not renderSpec.ptLayout: modes that share the Normal layout
+    // (Paragraph, Interlinear) still promise the user bilingual output, so an untranslated chapter
+    // must downgrade and toast for them too. Read here rather than captured because the enclosing
+    // block runs once and the only writer is the branch below it.
+    const uint8_t requestedDisplayMode = SETTINGS.translationDisplayMode;
+    if (requestedDisplayMode != CrossPointSettings::PT_NORMAL) {
       const bool chapterHasTranslation = section->hasTranslatedHtml();
       if (!chapterHasTranslation) {
         // Permanent on-device evidence for the auto-fallback. Fires at most once per downgrade (after
         // it the setting is PT_NORMAL and this gate never re-triggers until the user re-enables a
         // bilingual mode), so there is no log-flood risk.
         LOG_INF("ERS", "Pre-Translation auto-fallback: spine=%d oldMode=%d hasTranslatedHtml=%d -> PT_NORMAL",
-                currentSpineIndex, static_cast<int>(renderSpec.translationMode),
-                static_cast<int>(chapterHasTranslation));
+                currentSpineIndex, static_cast<int>(requestedDisplayMode), static_cast<int>(chapterHasTranslation));
         // Persist the downgrade. Value-change-guarded implicitly: the gate above guarantees the current
         // mode is non-Normal, so this assignment always changes the value before we write to SPIFFS.
         SETTINGS.translationDisplayMode = CrossPointSettings::PT_NORMAL;
@@ -1382,10 +1388,12 @@ void EpubReaderActivity::render(RenderLock&& lock) {
       // saved while the section was still building (i.e. a watermark, not the real count)
       // would remap the resume page against the finalized count and teleport the reader.
       //
-      // A mode change is the exception: the new translationMode is a different section.bin cache
-      // key, so a cache HIT here loads a DIFFERENTLY paginated layout. Keeping the pre-switch page
-      // count alive lets applyDeferredReposition() remap the old page number onto the new count --
-      // without this guard a cache-complete re-switch lands on the old raw page under new pagination.
+      // A mode change is the exception: the new mode's PtLayout may be a different section.bin
+      // cache key, so a cache HIT here can load a DIFFERENTLY paginated layout. Keeping the
+      // pre-switch page count alive lets applyDeferredReposition() remap the old page number onto
+      // the new count -- without this guard a cache-complete re-switch lands on the old raw page
+      // under new pagination. When the two modes share a layout the counts match and the remap is
+      // a no-op, so the guard costs nothing.
       cachedChapterTotalPageCount = 0;
     }
     const bool cacheComplete = cacheLoaded && !section->isPartial();

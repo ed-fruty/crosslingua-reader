@@ -53,7 +53,16 @@ namespace {
 //      moves to bit 7 (128) and the never-written PT_TOOLTIP reservation on that bit is
 //      retired. v37 rejects every cache written by either line, so no stored style byte
 //      is ever reinterpreted under the new numbering.
-constexpr uint8_t SECTION_FILE_VERSION = 37;
+// v38: The header no longer stores the raw Pre-Translation display mode. It stores the LAYOUT that
+//      mode implies (PtLayout: Both / OriginalOnly / TranslationOnly / SideBySide), so modes whose
+//      pages are byte-identical -- Normal vs Paragraph (a gray level, drawn not laid out), Original
+//      Only vs Modal vs Tooltip (overlays composited at view time) -- now share one cache entry and
+//      switching between them is instant instead of a full chapter re-layout. The byte occupies the
+//      same header slot as the old mode byte but means something different, so v37 files must be
+//      rejected rather than reinterpreted. v38 also adds a translationFontId int to the header:
+//      laying translated text out in its own font changes word measurement and line breaking, so
+//      unlike the drawing-only shade it IS part of the cache key.
+constexpr uint8_t SECTION_FILE_VERSION = 38;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
@@ -71,11 +80,12 @@ constexpr uint8_t SECTION_FILE_INCOMPLETE_VERSION = 0;
 // only fails (noisily, via the block-decode error path) when a page is loaded.
 // Derived so the pairing can't be forgotten: 0xFE for v28, 0xFD for v29, ...
 constexpr uint8_t SECTION_FILE_PARTIAL_VERSION = 0xFE - (SECTION_FILE_VERSION - 28);
-// The extra sizeof(uint8_t) after the two bools is the Pre-Translation translationMode byte.
-constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) + sizeof(int) + sizeof(float) + sizeof(bool) + sizeof(uint8_t) +
-                                 sizeof(uint16_t) + sizeof(uint16_t) + sizeof(uint16_t) + sizeof(bool) + sizeof(bool) +
-                                 sizeof(uint8_t) + sizeof(uint8_t) + sizeof(bool) + sizeof(uint32_t) +
-                                 sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t);
+// The second sizeof(int) is the Pre-Translation translationFontId; the extra sizeof(uint8_t) after
+// the two bools is the Pre-Translation PtLayout byte.
+constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) + sizeof(int) + sizeof(int) + sizeof(float) + sizeof(bool) +
+                                 sizeof(uint8_t) + sizeof(uint16_t) + sizeof(uint16_t) + sizeof(uint16_t) +
+                                 sizeof(bool) + sizeof(bool) + sizeof(uint8_t) + sizeof(uint8_t) + sizeof(bool) +
+                                 sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t);
 }  // namespace
 
 // Out-of-line so the unique_ptr<ChapterHtmlSlimParser> in BuildContext can be
@@ -118,18 +128,19 @@ void Section::writeSectionFileHeader(const ReaderRenderSpec& spec) {
     LOG_DBG("SCT", "File not open for writing header");
     return;
   }
-  static_assert(HEADER_SIZE == sizeof(SECTION_FILE_VERSION) + sizeof(spec.fontId) + sizeof(spec.lineCompression) +
-                                   sizeof(spec.extraParagraphSpacing) + sizeof(spec.paragraphAlignment) +
-                                   sizeof(spec.viewportWidth) + sizeof(spec.viewportHeight) + sizeof(pageCount) +
-                                   sizeof(spec.hyphenationEnabled) + sizeof(spec.embeddedStyle) +
-                                   sizeof(spec.translationMode) + sizeof(spec.imageRendering) +
-                                   sizeof(spec.focusReadingEnabled) + sizeof(uint32_t) + sizeof(uint32_t) +
-                                   sizeof(uint32_t) + sizeof(uint32_t),
+  static_assert(HEADER_SIZE == sizeof(SECTION_FILE_VERSION) + sizeof(spec.fontId) + sizeof(spec.translationFontId) +
+                                   sizeof(spec.lineCompression) + sizeof(spec.extraParagraphSpacing) +
+                                   sizeof(spec.paragraphAlignment) + sizeof(spec.viewportWidth) +
+                                   sizeof(spec.viewportHeight) + sizeof(pageCount) + sizeof(spec.hyphenationEnabled) +
+                                   sizeof(spec.embeddedStyle) + sizeof(uint8_t) /* PtLayout */ +
+                                   sizeof(spec.imageRendering) + sizeof(spec.focusReadingEnabled) + sizeof(uint32_t) +
+                                   sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t),
                 "Header size mismatch");
   // Written as the incomplete sentinel; finalizeBuild() patches it to
   // SECTION_FILE_VERSION as the last step, committing the file.
   serialization::writePod(file, SECTION_FILE_INCOMPLETE_VERSION);
   serialization::writePod(file, spec.fontId);
+  serialization::writePod(file, spec.translationFontId);  // Pre-Translation translated-text font (cache key)
   serialization::writePod(file, spec.lineCompression);
   serialization::writePod(file, spec.extraParagraphSpacing);
   serialization::writePod(file, spec.paragraphAlignment);
@@ -137,7 +148,7 @@ void Section::writeSectionFileHeader(const ReaderRenderSpec& spec) {
   serialization::writePod(file, spec.viewportHeight);
   serialization::writePod(file, spec.hyphenationEnabled);
   serialization::writePod(file, spec.embeddedStyle);
-  serialization::writePod(file, spec.translationMode);  // Pre-Translation display mode (cache key)
+  serialization::writePod(file, static_cast<uint8_t>(spec.ptLayout));  // Pre-Translation page layout (cache key)
   serialization::writePod(file, spec.imageRendering);
   serialization::writePod(file, spec.focusReadingEnabled);
   serialization::writePod(file, pageCount);  // Placeholder for page count (will be initially 0, patched later)
@@ -167,16 +178,18 @@ bool Section::loadSectionFile(const ReaderRenderSpec& spec) {
     filePartial = (version == SECTION_FILE_PARTIAL_VERSION);
 
     int fileFontId;
+    int fileTranslationFontId;
     uint16_t fileViewportWidth, fileViewportHeight;
     float fileLineCompression;
     bool fileExtraParagraphSpacing;
     uint8_t fileParagraphAlignment;
     bool fileHyphenationEnabled;
     bool fileEmbeddedStyle;
-    uint8_t fileTranslationMode;
+    uint8_t filePtLayout;
     uint8_t fileImageRendering;
     bool fileFocusReadingEnabled;
     serialization::readPod(file, fileFontId);
+    serialization::readPod(file, fileTranslationFontId);
     serialization::readPod(file, fileLineCompression);
     serialization::readPod(file, fileExtraParagraphSpacing);
     serialization::readPod(file, fileParagraphAlignment);
@@ -184,19 +197,20 @@ bool Section::loadSectionFile(const ReaderRenderSpec& spec) {
     serialization::readPod(file, fileViewportHeight);
     serialization::readPod(file, fileHyphenationEnabled);
     serialization::readPod(file, fileEmbeddedStyle);
-    serialization::readPod(file, fileTranslationMode);
+    serialization::readPod(file, filePtLayout);
     serialization::readPod(file, fileImageRendering);
     serialization::readPod(file, fileFocusReadingEnabled);
 
-    // Match on the EFFECTIVE (post-fallback) mode: an untranslated chapter is laid out and its
-    // header stamped in Normal mode by startBuild(), so it must also be looked up under Normal --
-    // otherwise a non-Normal requested mode never matches the Normal-stamped cache and rebuilds on
-    // every visit. See effectiveTranslationMode().
-    if (spec.fontId != fileFontId || spec.lineCompression != fileLineCompression ||
-        spec.extraParagraphSpacing != fileExtraParagraphSpacing || spec.paragraphAlignment != fileParagraphAlignment ||
-        spec.viewportWidth != fileViewportWidth || spec.viewportHeight != fileViewportHeight ||
-        spec.hyphenationEnabled != fileHyphenationEnabled || spec.embeddedStyle != fileEmbeddedStyle ||
-        effectiveTranslationMode(spec.translationMode) != fileTranslationMode ||
+    // Match on the EFFECTIVE (post-fallback) layout: an untranslated chapter is laid out and its
+    // header stamped with the Both layout by startBuild(), so it must also be looked up under Both
+    // -- otherwise a filtering layout never matches the Both-stamped cache and rebuilds on every
+    // visit. See effectiveLayout().
+    if (spec.fontId != fileFontId || spec.translationFontId != fileTranslationFontId ||
+        spec.lineCompression != fileLineCompression || spec.extraParagraphSpacing != fileExtraParagraphSpacing ||
+        spec.paragraphAlignment != fileParagraphAlignment || spec.viewportWidth != fileViewportWidth ||
+        spec.viewportHeight != fileViewportHeight || spec.hyphenationEnabled != fileHyphenationEnabled ||
+        spec.embeddedStyle != fileEmbeddedStyle ||
+        static_cast<uint8_t>(effectiveLayout(spec.ptLayout)) != filePtLayout ||
         spec.imageRendering != fileImageRendering || spec.focusReadingEnabled != fileFocusReadingEnabled) {
       file.close();
       LOG_ERR("SCT", "Deserialization failed: Parameters do not match");
@@ -281,9 +295,10 @@ bool Section::hasTranslatedHtml() const {
   return Storage.exists(getTranslatedHtmlPath().c_str());
 }
 
-uint8_t Section::effectiveTranslationMode(const uint8_t requestedMode) const {
-  // Non-Normal mode with no committed translation -> lay out in Normal (0). See the header comment.
-  return (requestedMode != 0 /* PT_NORMAL */ && !hasTranslatedHtml()) ? 0 : requestedMode;
+PtLayout Section::effectiveLayout(const PtLayout requested) const {
+  // A filtering/pairing layout with no committed translation -> lay out as Both, which on an
+  // untranslated chapter is just the plain original. See the header comment.
+  return (requested != PtLayout::Both && !hasTranslatedHtml()) ? PtLayout::Both : requested;
 }
 
 bool Section::createSectionFile(const ReaderRenderSpec& spec, const std::function<void()>& popupFn) {
@@ -335,20 +350,20 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   // (guaranteed by the atomic ".part" -> rename write); never lay out from a partial.
   const bool usingTranslatedSource = hasTranslatedHtml();
 
-  // Per-chapter auto-fallback: a non-Normal display mode with no translated HTML would filter for
-  // translated words that do not exist and render a blank chapter. Lay this chapter out in Normal so
+  // Per-chapter auto-fallback: a filtering layout with no translated HTML would filter for
+  // translated words that do not exist and render a blank chapter. Lay this chapter out as Both so
   // it still renders. This is a layout/cache-key decision only -- the persisted display-mode setting
   // is untouched (per-chapter), and the reader (which owns the user-facing toast) has already decided
   // whether to notify on entry. usingTranslatedSource == !hasTranslatedHtml() drives the same
-  // downgrade that loadSectionFile() keys on via effectiveTranslationMode().
-  uint8_t effectiveMode = spec.translationMode;
-  if (!usingTranslatedSource && effectiveMode != 0 /* Normal */) {
-    LOG_DBG("SCT", "No translation for spine %d; laying out in Normal mode", spineIndex);
-    effectiveMode = 0;
+  // downgrade that loadSectionFile() keys on via effectiveLayout().
+  PtLayout effectivePtLayout = spec.ptLayout;
+  if (!usingTranslatedSource && effectivePtLayout != PtLayout::Both) {
+    LOG_DBG("SCT", "No translation for spine %d; laying out with the Both layout", spineIndex);
+    effectivePtLayout = PtLayout::Both;
   }
-  // The header cache-key and the parser both key on the effective (post-fallback) mode.
+  // The header cache-key and the parser both key on the effective (post-fallback) layout.
   ReaderRenderSpec effectiveSpec = spec;
-  effectiveSpec.translationMode = effectiveMode;
+  effectiveSpec.ptLayout = effectivePtLayout;
 
   // Reuse the previously unzipped HTML if we already have it. The unzipped HTML is keyed only on the
   // book (it lives in the per-book cache dir), not on render settings, so it survives the invalidation
@@ -481,7 +496,7 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
         ctxPtr->lut.push_back({this->onPageComplete(std::move(page)), paragraphIndex, listItemIndex});
       },
       spec.embeddedStyle, ctxPtr->contentBase, ctxPtr->imageBasePath, spec.imageRendering, std::move(tocAnchors),
-      popupFn, ctxPtr->cssParser, effectiveMode, epub->getLanguage());
+      popupFn, ctxPtr->cssParser, effectivePtLayout, epub->getLanguage());
   if (!ctx->parser) {
     LOG_ERR("SCT", "OOM: ChapterHtmlSlimParser");
     if (ctx->cssParser) ctx->cssParser->clear();

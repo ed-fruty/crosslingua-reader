@@ -429,6 +429,17 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // Unlocked for the same reason as statusBarSpec(); see the note above.
   ReaderRenderSpec readerRenderSpec(uint16_t viewportWidth, uint16_t viewportHeight) const;
 
+  // Pre-Translation: which page LAYOUT a display mode implies. This is THE mode -> layout mapping;
+  // the layout engine never sees the raw mode. Modes that produce byte-identical pages collapse
+  // onto one PtLayout so switching between them reuses the cached section instead of re-laying the
+  // chapter out. A switch with no `default:` case, so -Wswitch flags an unmapped future mode.
+  static PtLayout ptLayoutForDisplayMode(uint8_t mode);
+
+  // Pre-Translation: font id the TRANSLATED text is laid out in, or 0 for "same as the body font".
+  // Feeds BOTH the cache key (ReaderRenderSpec::translationFontId) and the render-time font set,
+  // so the two can never disagree about what a cached page was measured with.
+  int getTranslationFontId() const;
+
   static const char* getFilePath() { return "/.crosspoint/settings.json"; }
   void toJson(JsonDocument& doc) const;
   bool fromJson(JsonVariantConst doc);

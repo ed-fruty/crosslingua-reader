@@ -1,6 +1,8 @@
 #pragma once
 #include <cstdint>
 
+#include "PtLayout.h"
+
 // The resolved text-rendering configuration a reader hands to the layout
 // engine. Section-cache validation keys on every field: a section file built
 // with a different spec is discarded and rebuilt.
@@ -21,8 +23,13 @@ struct ReaderRenderSpec {
   bool embeddedStyle = true;
   uint8_t imageRendering = 0;
   bool focusReadingEnabled = false;
-  // Pre-Translation display mode (0=Normal, 1=Dark, 2=Light, 3=OrigOnly, 4=TransOnly,
-  // 5=SideBySide, 6=Modal). Non-Normal modes change which words survive layout and the
-  // paragraph spacing, so it is part of the section-cache key like every other field.
-  uint8_t translationMode = 0;
+  // Pre-Translation: the page LAYOUT the display mode implies, NOT the raw mode. Different modes
+  // that produce identical pages share one layout, so switching between them is a cache HIT
+  // instead of a full chapter re-layout. See PtLayout.h and
+  // CrossPointSettings::ptLayoutForDisplayMode().
+  PtLayout ptLayout = PtLayout::Both;
+  // Pre-Translation: font the TRANSLATED text is laid out in. 0 (and -1) mean "same as fontId".
+  // A distinct font changes word measurement and therefore line breaking, so unlike the drawing-
+  // only shade this IS part of the cache key.
+  int translationFontId = 0;
 };

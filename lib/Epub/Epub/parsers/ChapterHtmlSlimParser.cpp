@@ -247,22 +247,26 @@ void ChapterHtmlSlimParser::flushPendingAnchor() {
   pendingAnchorId.clear();
 }
 
-// Pre-Translation: mode-based block filtering, shared by flushPartWordBuffer and the ruby handlers.
-//   Modes 0 (Normal), 1 (Dark), 2 (Light), 5 (SideBySide) emit everything.
-//   Mode 3 (OriginalOnly) drops translated text.
-//   Mode 4 (TranslationOnly) drops untranslated text.
-//   Mode 6 (Modal) renders only original content in the main flow; translations are surfaced
-//   through a popup at view time, so they are filtered here too.
-//   Mode 7 (Tooltip) is original-only in the main flow like mode 6 — translations appear in the
-//   tooltip popup; emitting them inline would double the text and break the tooltip's
-//   underline/sentence-index math.
+// Pre-Translation: layout-based block filtering, shared by flushPartWordBuffer and the ruby
+// handlers. Both and SideBySide emit everything (SideBySide pairs the two languages into columns
+// instead of dropping either); OriginalOnly drops translated text -- which is also what the Modal
+// and Tooltip display modes need, since they surface translations through a popup at view time and
+// emitting them inline would double the text and break the tooltip's underline/sentence-index math.
 // The top of the inline style stack carries whether the current text belongs to a translated block
 // (block-opening and inline tags stamp isTranslatedBlock onto their StyleStackEntry, and children
 // inherit it through nesting).
 bool ChapterHtmlSlimParser::wordIsFiltered() const {
   const bool inTranslatedBlock = !inlineStyleStack.empty() && inlineStyleStack.back().isTranslatedBlock;
-  return (translationMode == 3 && inTranslatedBlock) || (translationMode == 4 && !inTranslatedBlock) ||
-         (translationMode == 6 && inTranslatedBlock) || (translationMode == 7 && inTranslatedBlock);
+  switch (ptLayout) {
+    case PtLayout::OriginalOnly:
+      return inTranslatedBlock;
+    case PtLayout::TranslationOnly:
+      return !inTranslatedBlock;
+    case PtLayout::Both:
+    case PtLayout::SideBySide:
+      return false;
+  }
+  return false;  // unreachable: every enumerator returns above
 }
 
 // flush the contents of partWordBuffer to currentTextBlock
@@ -353,11 +357,11 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
       return;
     }
 
-    // Pre-Translation (SideBySide, mode 5): route through the two-column table builder, which
+    // Pre-Translation (PtLayout::SideBySide): route through the two-column table builder, which
     // buffers originals and pairs them with their translations. currentBlockIsTranslated and
     // currentBlockParagraphIdx are stamped AFTER this flush by the caller, so here they still
     // describe the block being flushed — exactly what makePagesTableMode inspects.
-    if (translationMode == 5) {
+    if (ptLayout == PtLayout::SideBySide) {
       makePagesTableMode();
     } else {
       makePages();
@@ -1701,11 +1705,11 @@ bool ChapterHtmlSlimParser::finishParse() {
 
   // Process last page if there is still text
   if (currentTextBlock) {
-    // Pre-Translation (SideBySide, mode 5): flush the trailing outermost block through the
+    // Pre-Translation (PtLayout::SideBySide): flush the trailing outermost block through the
     // two-column builder. A trailing original is buffered (not laid out) by makePagesTableMode,
     // so drain any block still buffered — the last original of the chapter — full-width with the
     // dim "not translated" marker via flushBufferedOriginal.
-    if (translationMode == 5) {
+    if (ptLayout == PtLayout::SideBySide) {
       makePagesTableMode();
       if (bufferedOriginalBlock) {
         flushBufferedOriginal();
@@ -1974,9 +1978,9 @@ void ChapterHtmlSlimParser::renderSideBySide(std::unique_ptr<ParsedText> leftBlo
 }
 
 void ChapterHtmlSlimParser::appendSideBySideNoTranslationMarkerIfUnpaired() {
-  // Only SideBySide (mode 5) surfaces the inline marker; every other mode either drops or
+  // Only PtLayout::SideBySide surfaces the inline marker; every other layout either drops or
   // pairs content elsewhere.
-  if (translationMode != 5) return;
+  if (ptLayout != PtLayout::SideBySide) return;
   // currentBlockIsTranslated reflects the most-recently-opened outermost block. If it was a
   // translation, the preceding original is already paired — no marker. If it was an original,
   // the caller has determined nothing will pair with it (next outermost block is also an

@@ -288,6 +288,39 @@ CrossPointSettings::StatusBarSpec CrossPointSettings::statusBarSpec() const {
   return spec;
 }
 
+PtLayout CrossPointSettings::ptLayoutForDisplayMode(const uint8_t mode) {
+  switch (static_cast<PRE_TRANSLATION_MODE>(mode)) {
+    // Overlay modes surface their translations in a popup composited at view time, so their main
+    // flow is original-only — the same pages Original Only produces, byte for byte.
+    case PT_ORIGINAL_ONLY:
+    case PT_MODAL:
+    case PT_TOOLTIP:
+      return PtLayout::OriginalOnly;
+    case PT_TRANSLATION_ONLY:
+      return PtLayout::TranslationOnly;
+    case PT_SIDE_BY_SIDE:
+      return PtLayout::SideBySide;
+    // Everything inline-bilingual. Paragraph differs from Normal only in the gray level translated
+    // words are DRAWN at (translationShade), which never moves a glyph, so the pages are identical.
+    // Interlinear is listed here until it grows its own layout. The retired holes can never reach
+    // this function (fromJson migrates them), but are mapped so the switch stays exhaustive.
+    case PT_NORMAL:
+    case PT_PARAGRAPH:
+    case PT_INTERLINEAR:
+    case PT_LEGACY_DIMMED:
+    case PT_LEGACY_DIMMED_LIGHT:
+      return PtLayout::Both;
+  }
+  return PtLayout::Both;  // unreachable: every enumerator returns above
+}
+
+int CrossPointSettings::getTranslationFontId() const {
+  // 0 == "same as the body font". Translated text is laid out and drawn in the reader font today;
+  // the smaller-translation-font work fills this in, and because both the cache key and the render
+  // font set read it from here, a change automatically invalidates the affected sections.
+  return 0;
+}
+
 ReaderRenderSpec CrossPointSettings::readerRenderSpec(const uint16_t viewportWidth,
                                                       const uint16_t viewportHeight) const {
   ReaderRenderSpec spec;
@@ -301,10 +334,11 @@ ReaderRenderSpec CrossPointSettings::readerRenderSpec(const uint16_t viewportWid
   spec.embeddedStyle = embeddedStyle != 0;
   spec.imageRendering = imageRendering;
   spec.focusReadingEnabled = focusReadingEnabled != 0;
-  // Pre-Translation feature: layout-affecting display mode (side-by-side/original-only/etc.
-  // change page layout), so it must be part of the section-cache key. See
-  // ReaderRenderSpec::translationMode (added by the Epub porter).
-  spec.translationMode = translationDisplayMode;
+  // Pre-Translation: the cache key carries the LAYOUT the mode implies, never the mode itself.
+  // Drawing-only differences (translationShade) and the overlay modes therefore do not invalidate
+  // a cached section. translationFontId does change line breaking, so it IS keyed.
+  spec.ptLayout = ptLayoutForDisplayMode(translationDisplayMode);
+  spec.translationFontId = getTranslationFontId();
   return spec;
 }
 

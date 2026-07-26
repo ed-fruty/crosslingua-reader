@@ -90,6 +90,33 @@ if (parsedSize != fileSize) {
 
 ## `section.bin`
 
+### Version 38
+
+Version 38 changes what the Pre-Translation byte in the header *means*, and adds
+one field:
+
+- **The header stores a layout, not a display mode.** The byte that held the raw
+  `translationDisplayMode` now holds the `PtLayout` that mode implies:
+  `0 = Both`, `1 = OriginalOnly`, `2 = TranslationOnly`, `3 = SideBySide` (see
+  `lib/Epub/Epub/PtLayout.h`). Several display modes produce byte-identical
+  pages and now share one cache entry: Normal / Paragraph / Interlinear all map
+  to `Both` (Paragraph differs only in the *gray level* translated words are
+  drawn at, which never moves a glyph), and Original Only / Modal / Tooltip all
+  map to `OriginalOnly` (the overlay modes composite their translation at view
+  time, so their main flow is original-only). Switching between two modes that
+  share a layout is therefore a cache hit instead of a full chapter re-layout.
+  The byte occupies the same header slot as the old mode byte but is *not* the
+  same value space, so v37 files must be rejected rather than reinterpreted.
+- **`translationFontId`** is added as an `s32` immediately after `fontId`. It is
+  the font translated text is laid out in (`0` = same as the body font). Unlike
+  the drawing-only shade, a distinct font changes word measurement and hence
+  line breaking, so it belongs in the cache key.
+
+The per-chapter auto-fallback keys on the layout too: a chapter with no
+committed translation is laid out and stamped as `Both`, which for an
+untranslated chapter is simply the plain original (see
+`Section::effectiveLayout`).
+
 ### Version 37
 
 Version 37 is the second reconciliation of the two numbering lines. While this
@@ -201,7 +228,7 @@ import std.mem;
 import std.string;
 import std.core;
 
-#define EXPECTED_VERSION 37
+#define EXPECTED_VERSION 38
 #define MAX_STRING_LENGTH 65535
 #define FOOTNOTE_NUMBER_LEN 32
 #define FOOTNOTE_HREF_LEN 96
@@ -216,6 +243,13 @@ struct String {
 
 fn format_string(String s) {
     return s.data;
+};
+
+enum PtLayout : u8 {
+    Both = 0,
+    OriginalOnly = 1,
+    TranslationOnly = 2,
+    SideBySide = 3
 };
 
 enum PageElementTag : u8 {
@@ -362,6 +396,7 @@ struct SectionBin {
     }
 
     s32 fontId;
+    s32 translationFontId [[comment("v38: font translated text is laid out in; 0 = same as fontId")]];
     float lineCompression;
     bool extraParagraphSpacing;
     u8 paragraphAlignment;
@@ -369,7 +404,7 @@ struct SectionBin {
     u16 viewportHeight;
     bool hyphenationEnabled;
     bool embeddedStyle;
-    u8 translationMode [[comment("Pre-Translation display mode; part of the cache key")]];
+    PtLayout ptLayout [[comment("v38: Pre-Translation page layout (NOT the display mode); part of the cache key")]];
     u8 imageRendering;
     bool focusReadingEnabled;
 
@@ -418,8 +453,8 @@ named `sections/<spineIndex>.translated.html` inside the book's
 `.crosspoint/epub_<hash>/` directory. Translated paragraphs carry a `lang` /
 `xml:lang` attribute whose value differs from the book's primary language (declared in
 `content.opf`); the layout parser treats those blocks as translations and pairs, dims,
-or filters them according to the active **Translation Mode** (the `translationMode`
-byte in the `section.bin` header). See the
+or filters them according to the active **Translation Mode** — more precisely, according to
+the `PtLayout` that mode maps to (the layout byte in the `section.bin` header). See the
 [Pre-Translation guide](./pre-translation.md#how-it-stores-translations).
 
 The reader prefers this sidecar over re-extracting the original chapter from the EPUB,
@@ -446,7 +481,7 @@ clean, complete write has finished. Consequences:
 
 ### Side-by-Side two-column layout
 
-`section.bin` layouts built in **Side by Side** mode (`translationMode == 5`) place each
+`section.bin` layouts built in **Side by Side** mode (`PtLayout::SideBySide`) place each
 original paragraph and its paired translation into two half-width columns: the original
 in the left column (`xPos = 0`), the translation in the right column (`xPos = rightColX`,
 where `rightColX = colWidth + gapWidth`, `gapWidth = viewportWidth * 0.04`, and
@@ -456,7 +491,8 @@ when its paired translation arrives, lays both out at `colWidth` and emits them 
 one line-height per row (see [Side by Side](./pre-translation.md#side-by-side)). This rides
 entirely on the existing per-line `xPos` field, so the serialized `Page`/`PageLine` structure
 is unchanged; the layout difference is what forced the `SECTION_FILE_VERSION` bump to v35
-(the header cache key is identical for a mode-5 section, since `translationMode` stays `5`).
+(the header cache key was identical across that change, since the Pre-Translation header byte
+kept the same value).
 
 An original paragraph that has no paired translation renders full-width, with a short,
 dimmed `tr(STR_NO_TRANSLATION)` marker appended inline after its source text so the gap is
