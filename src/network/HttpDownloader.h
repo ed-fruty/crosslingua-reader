@@ -29,9 +29,20 @@ class HttpDownloader {
   // in HttpDownloader.cpp). Exposed so the translation activities can apply the
   // SAME backpressure thresholds before starting a chapter's handshake as the
   // request-time guards enforce, keeping the numbers single-sourced.
-  //   MIN_FREE_HEAP_FOR_TLS   total headroom for ~24 KB handshake churn + record.
+  //   MIN_FREE_HEAP_FOR_TLS   total headroom for the handshake's transient peak.
   //   MIN_MAX_ALLOC_FOR_TLS   largest contiguous block for the worst-case TLS record.
   //   MIN_FREE_HEAP_FOR_REUSE small floor for a request on an already-handshaken socket.
+  //
+  // The contiguous-block floor matches KOSync's MIN_BLOCK_FOR_TLS exactly (both sized for the
+  // ~17 KB wolfSSL record buffer). The free-heap floor is deliberately HIGHER than KOSync's
+  // 35000 (see the SP-ECC measurement write-up at KOReaderSyncClient.cpp, which puts the
+  // handshake's own transient peak at ~30-40 KB). KOSync does one short request and closes;
+  // the translator holds a keep-alive session open across a whole chapter's worth of requests
+  // and buffers response bodies far larger than a sync payload, so it needs headroom for the
+  // handshake peak PLUS the live session and the in-flight body. Releasing the framebuffer
+  // during a translation run gives back ~48 KB, so the stricter floor costs us nothing in
+  // practice. Lower this only with a fresh on-device WolfSslAllocDiag measurement of the
+  // translator path, not by copying the KOSync number.
   static constexpr uint32_t MIN_FREE_HEAP_FOR_TLS = 45000;
   static constexpr uint32_t MIN_MAX_ALLOC_FOR_TLS = 20000;
   static constexpr uint32_t MIN_FREE_HEAP_FOR_REUSE = 12000;

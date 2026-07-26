@@ -39,6 +39,11 @@ class ChapterHtmlSlimParser {
   int partWordBufferIndex = 0;
   bool nextWordContinues = false;  // true when next flushed word attaches to previous (inline element boundary)
   std::unique_ptr<ParsedText> currentTextBlock = nullptr;
+  // Ruby text state
+  bool inRuby = false;
+  int rubyStartWordIndex = -1;
+  bool collectingRubyText = false;
+  std::string rubyTextBuffer;
   std::unique_ptr<Page> currentPage = nullptr;
   int16_t currentPageNextY = 0;
   int fontId;
@@ -145,6 +150,10 @@ class ChapterHtmlSlimParser {
   void startNewTextBlock(const BlockStyle& blockStyle);
   void flushPendingAnchor();
   void flushPartWordBuffer();
+  // Pre-Translation: true when the block currently being parsed is one the active translationMode
+  // drops, so its words never reach the layout engine. Shared by flushPartWordBuffer (which drops
+  // the word) and the <ruby>/<rt> handlers (which must not annotate words that were never added).
+  bool wordIsFiltered() const;
   void makePages();
   // Pre-Translation (SideBySide, mode 5): two-column table layout. makePagesTableMode routes an
   // outermost block to either buffering (an original, held in bufferedOriginalBlock) or pairing

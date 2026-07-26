@@ -142,8 +142,12 @@ void BookShelfActivity::resolveCachedCovers() {
       Epub probe(entry.fullPath, "/.crosspoint");
       thumbPath = probe.getThumbBmpPath(thumbHeight);
       if (!Storage.exists(thumbPath.c_str())) continue;  // worker hasn't reached it yet -> stay pending
-      // buildIfMissing=false: never build on the render task. The thumb's existence implies the
-      // worker already built book.bin, so this is a cheap cache read (skipLoadingCss=true, title only).
+      // buildIfMissing=false: never build on the render task -- this is a cheap cache read
+      // (skipLoadingCss=true, title only). The thumb's existence implies the worker built a book.bin
+      // at some point, but NOT that it is still readable: thumb_<h>.bmp is unversioned while book.bin
+      // is not, so a BOOK_CACHE_VERSION bump orphans the title of every already-thumbnailed book.
+      // load() then fails and getDisplayTitle() falls back to the filename until that book is next
+      // opened in the reader (which rebuilds book.bin). Cosmetic only; the cover still draws.
       if (probe.load(false, true) && !probe.getTitle().empty()) entry.title = probe.getTitle();
     } else {
       Xtc probe(entry.fullPath, "/.crosspoint");

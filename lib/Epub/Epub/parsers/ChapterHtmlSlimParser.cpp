@@ -13,6 +13,7 @@
 #include <iterator>
 #include <new>
 
+#include "../../../../src/fontIds.h"
 #include "Epub.h"
 #include "Epub/Page.h"
 #include "Epub/converters/ImageDecoderFactory.h"
@@ -54,9 +55,37 @@ constexpr const char* ITALIC_TAGS[] = {"i", "em"};
 constexpr const char* UNDERLINE_TAGS[] = {"u", "ins"};
 constexpr const char* LINETHROUGH_TAGS[] = {"del", "s", "strike"};
 constexpr const char* IMAGE_TAGS[] = {"img", "image"};
-constexpr const char* SKIP_TAGS[] = {"head"};
+constexpr const char* SKIP_TAGS[] = {"head", "rp"};
 
 bool isWhitespace(const char c) { return c == ' ' || c == '\r' || c == '\n' || c == '\t'; }
+
+std::string trimAndNormalize(const std::string& str) {
+  if (str.empty()) return "";
+  size_t start = 0;
+  while (start < str.size() && isWhitespace(str[start])) {
+    start++;
+  }
+  if (start == str.size()) return "";
+  size_t end = str.size() - 1;
+  while (end > start && isWhitespace(str[end])) {
+    end--;
+  }
+  std::string result;
+  result.reserve(end - start + 1);
+  bool inSpace = false;
+  for (size_t i = start; i <= end; i++) {
+    if (isWhitespace(str[i])) {
+      if (!inSpace) {
+        result.push_back(' ');
+        inSpace = true;
+      }
+    } else {
+      result.push_back(str[i]);
+      inSpace = false;
+    }
+  }
+  return result;
+}
 
 bool matches(const char* tag_name, const char* const* possible_tags, size_t count) {
   for (size_t i = 0; i < count; i++) {
@@ -218,6 +247,24 @@ void ChapterHtmlSlimParser::flushPendingAnchor() {
   pendingAnchorId.clear();
 }
 
+// Pre-Translation: mode-based block filtering, shared by flushPartWordBuffer and the ruby handlers.
+//   Modes 0 (Normal), 1 (Dark), 2 (Light), 5 (SideBySide) emit everything.
+//   Mode 3 (OriginalOnly) drops translated text.
+//   Mode 4 (TranslationOnly) drops untranslated text.
+//   Mode 6 (Modal) renders only original content in the main flow; translations are surfaced
+//   through a popup at view time, so they are filtered here too.
+//   Mode 7 (Tooltip) is original-only in the main flow like mode 6 — translations appear in the
+//   tooltip popup; emitting them inline would double the text and break the tooltip's
+//   underline/sentence-index math.
+// The top of the inline style stack carries whether the current text belongs to a translated block
+// (block-opening and inline tags stamp isTranslatedBlock onto their StyleStackEntry, and children
+// inherit it through nesting).
+bool ChapterHtmlSlimParser::wordIsFiltered() const {
+  const bool inTranslatedBlock = !inlineStyleStack.empty() && inlineStyleStack.back().isTranslatedBlock;
+  return (translationMode == 3 && inTranslatedBlock) || (translationMode == 4 && !inTranslatedBlock) ||
+         (translationMode == 6 && inTranslatedBlock) || (translationMode == 7 && inTranslatedBlock);
+}
+
 // flush the contents of partWordBuffer to currentTextBlock
 void ChapterHtmlSlimParser::flushPartWordBuffer() {
   // Pre-Translation: the top of the inline style stack carries whether the word being flushed
@@ -226,19 +273,11 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
   const bool inTranslatedBlock = !inlineStyleStack.empty() && inlineStyleStack.back().isTranslatedBlock;
 
   // Mode-based filtering: drop the word entirely so it never reaches the layout engine.
-  //   Modes 0 (Normal), 1 (Dark), 2 (Light), 5 (SideBySide) emit everything.
-  //   Mode 3 (OriginalOnly) drops translated text.
-  //   Mode 4 (TranslationOnly) drops untranslated text.
-  //   Mode 6 (Modal) renders only original content in the main flow; translations are surfaced
-  //   through a popup at view time, so they are filtered here too.
-  //   Mode 7 (Tooltip) is original-only in the main flow like mode 6 — translations appear in the
-  //   tooltip popup; emitting them inline would double the text and break the tooltip's
-  //   underline/sentence-index math.
+  // See wordIsFiltered() above for the per-mode rules.
   // Reset continuation on drop: a dropped word must not attach to the next (this also keeps the
   // CJK MAX_WORD_SIZE split intact, since both halves of a split word carry the same block state
   // and are filtered identically).
-  if ((translationMode == 3 && inTranslatedBlock) || (translationMode == 4 && !inTranslatedBlock) ||
-      (translationMode == 6 && inTranslatedBlock) || (translationMode == 7 && inTranslatedBlock)) {
+  if (wordIsFiltered()) {
     partWordBufferIndex = 0;
     nextWordContinues = false;
     return;
@@ -878,6 +917,25 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     }
   }
 
+  // Ruby tag handling
+  if (strcmp(name, "ruby") == 0) {
+    self->flushPartWordBuffer();
+    self->inRuby = true;
+    self->rubyStartWordIndex = self->currentTextBlock ? static_cast<int>(self->currentTextBlock->size()) : 0;
+    if (self->currentTextBlock) {
+      self->currentTextBlock->ensureRubyCapacity();
+    }
+    self->rubyTextBuffer.clear();
+    self->depth += 1;
+    return;
+  }
+  if (strcmp(name, "rt") == 0) {
+    self->flushPartWordBuffer();
+    self->collectingRubyText = true;
+    self->depth += 1;
+    return;
+  }
+
   if (matches(name, SKIP_TAGS, std::size(SKIP_TAGS))) {
     // start skip
     self->skipUntilDepth = self->depth;
@@ -1015,8 +1073,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       // the block remains empty (i.e. <br> is a section separator between paragraphs).
       // If the block gets text added before the next block opens it becomes non-empty,
       // goes through makePages() normally, and the flag has no effect (inline <br> case).
-      BlockStyle brStyle =
-          self->currentTextBlock ? self->currentTextBlock->getBlockStyle() : self->blockStyleStack.back();
+      BlockStyle brStyle = self->blockStyleStack.back();
       brStyle.fromBrElement = true;
       self->startNewTextBlock(brStyle);
     } else {
@@ -1184,6 +1241,16 @@ void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char
 
   // Middle of skip
   if (self->skipUntilDepth < self->depth) {
+    return;
+  }
+
+  // Collect ruby text instead of normal word processing. Pre-Translation: skip the append when the
+  // enclosing block is dropped for the active mode — its base words never reach the text block, so
+  // the annotation has nothing to attach to (see the </rt> handler).
+  if (self->collectingRubyText) {
+    if (!self->wordIsFiltered()) {
+      self->rubyTextBuffer.append(s, len);
+    }
     return;
   }
 
@@ -1363,6 +1430,45 @@ void XMLCALL ChapterHtmlSlimParser::defaultHandlerExpand(void* userData, const X
 void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* name) {
   auto* self = static_cast<ChapterHtmlSlimParser*>(userData);
 
+  // Ruby text: </rt> distributes ruby to base words, </ruby> resets ruby state
+  if (strcmp(name, "rt") == 0) {
+    self->collectingRubyText = false;
+    // Pre-Translation: in a mode that drops this block (OrigOnly/TransOnly/Modal/Tooltip), the base
+    // characters never became words, so baseWordCount would be 0 and the fallback below would walk
+    // back and glue this furigana onto the last SURVIVING word of an unrelated run. Skip the whole
+    // distribution instead; rubyTextBuffer is cleared below either way.
+    if (self->inRuby && self->currentTextBlock && !self->wordIsFiltered()) {
+      const int currentWordCount = static_cast<int>(self->currentTextBlock->size());
+      const int baseWordCount = currentWordCount - self->rubyStartWordIndex;
+      std::string cleanRuby = trimAndNormalize(self->rubyTextBuffer);
+      if (!cleanRuby.empty()) {
+        if (baseWordCount > 0) {
+          self->currentTextBlock->setRubyGroupAt(self->rubyStartWordIndex, baseWordCount, cleanRuby);
+          self->rubyStartWordIndex = currentWordCount;
+        } else if (self->rubyStartWordIndex > 0) {
+          int leaderIdx = self->rubyStartWordIndex - 1;
+          while (leaderIdx >= 0 &&
+                 (self->currentTextBlock->getWordStyleAt(leaderIdx) & EpdFontFamily::RUBY_CONTINUE) != 0) {
+            leaderIdx--;
+          }
+          if (leaderIdx >= 0) {
+            std::string prevRuby = self->currentTextBlock->getRubyTextAt(leaderIdx);
+            self->currentTextBlock->setRubyForWordAt(leaderIdx, prevRuby + cleanRuby);
+          }
+        }
+      }
+    }
+    self->rubyTextBuffer.clear();
+    self->depth -= 1;
+    return;
+  }
+  if (strcmp(name, "ruby") == 0 && self->inRuby) {
+    self->inRuby = false;
+    self->rubyStartWordIndex = -1;
+    self->rubyTextBuffer.clear();
+    self->depth -= 1;
+    return;
+  }
   // Check if any style state will change after we decrement depth
   // If so, we MUST flush the partWordBuffer with the CURRENT style first
   // Note: depth hasn't been decremented yet, so we check against (depth - 1)
@@ -1472,10 +1578,23 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
         self->currentTextBlock->setBlockStyle(style.addBottom(self->blockStyleStack.back()));
       }
       self->blockStyleStack.pop_back();
-      // Pre-Translation: intentionally NOT clearing currentBlockParagraphIdx /
-      // currentBlockIsTranslated here. The EOF flush in finishParse() runs makePages() after all
-      // endElement callbacks fire and still needs the last opened block's paragraph index/state.
-      // The next outermost block-open overwrites both, so they stay meaningful between blocks.
+      // Start a new text block with the parent style to prevent subsequent bare text
+      // from inheriting the closed block style (e.g. alignment or margins).
+      //
+      // Pre-Translation: this close-side call is now the point at which the just-closed block is
+      // flushed — startNewTextBlock() routes a non-empty currentTextBlock through
+      // makePagesTableMode() in SideBySide (mode 5) or makePages() otherwise. Both READ
+      // currentBlockParagraphIdx / currentBlockIsTranslated, so those fields must still describe
+      // the block being closed and are intentionally NOT cleared here. The next content
+      // block-open overwrites both, and the EOF flush in finishParse() likewise relies on the last
+      // opened block's state surviving after all endElement callbacks have fired.
+      //
+      // Splitting on close does NOT double-count paragraphs: the fresh ParsedText created below
+      // resets currentBlockIndexAssigned to false, and the next block-open finds that block empty,
+      // takes the reuse early-return in startNewTextBlock (which leaves the latch untouched), and
+      // then claims exactly one index. A close is never itself a block-open, so it never advances
+      // paragraphCounter.
+      self->startNewTextBlock(self->blockStyleStack.back());
     }
 
     // </li> closes: if the bullet never got inline text (empty <li> or <li> with only
@@ -1625,7 +1744,8 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
 }
 
 void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line) {
-  const int lineHeight = renderer.getLineHeight(fontId, lineCompression);
+  const int lineHeight =
+      renderer.getLineHeight(fontId, lineCompression) + line->getRubyShift(renderer.getFontAscenderSize(fontId));
 
   if (!currentPage) {
     currentPage.reset(new Page());

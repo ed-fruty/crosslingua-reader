@@ -4,9 +4,9 @@
 class EpdFontFamily {
  public:
   // Bitmask of text style flags carried per-word through layout and serialized in page cache.
-  // Bits 0-1 select the font variant (BOLD/ITALIC); bits 2-6 are decoration/positioning/translation
-  // overlays applied at render time without changing the underlying font. getFont() ignores all bits
-  // above bit 1 so decorations compose freely with bold/italic (e.g. BOLD | UNDERLINE | SUP).
+  // Bits 0-1 select the font variant (BOLD/ITALIC); bits 2-7 are decoration/positioning/translation/
+  // ruby-group overlays applied at render time without changing the underlying font. getFont() ignores
+  // all bits above bit 1 so decorations compose freely with bold/italic (e.g. BOLD | UNDERLINE | SUP).
   enum Style : uint8_t {
     REGULAR = 0,
     BOLD = 1,
@@ -18,11 +18,18 @@ class EpdFontFamily {
     SUB = 32,           // subscript: glyph scaled 50%, lowered ~25% of ascender
     TRANSLATED =
         64,  // bit 6: word came from a translated block (lang= attribute set); used by Pre-Translation Dark/Light modes
-    TOOLTIP = 128,  // bit 7: reserved for the Tooltip display mode (PT_TOOLTIP). The tooltip renders the
-                    // page as original-only and surfaces translations through an at-view popup, so the
-                    // TooltipOverlay itself does not set this bit today; it is claimed here so the flag is
-                    // named and cannot be reused. getFont() ignores all bits above bit 1, so it composes
-                    // freely with bold/italic/decorations like the other overlay bits.
+    RUBY_CONTINUE = 128,  // bit 7: group ruby follower marker for native <ruby>/<rt> support; set at layout
+                          // (ParsedText), persisted in the section.bin word style byte, read by TextBlock and
+                          // ChapterHtmlSlimParser to keep ruby groups together. Upstream introduced this as 64,
+                          // which collides with TRANSLATED on this line; renumbered to bit 7 in the section.bin
+                          // v37 merge (v37 rejects every cache written by either line, so no stored style byte
+                          // is ever reinterpreted under the new numbering). Bit 7 had been reserved for the
+                          // Tooltip display mode (PT_TOOLTIP), but that flag was never set nor persisted
+                          // anywhere -- the tooltip renders the page original-only and surfaces translations
+                          // through an at-view popup -- so the reservation is retired in favor of ruby. The
+                          // style byte is now FULL: any future flag needs a wider persisted word style
+                          // (TextBlock arena styles[] is uint8_t) plus a section.bin version bump. getFont()
+                          // ignores all bits above bit 1, so ruby composes with bold/italic/decorations.
   };
   static constexpr uint8_t TEXT_DECORATION_MASK = static_cast<uint8_t>(UNDERLINE | STRIKETHROUGH);
 
