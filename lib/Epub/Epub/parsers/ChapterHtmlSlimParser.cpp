@@ -2162,9 +2162,12 @@ void ChapterHtmlSlimParser::buildAnnotationRows(const InterlinearAnnotation& ann
 
 void ChapterHtmlSlimParser::emitInterlinearRow(const std::shared_ptr<TextBlock>& row, const int16_t xPos,
                                                const int rowHeight, const LineFontRole role, const bool breakIfNeeded) {
-  // Only the degenerate path breaks here (see renderInterlinear). currentPageNextY > 0 guards against
-  // emitting empty pages forever when a single row is taller than the whole viewport.
-  if (breakIfNeeded && currentPageNextY > 0 && currentPageNextY + rowHeight > viewportHeight) {
+  // Only the degenerate path breaks here (see renderInterlinear). The break is gated on the page
+  // holding a COMMITTED element, not merely on currentPageNextY > 0: the two differ on a page whose y
+  // has been advanced by a paragraph's top spacing but which carries nothing yet, and breaking there
+  // would serialize a blank page. It is also the stronger anti-loop guard the weaker test was added
+  // for -- an empty page never breaks, so a row taller than the whole viewport always lands.
+  if (breakIfNeeded && !currentPage->elements.empty() && currentPageNextY + rowHeight > viewportHeight) {
     completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex);
     completedPageCount++;
     currentPage.reset(new Page());
@@ -2255,9 +2258,17 @@ void ChapterHtmlSlimParser::renderInterlinear(std::unique_ptr<ParsedText> origBl
   }
 
   // Top spacing comes from the original block, before the paragraph's first annotation row, so that
-  // row sits below the margin rather than inside it.
-  if (blockStyle.marginTop > 0) currentPageNextY += blockStyle.marginTop;
-  if (blockStyle.paddingTop > 0) currentPageNextY += blockStyle.paddingTop;
+  // row sits below the margin rather than inside it. It COLLAPSES at the very top of a page: there is
+  // nothing above it there for the margin to separate the paragraph from, and it is the ONLY way
+  // currentPageNextY can be > 0 on a page with no committed element -- which is precisely the state
+  // that would make the atomic fit test below complete a BLANK page (a forced break, e.g. a TOC
+  // anchor in flushPendingAnchor, leaves exactly such a page). Collapsing here is also what the
+  // common case already does implicitly: when the previous paragraph ended at the page bottom, this
+  // spacing is added to the OLD page's y and thrown away with it by the break below.
+  if (!currentPage->elements.empty()) {
+    if (blockStyle.marginTop > 0) currentPageNextY += blockStyle.marginTop;
+    if (blockStyle.paddingTop > 0) currentPageNextY += blockStyle.paddingTop;
+  }
 
   const int annotationRowHeight = renderer.getLineHeight(annotationFont, lineCompression);
   const int bodyLineHeight = renderer.getLineHeight(fontId, lineCompression);
@@ -2291,8 +2302,12 @@ void ChapterHtmlSlimParser::renderInterlinear(std::unique_ptr<ParsedText> origBl
     // ATOMIC FIT: test the WHOLE group ONCE, before its first row. If the group fits at the tested y
     // then every row inside it fits by construction, so no row re-tests and an annotation can never
     // be split from the source line it belongs to.
+    // The !elements.empty() guard is the one emitHorizontalRule already uses: an EMPTY page must never
+    // be completed or it reaches section.bin as a blank page the reader then displays. With the top
+    // spacing collapsed above, an empty page here always has currentPageNextY == 0, so a non-degenerate
+    // group fits by definition and the guard costs nothing in the normal case.
     const bool degenerate = groupHeight > viewportHeight;
-    if (!degenerate && currentPageNextY + groupHeight > viewportHeight) {
+    if (!degenerate && !currentPage->elements.empty() && currentPageNextY + groupHeight > viewportHeight) {
       completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex);
       completedPageCount++;
       currentPage.reset(new Page());
