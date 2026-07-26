@@ -143,7 +143,12 @@ families:
       italic:     {url: "https://raw.githubusercontent.com/google/fonts/main/ofl/vollkorn/Vollkorn-Italic%5Bwght%5D.ttf", variable: {wght: 400}}
       bolditalic: {url: "https://raw.githubusercontent.com/google/fonts/main/ofl/vollkorn/Vollkorn-Italic%5Bwght%5D.ttf", variable: {wght: 700}}
 
-  # Slab serif. Sources are committed under builtinFonts/source/EdsLab (the
+  # Slab serif. Also compiled into the firmware as the default reading family
+  # (see convert-builtin-fonts.sh), so this SD build is optional: it exists so an
+  # updated cut of the font can reach a device without reflashing, and because
+  # the intervals below are wider than the built-in set (the numero sign is not
+  # in the built-in interval list).
+  # Sources are committed under builtinFonts/source/EdsLab (the
   # font is not published at a stable URL). Intervals are the `reading` preset
   # plus Letterlike Symbols (0x2100-0x214F) — that block carries the numero
   # sign U+2116 that Cyrillic keyboards produce, plus ™ ℃ ℉ Ω. Cyrillic is

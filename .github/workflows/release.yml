@@ -35,9 +35,12 @@ jobs:
       - name: Build CrossPoint
         run: pio run -e gh_release
 
-      # EdsLab is too large to embed in the app slot, so it rides along with
-      # the firmware release as a drop-onto-the-SD-card zip instead. The other
-      # SD families are published separately by release-fonts.yml.
+      # EdsLab is built into the firmware and is the default reading font, so
+      # this zip is OPTIONAL for users -- nobody has to install anything to read
+      # in EdsLab. It is published anyway for two reasons: an updated cut of the
+      # font can reach existing devices without reflashing, and the SD build uses
+      # a wider interval set than the built-in one (it adds the numero sign, see
+      # sd-fonts.yaml). The other SD families come from release-fonts.yml.
       - name: Install font tools
         run: |
           sudo apt-get update && sudo apt-get install -y libfreetype6-dev
