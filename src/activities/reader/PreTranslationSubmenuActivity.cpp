@@ -535,12 +535,15 @@ void PreTranslationSubmenuActivity::render(RenderLock&&) {
             maskedApiKey(buf, sizeof(buf));
             return std::string(buf);
           }
+          // Plain command rows: no value column. Listed explicitly, with no `default:`, for the same
+          // reason onActionSelected() has none — an Action added without deciding what its value
+          // column shows must fail the build here (-Werror=switch), not silently render blank.
           case Action::TRANSLATE_CHAPTER:
           case Action::TRANSLATE_BOOK:
           case Action::DELETE_TRANSLATIONS:
-          default:
             return "";
         }
+        return "";  // unreachable: every enumerator returns above
       },
       /*highlightValue=*/true);
 
