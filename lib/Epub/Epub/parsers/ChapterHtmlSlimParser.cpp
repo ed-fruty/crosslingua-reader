@@ -2189,6 +2189,33 @@ void ChapterHtmlSlimParser::emitInterlinearRow(const std::shared_ptr<TextBlock>&
     currentPageNextY = 0;
   }
 
+  // FOOTNOTES, attributed to the page carrying the anchor exactly as addLineToPage (:1828-1834) does
+  // it. Interlinear needs its own copy because a PAIRED paragraph never reaches addLineToPage, and
+  // under this layout essentially every paragraph pairs: without this, pendingFootnotes accumulated
+  // for the whole chapter and was either dumped wholesale onto whatever page happened to be current at
+  // the next unpaired paragraph (the makePages fallback at :1897) or never delivered at all, since
+  // finishParse does not drain it.
+  //
+  // BODY rows only: an annotation row is synthetic and must not consume source word indices.
+  //
+  // Every entry here comes from an ORIGINAL block. A translated paragraph is written into the sidecar
+  // as a fresh <p> holding nothing but the ESCAPED plain text of the translation
+  // (TranslatingHtmlRewriter's write-out loop), so it carries no <a epub:type="noteref"> and can never
+  // push a pending footnote — which is why one counter over the source lines is the whole story here.
+  // startNewTextBlock zeroed wordsExtractedInBlock when the translation block opened and nothing else
+  // advances it under this layout, so the indices and this counter share the original block's base.
+  // The pre-layout anchor index vs post-layout wordCount() mismatch is addLineToPage's own
+  // approximation, kept identical here.
+  if (role == LineFontRole::Body) {
+    wordsExtractedInBlock += row->wordCount();
+    auto footnoteIt = pendingFootnotes.begin();
+    while (footnoteIt != pendingFootnotes.end() && footnoteIt->first <= wordsExtractedInBlock) {
+      currentPage->addFootnote(footnoteIt->second.number, footnoteIt->second.href);
+      ++footnoteIt;
+    }
+    pendingFootnotes.erase(pendingFootnotes.begin(), footnoteIt);
+  }
+
   auto pageLine = std::make_shared<PageLine>(row, xPos, currentPageNextY);
   // Both the source lines and the annotation rows carry the ORIGINAL paragraph's index, so the
   // line->paragraph mapping the overlays and the reader rely on still resolves (same as
@@ -2343,6 +2370,18 @@ void ChapterHtmlSlimParser::renderInterlinear(std::unique_ptr<ParsedText> origBl
     emitInterlinearRow(srcLine, leftInset, srcRowHeight, LineFontRole::Body, degenerate);
 
     lineFirstWord = static_cast<uint16_t>(lineFirstWord + lineWordCount);
+  }
+
+  // Same safety net makePages keeps (:1897): every remaining entry belongs to the paragraph just
+  // emitted, so flushing it to the current page keeps it off the NEXT paragraph's ledger. The
+  // per-line drain above already covers the normal case — an anchor index can never exceed the
+  // block's pre-layout word count, and hyphenation only ADDS post-layout words — so this fires only
+  // when a line was dropped (a TextBlock arena OOM).
+  if (!pendingFootnotes.empty() && currentPage) {
+    for (const auto& [idx, fn] : pendingFootnotes) {
+      currentPage->addFootnote(fn.number, fn.href);
+    }
+    pendingFootnotes.clear();
   }
 
   // Bottom spacing + the usual half-line paragraph gap after the pair.
