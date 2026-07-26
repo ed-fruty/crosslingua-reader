@@ -90,6 +90,45 @@ if (parsedSize != fileSize) {
 
 ## `section.bin`
 
+### Version 41
+
+Version 41 changes the *meaning* of the `translatedSource` byte, changes the layout
+engine's "is this block translated" test with it, and inserts one new `bool` after it.
+The first two alter the pages a given key produces; the third shifts every field that
+follows, which — per the version 39 note below — makes rejecting v40 mandatory rather
+than merely correct.
+
+- **`translatedSource` now means "laid out from content that CONTAINS translations"**,
+  not "laid out from the `.translated.html` sidecar". A book translated by a Calibre
+  plugin has no sidecar at all: its translated paragraphs are embedded in the chapter's
+  own XHTML (`<p lang="uk">` beside the `lang="en"` original). Such a chapter used to
+  stamp `false`, which forced `Section::effectiveLayout` to degrade every display mode
+  to `Both`; it now stamps `true` and lays out under the real filtering/pairing layout.
+  Its v40 pages are therefore the wrong pages for the same key.
+- **The language comparison moved to `translationdetect::isTranslatedLangTag`**
+  (`lib/Epub/Epub/TranslationDetection.h`): primary subtag, ASCII case-insensitive,
+  with `-` and `_` both ending the subtag. A chapter carrying `lang="en-GB"` blocks in
+  an `en` book used to lay them out as translated text and no longer does, which changes
+  line breaking. That alone can leave the stamped byte unchanged (any other foreign block
+  keeps it `true`), so the version is what invalidates those files.
+- **`embeddedTranslation`** is added as a 1-byte `bool` immediately after
+  `translatedSource`. It is **not** part of the cache key. It records only the half of
+  `translatedSource` that is *immutable for a given book file* — "the chapter's own XHTML
+  embeds translated blocks" — so a load can recompute `translatedSource` as
+  `hasTranslatedSidecar() || embeddedTranslation`, one SD stat, instead of SAX-scanning the
+  chapter HTML on every chapter load (a cost that would fall on every reader, including
+  those who never enable a translation mode). A build that read the *sidecar* never looked at
+  the chapter HTML and stamps `false` without knowing; that state is recognisable as
+  `translatedSource == true && embeddedTranslation == false`, and a load that sees it with the
+  sidecar now gone treats the answer as unknown — it forces the (required) rebuild and lets the
+  rebuild re-scan, rather than memoizing a value that could understate the truth.
+
+The invariant version 39 introduced is unchanged and now covers more ground: a chapter
+cached while it had no translation must never be served once it has one, and vice versa.
+Both transitions still invalidate — a downloaded or deleted sidecar flips the byte exactly
+as before, and an embedded translation is baked into the chapter HTML, so a book that
+gains one is a different file with a different cache directory.
+
 ### Version 40
 
 Version 40 adds a fifth `PtLayout` value and one header field. Either change alone
@@ -157,8 +196,10 @@ Version 39 adds one field to the version 38 header:
 - **`translatedSource`** is added as a 1-byte `bool` immediately after the
   `PtLayout` byte. It records *which source HTML* the pages were laid out from:
   `true` = the chapter's `.translated.html` sidecar, `false` = the plain
-  original chapter HTML. The layout byte cannot express this — `Both` is what an
-  untranslated chapter stamps *and* what an inline-bilingual chapter stamps — so
+  original chapter HTML. (Version 41 widens this to "content containing
+  translations, from either source" — see above.) The layout byte cannot express
+  this — `Both` is what an untranslated chapter stamps *and* what a chapter that
+  simply requested Normal stamps — so
   without it a chapter laid out before its translation was downloaded would stay
   a cache **hit** afterwards and silently serve untranslated pages in a
   bilingual mode (and, symmetrically, a translated cache would survive the
@@ -231,9 +272,11 @@ one field:
   layout only.
 
 The per-chapter auto-fallback keys on the layout too: a chapter with no
-committed translation is laid out and stamped as `Both`, which for an
+translation in its source is laid out and stamped as `Both`, which for an
 untranslated chapter is simply the plain original (see
-`Section::effectiveLayout`).
+`Section::effectiveLayout`). "No translation" spans both sources from version 41
+on — neither a `.translated.html` sidecar nor translations embedded in the
+chapter's own XHTML.
 
 ### Version 37
 
@@ -532,7 +575,8 @@ struct SectionBin {
     bool hyphenationEnabled;
     bool embeddedStyle;
     PtLayout ptLayout [[comment("v38: Pre-Translation page layout (NOT the display mode); part of the cache key")]];
-    bool translatedSource [[comment("v39: laid out from the .translated.html sidecar (true) or the original chapter HTML (false); part of the cache key")]];
+    bool translatedSource [[comment("v41: laid out from content containing translations - a .translated.html sidecar OR translations embedded in the chapter's own XHTML (v39-v40: sidecar only); part of the cache key")]];
+    bool embeddedTranslation [[comment("v41: the chapter's own XHTML embeds translated blocks; a memo, NOT a cache key - lets a load recompute translatedSource with one sidecar stat instead of re-scanning the HTML. False also means 'this build read the sidecar and never looked'")]];
     u8 imageRendering;
     bool focusReadingEnabled;
 
@@ -598,11 +642,15 @@ The sidecar is committed atomically. The translator writes to
 clean, complete write has finished. Consequences:
 
 - A finished translation is exactly "the final file exists" —
-  `Section::hasTranslatedHtml()` is a plain existence check on the final path. A power
+  `Section::hasTranslatedSidecar()` is a plain existence check on the final path. A power
   loss mid-translation leaves only a `.part`, never a truncated final file, so the
   reader never lays out from a partial.
 - `Section::createSectionFile()` builds from the translated source only when
-  `hasTranslatedHtml()` is true, never from a `.part`.
+  `hasTranslatedSidecar()` is true, never from a `.part`.
+- That sidecar check answers "which file does the build parse", **not** "does this chapter
+  have a translation". The latter is `Section::hasTranslation()`, which is also true for a
+  chapter whose translations are embedded in its own XHTML (see version 41 above); it is
+  what gates the display-mode fallback and what is stamped as `translatedSource`.
 - A leftover `.part` from an interrupted run is transient; `Section::clearCache()`
   reclaims it on the next `.bin` invalidation, while the completed final file is
   preserved across that invalidation.

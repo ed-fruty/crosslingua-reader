@@ -5,6 +5,7 @@
 #include <Memory.h>
 #include <Serialization.h>
 
+#include "Epub/TranslationDetection.h"
 #include "Epub/css/CssParser.h"
 #include "Page.h"
 #include "ParagraphAnchor.h"
@@ -91,7 +92,33 @@ namespace {
 //      makes it mandatory, for precisely the reason the v39 note above spells out (every field after
 //      it would be read shifted, and the pageCount / LUT offsets are consumed before the
 //      parameter-mismatch check can save you).
-constexpr uint8_t SECTION_FILE_VERSION = 40;
+// v41: The translatedSource byte CHANGES ITS MEANING, the language comparison that feeds it changed
+//      too, and a second bool (embeddedTranslation) is inserted right after it -- so every v40 file
+//      must be rejected, and (per the v39 note) the mid-header insertion makes that mandatory rather
+//      than merely correct.
+//      (a) It used to mean "laid out from the `.translated.html` sidecar". It now means "laid out
+//          from content CONTAINING TRANSLATIONS", which is also true of a chapter whose own XHTML
+//          embeds them (a Calibre-plugin bilingual book: `<p lang="uk">` beside the `lang="en">`
+//          original, no sidecar). Such a chapter used to stamp false and be forced to PtLayout::Both
+//          -- it now stamps true and lays out under the real filtering/pairing layout, so its v40
+//          pages are the WRONG pages for the same key.
+//      (b) ChapterHtmlSlimParser's "is this block translated" test moved from a raw strcmp against
+//          the book language to translationdetect::isTranslatedLangTag (primary subtag, ASCII
+//          case-insensitive). A chapter with `lang="en-GB"` blocks in an `en` book used to lay them
+//          out as translated text and no longer does, which changes line breaking. That alone can
+//          leave the stamped byte unchanged (any other foreign block keeps it true), so the version
+//          is what invalidates it.
+//      (c) A new `embeddedTranslation` bool follows translatedSource. It is NOT a cache key; it is a
+//          memo of the half of (a) that is IMMUTABLE for a given book file, so a load can recompute
+//          translatedSource as `hasTranslatedSidecar() || embeddedTranslation` -- one SD stat --
+//          rather than SAX-scanning the chapter HTML on every chapter load, which would have taxed
+//          even readers who never enable a translation mode.
+//      The invariant v39 introduced is unchanged and now simply covers more ground: a chapter cached
+//      while it had no translation must never be served once it has one, and vice versa. Both
+//      transitions still invalidate -- a downloaded/deleted sidecar flips the byte exactly as
+//      before, and an embedded translation is baked into the chapter HTML, so a book that gains one
+//      is a different file with a different cache dir.
+constexpr uint8_t SECTION_FILE_VERSION = 41;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
@@ -107,7 +134,7 @@ constexpr uint8_t SECTION_FILE_INCOMPLETE_VERSION = 0;
 // MUST change in lockstep with SECTION_FILE_VERSION: the sentinel IS the partial's
 // format version, so a stale-format partial otherwise passes the header check and
 // only fails (noisily, via the block-decode error path) when a page is loaded.
-// Derived so the pairing can't be forgotten: 0xFE for v28, 0xFD for v29, ... 0xF2 for v40.
+// Derived so the pairing can't be forgotten: 0xFE for v28, 0xFD for v29, ... 0xF1 for v41.
 constexpr uint8_t SECTION_FILE_PARTIAL_VERSION = 0xFE - (SECTION_FILE_VERSION - 28);
 // The derivation only stays a distinct sentinel while the two ranges have not met; assert it rather
 // than trusting a future bump to notice.
@@ -116,11 +143,12 @@ static_assert(SECTION_FILE_PARTIAL_VERSION > SECTION_FILE_VERSION &&
               "Partial sentinel collides with a real version");
 // The second sizeof(int) is the Pre-Translation translationFontId and the third (v40) is the
 // annotationFontId; the extra sizeof(uint8_t) after the two bools is the Pre-Translation PtLayout
-// byte, and the sizeof(bool) right after it is the translated-source flag.
+// byte, the sizeof(bool) right after it is the translated-source flag, and the sizeof(bool) after
+// THAT (v41) is the embedded-translation memo.
 constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) + sizeof(int) + sizeof(int) + sizeof(int) + sizeof(float) +
                                  sizeof(bool) + sizeof(uint8_t) + sizeof(uint16_t) + sizeof(uint16_t) +
                                  sizeof(uint16_t) + sizeof(bool) + sizeof(bool) + sizeof(uint8_t) + sizeof(bool) +
-                                 sizeof(uint8_t) + sizeof(bool) + sizeof(uint32_t) + sizeof(uint32_t) +
+                                 sizeof(bool) + sizeof(uint8_t) + sizeof(bool) + sizeof(uint32_t) + sizeof(uint32_t) +
                                  sizeof(uint32_t) + sizeof(uint32_t);
 
 // The translation font belongs in the cache key only where translated words are actually laid out IN
@@ -197,7 +225,8 @@ uint32_t Section::onPageComplete(std::unique_ptr<Page> page) {
   return position;
 }
 
-void Section::writeSectionFileHeader(const ReaderRenderSpec& spec, const bool translatedSource) {
+void Section::writeSectionFileHeader(const ReaderRenderSpec& spec, const bool translatedSource,
+                                     const bool embeddedTranslation) {
   if (!file) {
     LOG_DBG("SCT", "File not open for writing header");
     return;
@@ -208,8 +237,9 @@ void Section::writeSectionFileHeader(const ReaderRenderSpec& spec, const bool tr
                                    sizeof(spec.viewportWidth) + sizeof(spec.viewportHeight) + sizeof(pageCount) +
                                    sizeof(spec.hyphenationEnabled) + sizeof(spec.embeddedStyle) +
                                    sizeof(uint8_t) /* PtLayout */ + sizeof(translatedSource) +
-                                   sizeof(spec.imageRendering) + sizeof(spec.focusReadingEnabled) + sizeof(uint32_t) +
-                                   sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t),
+                                   sizeof(embeddedTranslation) + sizeof(spec.imageRendering) +
+                                   sizeof(spec.focusReadingEnabled) + sizeof(uint32_t) + sizeof(uint32_t) +
+                                   sizeof(uint32_t) + sizeof(uint32_t),
                 "Header size mismatch");
   // Written as the incomplete sentinel; finalizeBuild() patches it to
   // SECTION_FILE_VERSION as the last step, committing the file.
@@ -226,9 +256,20 @@ void Section::writeSectionFileHeader(const ReaderRenderSpec& spec, const bool tr
   serialization::writePod(file, spec.hyphenationEnabled);
   serialization::writePod(file, spec.embeddedStyle);
   serialization::writePod(file, static_cast<uint8_t>(spec.ptLayout));  // Pre-Translation page layout (cache key)
-  // Which source HTML these pages were laid out from (cache key). The layout byte cannot express
-  // it: Both is stamped both by an untranslated chapter and by an inline-bilingual one.
+  // Whether the HTML these pages were laid out from contained translations (cache key). The layout
+  // byte cannot express it: Both is stamped both by an untranslated chapter and by one that simply
+  // requested Normal.
   serialization::writePod(file, translatedSource);
+  // v41, NOT a cache key -- a memo, so the next load can recompute translatedSource without
+  // re-scanning the chapter HTML. It records the half of the answer that is IMMUTABLE for a given
+  // book file: "the chapter's own XHTML embeds translated blocks". The other half (a sidecar) is one
+  // SD stat, so `translatedSource == hasTranslatedSidecar() || embeddedTranslation` costs a stat
+  // instead of a whole-file SAX scan on every chapter load -- including for the many readers who
+  // never enable a translation mode at all.
+  // Stamped false when this build read the SIDECAR (it never looked at the chapter HTML, so it does
+  // not know). That is the safe way to be wrong: it can only make a later load recompute a smaller
+  // translatedSource and rebuild, never serve the wrong pages.
+  serialization::writePod(file, embeddedTranslation);
   serialization::writePod(file, spec.imageRendering);
   serialization::writePod(file, spec.focusReadingEnabled);
   serialization::writePod(file, pageCount);  // Placeholder for page count (will be initially 0, patched later)
@@ -268,6 +309,7 @@ bool Section::loadSectionFile(const ReaderRenderSpec& spec) {
     bool fileEmbeddedStyle;
     uint8_t filePtLayout;
     bool fileTranslatedSource;
+    bool fileEmbeddedTranslation;
     uint8_t fileImageRendering;
     bool fileFocusReadingEnabled;
     serialization::readPod(file, fileFontId);
@@ -282,6 +324,7 @@ bool Section::loadSectionFile(const ReaderRenderSpec& spec) {
     serialization::readPod(file, fileEmbeddedStyle);
     serialization::readPod(file, filePtLayout);
     serialization::readPod(file, fileTranslatedSource);
+    serialization::readPod(file, fileEmbeddedTranslation);  // v41
     serialization::readPod(file, fileImageRendering);
     serialization::readPod(file, fileFocusReadingEnabled);
 
@@ -291,14 +334,31 @@ bool Section::loadSectionFile(const ReaderRenderSpec& spec) {
     // visit. See effectiveLayout().
     //
     // The source flag is the other half of the Pre-Translation key. Both is stamped by an
-    // untranslated chapter AND by an inline-bilingual one, so without this compare a chapter laid
-    // out before its translation was downloaded would stay a cache HIT afterwards and serve
-    // untranslated pages in a bilingual mode (and, symmetrically, a translated cache would survive
-    // the translation being deleted). One SD stat, shared with the layout resolution below.
-    const bool translatedSource = hasTranslatedHtml();
+    // untranslated chapter AND by a chapter that simply requested Normal, so without this compare a
+    // chapter laid out before its translation was downloaded would stay a cache HIT afterwards and
+    // serve untranslated pages in a bilingual mode (and, symmetrically, a translated cache would
+    // survive the translation being deleted). Resolved once per Section (memoized inside
+    // hasTranslation()) and shared with the layout resolution below.
+    // Recomputed from the two independent halves rather than by re-scanning the chapter HTML: the
+    // embedded half is immutable for a given book file, so the previous build's memo is still valid,
+    // and the sidecar half is one SD stat. That keeps every chapter load -- Normal mode included --
+    // at the single stat this check has always cost.
+    const bool hasSidecar = hasTranslatedSidecar();
+    const bool translatedSource = hasSidecar || fileEmbeddedTranslation;
+    // ...but only ADOPT it as the memoized answer when it is exact. A build that read the sidecar
+    // never looked at the chapter HTML, so it stamped embedded=false without knowing -- recognisable
+    // as "translatedSource stamped true while embedded stamped false". If that sidecar has since been
+    // deleted, `translatedSource` above understates the truth. It still forces the right outcome (a
+    // key MISS, hence a rebuild -- which is required anyway, the source file changed), but it must
+    // NOT be memoized, or the rebuild would trust it instead of scanning and would stamp a plugin-
+    // translated chapter as untranslated.
+    const bool embeddedIsKnown = fileEmbeddedTranslation || !fileTranslatedSource;
+    if (hasSidecar || embeddedIsKnown) {
+      translationPresence_ = translatedSource ? TranslationPresence::Yes : TranslationPresence::No;
+    }
     // Record the source before the key check: on a HIT it is the source these pages came from, and
-    // on a MISS it is the source the rebuild below will use. Either way it is what a caller
-    // recording a reposition anchor needs, without a second SD stat.
+    // on a MISS it is superseded by the rebuild below. Either way it is what a caller recording a
+    // reposition anchor needs, without a second SD stat.
     translatedSource_ = translatedSource;
     const PtLayout layout = effectiveLayout(spec.ptLayout, translatedSource);
     if (spec.fontId != fileFontId || keyedTranslationFontId(spec.translationFontId, layout) != fileTranslationFontId ||
@@ -382,7 +442,11 @@ std::string Section::getTranslatedHtmlPath() const {
   return epub->getCachePath() + "/sections/" + std::to_string(spineIndex) + ".translated.html";
 }
 
-bool Section::hasTranslatedHtml() const {
+std::string Section::getCachedHtmlPath() const {
+  return epub->getCachePath() + "/html/" + std::to_string(spineIndex) + ".html";
+}
+
+bool Section::hasTranslatedSidecar() const {
   // The translated HTML is committed atomically: it is written to a ".part" file and only
   // renamed into place after a clean, complete write. So a finished translation is exactly
   // "the final file exists" — a power loss mid-translation leaves only a ".part", never a
@@ -392,8 +456,59 @@ bool Section::hasTranslatedHtml() const {
   return Storage.exists(getTranslatedHtmlPath().c_str());
 }
 
+bool Section::hasTranslation() const {
+  if (translationPresence_ != TranslationPresence::Unknown) {
+    return translationPresence_ == TranslationPresence::Yes;
+  }
+  // A committed sidecar IS a translation by construction; no scan needed, and this keeps the
+  // reader-translated path at exactly the single SD stat it always cost.
+  if (hasTranslatedSidecar()) {
+    translationPresence_ = TranslationPresence::Yes;
+    return true;
+  }
+  // No sidecar: the translation, if any, is embedded in the chapter's own XHTML. That needs the
+  // unzipped HTML, which is cached per book and outlives every .bin invalidation -- so any chapter
+  // that has ever been built answers from disk here.
+  const std::string htmlPath = getCachedHtmlPath();
+  if (Storage.exists(htmlPath.c_str())) {
+    translationPresence_ = translationdetect::htmlHasTranslatedBlock(htmlPath, epub->getLanguage())
+                               ? TranslationPresence::Yes
+                               : TranslationPresence::No;
+    return translationPresence_ == TranslationPresence::Yes;
+  }
+  // Not knowable without inflating the spine, which is not this function's call to make. Stay
+  // Unknown (so the next call re-resolves) and answer in the safe direction -- see Section.h.
+  return true;
+}
+
+void Section::resolveTranslationPresence() {
+  if (translationPresence_ != TranslationPresence::Unknown) return;
+  // Try the free routes first (sidecar stat, or a scan of an already-unzipped chapter HTML). NOT
+  // via its return value: hasTranslation() answers true while Unknown, so only the memo says
+  // whether it actually resolved anything.
+  (void)hasTranslation();
+  if (translationPresence_ != TranslationPresence::Unknown) return;
+  // Only reachable with no sidecar and no cached chapter HTML. Inflate it -- the same inflate a
+  // build of this chapter pays, promoted to the same cache startBuild() then reuses, so this
+  // hoists the cost rather than adding one.
+  std::string parsePath;
+  bool promoted = false;
+  if (!ensureChapterHtml(parsePath, promoted)) {
+    LOG_DBG("SCT", "Could not inflate spine %d to resolve translation presence", spineIndex);
+    return;  // stays Unknown -> hasTranslation() keeps answering in the safe direction
+  }
+  translationPresence_ = translationdetect::htmlHasTranslatedBlock(parsePath, epub->getLanguage())
+                             ? TranslationPresence::Yes
+                             : TranslationPresence::No;
+  if (!promoted) {
+    // An un-promoted temp is nobody's to keep: startBuild() would re-inflate it under its own
+    // ownership rules, and leaving it would strand a stale ".tmp_<n>.html" in the cache dir.
+    Storage.remove(parsePath.c_str());
+  }
+}
+
 PtLayout Section::effectiveLayout(const PtLayout requested, const bool translatedSource) {
-  // With no committed translation there are no translated words to drop, keep or pair, so EVERY
+  // With no translation in the source there are no translated words to drop, keep or pair, so EVERY
   // layout degrades to Both -- which on an untranslated chapter is just the plain original. Both is
   // therefore both the request and the fallback, which is exactly why it says nothing about the
   // source the pages came from and why the caller pairs this with the translatedSource flag in the
@@ -410,6 +525,74 @@ bool Section::createSectionFile(const ReaderRenderSpec& spec, const std::functio
     return false;
   }
   return buildComplete_;
+}
+
+bool Section::ensureChapterHtml(std::string& outParsePath, bool& outPromoted) {
+  const auto htmlDir = epub->getCachePath() + "/html";
+  const auto htmlPath = getCachedHtmlPath();
+  const auto tmpHtmlPath = htmlDir + "/.tmp_" + std::to_string(spineIndex) + ".html";
+
+  if (Storage.exists(htmlPath.c_str())) {
+    LOG_DBG("SCT", "Reusing cached HTML %s", htmlPath.c_str());
+    outParsePath = htmlPath;
+    outPromoted = true;
+    return true;
+  }
+
+  Storage.mkdir(htmlDir.c_str());
+
+  // Retry logic for SD card timing issues
+  bool streamed = false;
+  uint32_t fileSize = 0;
+  for (int attempt = 0; attempt < 3 && !streamed; attempt++) {
+    if (attempt > 0) {
+      LOG_DBG("SCT", "Retrying stream (attempt %d)...", attempt + 1);
+      delay(50);  // Brief delay before retry
+    }
+
+    // Remove any incomplete file from previous attempt before retrying
+    if (Storage.exists(tmpHtmlPath.c_str())) {
+      Storage.remove(tmpHtmlPath.c_str());
+    }
+
+    HalFile tmpHtml;
+    if (!Storage.openFileForWrite("SCT", tmpHtmlPath, tmpHtml)) {
+      continue;
+    }
+    // Larger chunks mean far fewer SD writes inflating the HTML; a 1KB chunk turned a 584KB
+    // single-spine novel into ~570 tiny writes (multi-second). 8KB keeps the transient buffers
+    // small while cutting the write count 8x.
+    streamed = epub->readItemContentsToStream(epub->getSpineItem(spineIndex).href, tmpHtml, 8192);
+    fileSize = tmpHtml.size();
+    // Explicitly close() file before calling Storage.remove()
+    tmpHtml.close();
+
+    // If streaming failed, remove the incomplete file immediately
+    if (!streamed && Storage.exists(tmpHtmlPath.c_str())) {
+      Storage.remove(tmpHtmlPath.c_str());
+      LOG_DBG("SCT", "Removed incomplete temp file after failed attempt");
+    }
+  }
+
+  if (!streamed) {
+    LOG_ERR("SCT", "Failed to stream item contents to temp file after retries");
+    return false;
+  }
+
+  LOG_DBG("SCT", "Streamed temp HTML to %s (%d bytes)", tmpHtmlPath.c_str(), fileSize);
+
+  // Promote to the persistent HTML cache immediately -- the inflate is complete and the bytes are
+  // valid regardless of whether the layout build finishes, so reopening (even a window-only spine
+  // that never finalizes its .bin) skips re-inflation. If the rename fails we just parse the temp.
+  if (Storage.rename(tmpHtmlPath.c_str(), htmlPath.c_str())) {
+    outParsePath = htmlPath;
+    outPromoted = true;
+  } else {
+    LOG_DBG("SCT", "Failed to promote HTML cache; parsing from temp");
+    outParsePath = tmpHtmlPath;
+    outPromoted = false;
+  }
+  return true;
 }
 
 bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void()>& popupFn) {
@@ -432,9 +615,8 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   }
 
   const auto localPath = epub->getSpineItem(spineIndex).href;
-  const auto htmlDir = epub->getCachePath() + "/html";
-  const auto htmlPath = htmlDir + "/" + std::to_string(spineIndex) + ".html";
-  const auto tmpHtmlPath = htmlDir + "/.tmp_" + std::to_string(spineIndex) + ".html";
+  const auto htmlPath = getCachedHtmlPath();
+  const auto tmpHtmlPath = epub->getCachePath() + "/html/.tmp_" + std::to_string(spineIndex) + ".html";
 
   // Create cache directory if it doesn't exist
   {
@@ -448,17 +630,61 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   const auto translatedPath = getTranslatedHtmlPath();
   // Only build from the translated HTML when it exists as a complete, committed file
   // (guaranteed by the atomic ".part" -> rename write); never lay out from a partial.
-  const bool usingTranslatedSource = hasTranslatedHtml();
-  translatedSource_ = usingTranslatedSource;
+  // This is the "which file do I parse" question, NOT "does this chapter have a translation" --
+  // a plugin-translated chapter has no sidecar and is parsed from its own HTML (see hasTranslation).
+  const bool usingTranslatedSidecar = hasTranslatedSidecar();
 
-  // Per-chapter auto-fallback: a filtering layout with no translated HTML would filter for
-  // translated words that do not exist and render a blank chapter. Lay this chapter out as Both so
-  // it still renders. This is a layout/cache-key decision only -- the persisted display-mode setting
-  // is untouched (per-chapter), and the reader (which owns the user-facing toast) has already decided
-  // whether to notify on entry. The downgrade goes through the SAME effectiveLayout() that
-  // loadSectionFile() keys on, off the same usingTranslatedSource observation that is stamped into
-  // the header, so build and lookup can never disagree.
-  const PtLayout effectivePtLayout = effectiveLayout(spec.ptLayout, usingTranslatedSource);
+  // Reuse the previously unzipped HTML if we already have it. The unzipped HTML is keyed only on the
+  // book (it lives in the per-book cache dir), not on render settings, so it survives the invalidation
+  // that wipes the layout (.bin) caches when font/margin/orientation change -- rebuilds then skip zip
+  // inflation entirely. It's promoted by an atomic rename as soon as the inflate succeeds, so
+  // even a window-only giant spine -- whose .bin never finalizes -- still caches its HTML, letting a
+  // reopen skip the multi-second inflate. If htmlPath exists it is known-complete.
+  // reusedHtml also stays true for a translated sidecar: it means "the parse source is a
+  // persistent file the build lifecycle must never promote or delete", which holds for both
+  // the cached unzipped HTML and the translator-owned .translated.html.
+  bool htmlCached = usingTranslatedSidecar;
+  std::string chapterHtmlPath;
+  if (usingTranslatedSidecar) {
+    LOG_DBG("SCT", "Using translated HTML: %s", translatedPath.c_str());
+  } else if (!ensureChapterHtml(chapterHtmlPath, htmlCached)) {
+    return false;
+  }
+  const bool reusedHtml = htmlCached;
+  // Bind (no copy) to whichever source the parser will read.
+  const std::string& parseSource = usingTranslatedSidecar ? translatedPath : chapterHtmlPath;
+
+  // Resolve the translation presence only now: for a plugin-translated book the answer lives INSIDE
+  // the chapter HTML, so it cannot be known before the file above exists. This is the value stamped
+  // into the header and the one the layout is keyed on, so it has to be the authoritative one --
+  // never hasTranslation()'s "not knowable yet" default.
+  bool translatedSource;
+  // The half of the answer that is immutable for this book file, memoized into the header so later
+  // loads need no scan. False also means "this build did not look" (the sidecar path) -- see
+  // writeSectionFileHeader and the load-side note on when that is safe to trust.
+  bool embeddedTranslation = false;
+  if (usingTranslatedSidecar) {
+    translatedSource = true;  // a committed sidecar is bilingual by construction; no scan needed
+  } else if (translationPresence_ != TranslationPresence::Unknown) {
+    // Already resolved over this same file -- typically by the reader's fallback gate moments ago,
+    // or by a previous build of this Section. Reuse it rather than scanning twice per chapter.
+    translatedSource = translationPresence_ == TranslationPresence::Yes;
+    embeddedTranslation = translatedSource;
+  } else {
+    embeddedTranslation = translationdetect::htmlHasTranslatedBlock(parseSource, epub->getLanguage());
+    translatedSource = embeddedTranslation;
+    translationPresence_ = translatedSource ? TranslationPresence::Yes : TranslationPresence::No;
+  }
+  translatedSource_ = translatedSource;
+
+  // Per-chapter auto-fallback: a filtering layout on a chapter with no translated content would
+  // filter for translated words that do not exist and render a blank chapter. Lay this chapter out
+  // as Both so it still renders. This is a layout/cache-key decision only -- the persisted
+  // display-mode setting is untouched (per-chapter), and the reader (which owns the user-facing
+  // toast) has already decided whether to notify on entry. The downgrade goes through the SAME
+  // effectiveLayout() that loadSectionFile() keys on, off the same translatedSource observation that
+  // is stamped into the header, so build and lookup can never disagree.
+  const PtLayout effectivePtLayout = effectiveLayout(spec.ptLayout, translatedSource);
   if (effectivePtLayout != spec.ptLayout) {
     LOG_DBG("SCT", "No translation for spine %d; laying out with the Both layout", spineIndex);
   }
@@ -470,84 +696,14 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   effectiveSpec.translationFontId = keyedTranslationFontId(spec.translationFontId, effectivePtLayout);
   effectiveSpec.annotationFontId = keyedAnnotationFontId(spec.annotationFontId, effectivePtLayout);
 
-  // Reuse the previously unzipped HTML if we already have it. The unzipped HTML is keyed only on the
-  // book (it lives in the per-book cache dir), not on render settings, so it survives the invalidation
-  // that wipes the layout (.bin) caches when font/margin/orientation change -- rebuilds then skip zip
-  // inflation entirely. It's promoted by an atomic rename as soon as the inflate succeeds (below), so
-  // even a window-only giant spine -- whose .bin never finalizes -- still caches its HTML, letting a
-  // reopen skip the multi-second inflate. If htmlPath exists it is known-complete.
-  // reusedHtml also stays true for a translated source: it means "the parse source is a
-  // persistent file the build lifecycle must never promote or delete", which holds for both
-  // the cached unzipped HTML and the translator-owned .translated.html.
-  const bool reusedHtml = usingTranslatedSource || Storage.exists(htmlPath.c_str());
-  bool htmlCached = reusedHtml;
-  if (usingTranslatedSource) {
-    LOG_DBG("SCT", "Using translated HTML: %s", translatedPath.c_str());
-  } else if (reusedHtml) {
-    LOG_DBG("SCT", "Reusing cached HTML %s", htmlPath.c_str());
-  } else {
-    Storage.mkdir(htmlDir.c_str());
-
-    // Retry logic for SD card timing issues
-    bool streamed = false;
-    uint32_t fileSize = 0;
-    for (int attempt = 0; attempt < 3 && !streamed; attempt++) {
-      if (attempt > 0) {
-        LOG_DBG("SCT", "Retrying stream (attempt %d)...", attempt + 1);
-        delay(50);  // Brief delay before retry
-      }
-
-      // Remove any incomplete file from previous attempt before retrying
-      if (Storage.exists(tmpHtmlPath.c_str())) {
-        Storage.remove(tmpHtmlPath.c_str());
-      }
-
-      HalFile tmpHtml;
-      if (!Storage.openFileForWrite("SCT", tmpHtmlPath, tmpHtml)) {
-        continue;
-      }
-      // Larger chunks mean far fewer SD writes inflating the HTML; a 1KB chunk turned a 584KB
-      // single-spine novel into ~570 tiny writes (multi-second). 8KB keeps the transient buffers
-      // small while cutting the write count 8x.
-      streamed = epub->readItemContentsToStream(localPath, tmpHtml, 8192);
-      fileSize = tmpHtml.size();
-      // Explicitly close() file before calling Storage.remove()
-      tmpHtml.close();
-
-      // If streaming failed, remove the incomplete file immediately
-      if (!streamed && Storage.exists(tmpHtmlPath.c_str())) {
-        Storage.remove(tmpHtmlPath.c_str());
-        LOG_DBG("SCT", "Removed incomplete temp file after failed attempt");
-      }
-    }
-
-    if (!streamed) {
-      LOG_ERR("SCT", "Failed to stream item contents to temp file after retries");
-      return false;
-    }
-
-    LOG_DBG("SCT", "Streamed temp HTML to %s (%d bytes)", tmpHtmlPath.c_str(), fileSize);
-
-    // Promote to the persistent HTML cache immediately -- the inflate is complete and the bytes are
-    // valid regardless of whether the layout build finishes, so reopening (even a window-only spine
-    // that never finalizes its .bin) skips re-inflation. If the rename fails we just parse the temp.
-    if (Storage.rename(tmpHtmlPath.c_str(), htmlPath.c_str())) {
-      htmlCached = true;
-    } else {
-      LOG_DBG("SCT", "Failed to promote HTML cache; parsing from temp");
-    }
-  }
-  // Bind (no copy) to whichever source the parser will read.
-  const std::string& parseSource = usingTranslatedSource ? translatedPath : (htmlCached ? htmlPath : tmpHtmlPath);
-
   if (!Storage.openFileForWrite("SCT", binTmpPath(), file)) {
     if (!reusedHtml) Storage.remove(tmpHtmlPath.c_str());
     return false;
   }
   // Header is written with the incomplete-version sentinel; finalizeBuild() commits it. The
-  // effective (post-fallback) layout plus the source it was laid out from is what actually shaped
-  // these pages, and is what the next load keys on.
-  writeSectionFileHeader(effectiveSpec, usingTranslatedSource);
+  // effective (post-fallback) layout plus whether the source carried translations is what actually
+  // shaped these pages, and is what the next load keys on.
+  writeSectionFileHeader(effectiveSpec, translatedSource, embeddedTranslation);
 
   auto ctx = makeUniqueNoThrow<BuildContext>();
   if (!ctx) {
@@ -660,10 +816,7 @@ bool Section::buildSomeMore(const int maxPages) {
   }
 }
 
-bool Section::hasHtmlCache() const {
-  const std::string htmlPath = epub->getCachePath() + "/html/" + std::to_string(spineIndex) + ".html";
-  return Storage.exists(htmlPath.c_str());
-}
+bool Section::hasHtmlCache() const { return Storage.exists(getCachedHtmlPath().c_str()); }
 
 std::optional<uint16_t> Section::findAnchorDuringBuild(const std::string& anchor) const {
   if (!build_ || !build_->parser) return std::nullopt;

@@ -87,7 +87,16 @@ class PreTranslationSubmenuActivity final : public Activity {
   int selectedIndex = 0;
   ButtonNavigator buttonNavigator;
 
+  // A translation the READER produced for this chapter (`<spine>.translated.html` exists). Drives
+  // the "Translate" vs "Re-translate Chapter" label only: a plugin-translated book has no sidecar,
+  // and the reader can still translate it (into another language, or with its own engine).
   bool chapterIsTranslated = false;
+  // Whether this chapter has a translation a bilingual display mode could show, from EITHER source
+  // (sidecar, or embedded in the chapter's own XHTML). Gates the display-mode switch.
+  bool chapterHasTranslation = false;
+  // Any chapter of this book with a reader-produced sidecar. Drives the "Re-translate Book" label
+  // and the "Delete Translations" entry, both of which act on sidecars only -- deliberately NOT
+  // widened to embedded translations, which live in the book file and cannot be deleted.
   bool bookHasAnyTranslation = false;
 
   // Toast overlay (shown when user tries to switch display mode without translation).

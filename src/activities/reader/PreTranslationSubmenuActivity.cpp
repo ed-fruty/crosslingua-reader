@@ -1,6 +1,7 @@
 #include "PreTranslationSubmenuActivity.h"
 
 #include <Arduino.h>  // for millis()
+#include <Epub/TranslationDetection.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
@@ -52,10 +53,24 @@ void PreTranslationSubmenuActivity::rebuildAfterReturn() {
   // which would require the parser deps and an extra HalFile handle. Match
   // Section::getTranslatedHtmlPath()'s format exactly so probes stay in sync.
   chapterIsTranslated = false;
+  chapterHasTranslation = false;
   if (epub && currentSpineIndex >= 0) {
     const std::string path =
         epub->getCachePath() + "/sections/" + std::to_string(currentSpineIndex) + ".translated.html";
     chapterIsTranslated = Storage.exists(path.c_str());
+    // Whether a bilingual display mode has anything to show is a broader question than whether the
+    // READER produced the translation: a Calibre-plugin book embeds its translated paragraphs in the
+    // chapter's own XHTML. Probing only the sidecar is what refused the author every display mode on
+    // such a book. Same rule the layout engine renders by (translationdetect), so the mode this
+    // unlocks is a mode that will actually render something.
+    //
+    // The chapter HTML is unzipped by the build that is showing the page this menu was opened over,
+    // so the scan reads a local file and stops at the first translated block. One scan per menu
+    // (re)build, never per frame.
+    chapterHasTranslation =
+        chapterIsTranslated ||
+        translationdetect::htmlHasTranslatedBlock(
+            epub->getCachePath() + "/html/" + std::to_string(currentSpineIndex) + ".html", epub->getLanguage());
   }
 
   bookHasAnyTranslation = false;
@@ -213,10 +228,10 @@ void PreTranslationSubmenuActivity::onActionSelected(Action a) {
       // Cycle through PT_SELECTABLE_MODES, not the raw value range: values 1 and 2 are retired
       // holes and must stay unreachable.
       const uint8_t newMode = ptNextSelectableMode(SETTINGS.translationDisplayMode);
-      // Switching to any translation-display mode while no translated.html exists for
-      // the current chapter would render a blank page; reject the change with a
-      // toast and keep the mode at Normal.
-      if (newMode != CrossPointSettings::PT_NORMAL && !chapterIsTranslated) {
+      // Switching to any translation-display mode while the current chapter carries no translation
+      // at all -- neither a reader-produced sidecar nor one embedded in its own XHTML -- would
+      // render a blank page; reject the change with a toast and keep the mode at Normal.
+      if (newMode != CrossPointSettings::PT_NORMAL && !chapterHasTranslation) {
         showToast(tr(STR_NO_TRANSLATION_SWITCH_NORMAL), DEFAULT_TOAST_MS);
         return;
       }

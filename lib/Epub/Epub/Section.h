@@ -20,9 +20,14 @@ class Section {
   std::string filePath;
   HalFile file;
 
-  // `translatedSource` is hasTranslatedHtml() at build time; it is stamped into the header and is
-  // part of the cache key (see effectiveLayout).
-  void writeSectionFileHeader(const ReaderRenderSpec& spec, bool translatedSource);
+  // `translatedSource` is hasTranslation() at build time -- "the HTML these pages were laid out
+  // from contained translated content", from EITHER source (a reader-produced `.translated.html`
+  // sidecar or translations embedded in the chapter's own XHTML). It is stamped into the header and
+  // is part of the cache key (see effectiveLayout).
+  // `embeddedTranslation` is the second, IMMUTABLE half of that answer on its own ("the chapter's
+  // own XHTML embeds translations"), stamped purely so the next load can recombine it with one
+  // sidecar stat instead of re-scanning the chapter HTML. Not a cache key.
+  void writeSectionFileHeader(const ReaderRenderSpec& spec, bool translatedSource, bool embeddedTranslation);
   uint32_t onPageComplete(std::unique_ptr<Page> page);
 
   // Pre-Translation per-chapter fallback: a filtering/pairing layout on a chapter with no committed
@@ -36,10 +41,10 @@ class Section {
   // so re-entering a translated chapter restores the mode.
   //
   // The layout is only HALF the Pre-Translation cache key: Both is what an untranslated chapter and
-  // an inline-bilingual chapter both resolve to, so `translatedSource` (hasTranslatedHtml()) is
+  // a chapter merely requesting Normal both resolve to, so `translatedSource` (hasTranslation()) is
   // stamped into the header alongside it and compared on load. Taken as a parameter rather than
-  // read inside, so each caller stats the SD once and keys the layout and the source flag off the
-  // SAME observation.
+  // read inside, so each caller resolves the presence once and keys the layout and the source flag
+  // off the SAME observation.
   static PtLayout effectiveLayout(PtLayout requested, bool translatedSource);
 
   // Page-offset table entry, kept in RAM while an incremental build is running so
@@ -85,6 +90,24 @@ class Section {
   uint32_t partialTotalBytes_ = 0;
   // Source the available pages were laid out from; see builtFromTranslatedSource().
   bool translatedSource_ = false;
+  // Memoized answer to hasTranslation(). Resolving it can cost a SAX scan of the chapter HTML, and
+  // the reader asks several times per chapter load (fallback gate, cache key, reposition
+  // compatibility, build-popup hint), so it is computed at most once per Section -- i.e. at most
+  // once per chapter entry, never on a page-turn or redraw path. `Unknown` is the pre-scan state;
+  // see hasTranslation() for what it answers while unknown and why.
+  enum class TranslationPresence : uint8_t { Unknown, No, Yes };
+  mutable TranslationPresence translationPresence_ = TranslationPresence::Unknown;
+  // `<cache>/html/<spineIndex>.html` -- this spine's unzipped chapter HTML.
+  std::string getCachedHtmlPath() const;
+  // Inflate the chapter HTML into the per-book html cache if it isn't already there. On success
+  // `outParsePath` names the file to read and `outPromoted` says whether it is the persistent cache
+  // (true) or an un-promoted temp the caller must clean up (false, rename failed). Shared by
+  // startBuild() and resolveTranslationPresence() so the inflate happens exactly once.
+  bool ensureChapterHtml(std::string& outParsePath, bool& outPromoted);
+  // True only for a translation the READER produced: `<spine>.translated.html` exists. This is
+  // "which file does the build parse", NOT "does this chapter have a translation" -- see
+  // hasTranslation().
+  bool hasTranslatedSidecar() const;
   bool finalizeBuild();
   // Write the LUTs/anchor map (and, for a partial, the watermark trailer), patch the
   // header, stamp the version byte, and swap the tmp .bin over filePath.
@@ -114,7 +137,34 @@ class Section {
   // startBuild() prefers it over the unzipped chapter HTML when present, and it survives
   // layout-cache invalidation (font/size/mode changes only invalidate the `.bin`).
   std::string getTranslatedHtmlPath() const;
-  bool hasTranslatedHtml() const;
+
+  // Does this chapter have a translation to display? True for EITHER source:
+  //   • a reader-produced `.translated.html` sidecar, or
+  //   • translations embedded in the chapter's own XHTML (a Calibre-plugin book interleaves
+  //     `<p lang="uk">` after each `lang="en"` original; there is no sidecar and no marker
+  //     attribute -- the language tag is the whole signal).
+  // Answering only the first question is what locked plugin-translated books out of every
+  // bilingual display mode: the reader's per-chapter fallback fired on every chapter and persisted
+  // the mode back to Normal. See TranslationDetection.h for the shared rule.
+  //
+  // Memoized (translationPresence_): the first call may SAX-scan the chapter HTML, later calls are
+  // free. Callers may treat this as a per-chapter-load cost.
+  //
+  // While the answer is not yet knowable for free -- no sidecar and no unzipped chapter HTML, i.e.
+  // a chapter never opened on this device -- it returns TRUE, and the presence stays Unknown so a
+  // later call re-resolves. True is the safe direction at every call site: it declines to downgrade
+  // the display mode (a wrong `false` there is sticky -- it PERSISTS Normal, the reported bug),
+  // makes the cache key conservative (a wrong `true` only forces a rebuild), and only drops a
+  // reposition anchor. The reader closes the gap by calling resolveTranslationPresence() inside the
+  // build's popup/framebuffer-loan window before it reads the answer for real.
+  bool hasTranslation() const;
+  // True once hasTranslation() is answering from an observation rather than the safe default.
+  bool isTranslationPresenceKnown() const { return translationPresence_ != TranslationPresence::Unknown; }
+  // Force hasTranslation() to a definitive answer, inflating this spine's chapter HTML if that is
+  // what it takes. Costs at most the zip inflate a build of this chapter would pay moments later --
+  // and never pays it twice, because the inflate is promoted to the html cache startBuild() reuses.
+  // Call it from a context that can afford (and indicate) that inflate; see EpubReaderActivity.
+  void resolveTranslationPresence();
 
   // Incremental build: lay out the section a few pages at a time so a large chapter
   // can show its first page immediately and keep the UI responsive while the rest
@@ -140,10 +190,10 @@ class Section {
   void suspendBuild();
   // True when a partial file was loaded: pageCount is a watermark, not the chapter total.
   bool isPartial() const { return partial_; }
-  // Which source HTML the pages currently available were laid out from: the bilingual
-  // `.translated.html` sidecar, or the original chapter HTML. Set by both entry points
-  // (loadSectionFile's cache-key check and startBuild), so a caller can record the source a
-  // position was measured against without re-stat'ing the SD card on every page turn.
+  // Whether the HTML the pages currently available were laid out from CONTAINED TRANSLATIONS --
+  // the bilingual `.translated.html` sidecar, or a chapter whose own XHTML embeds them. Set by both
+  // entry points (loadSectionFile's cache-key check and startBuild), so a caller can record the
+  // source a position was measured against without re-resolving it on every page turn.
   bool builtFromTranslatedSource() const { return translatedSource_; }
 
   // Unified page read: from the active build if it has reached the page, otherwise from
