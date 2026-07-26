@@ -137,12 +137,14 @@ enum class BootResume : uint8_t {
 // startDeepSleep() does not return, so a set latch only ends at the wakeup reset.
 static bool deepSleepInProgress = false;
 
-// Pre-Translation: map the 8-mode display setting to the renderer's 3-level
-// gray value (PT_DARK->1, PT_LIGHT->2, everything else->0, incl. PT_TOOLTIP
-// which renders original-only in normal black). constexpr keeps this as a
-// compile-time lookup with zero runtime/flash overhead.
-static constexpr uint8_t modeToGray(uint8_t mode) {
-  return (mode == CrossPointSettings::PT_DARK) ? 1 : (mode == CrossPointSettings::PT_LIGHT) ? 2 : 0;
+// Pre-Translation: map the display mode + shade sub-setting to the renderer's 3-level gray value.
+// Only Interleaved mode dims translated text, and the shade picks how far (SHADE_DIMMED->1,
+// SHADE_DIMMED_LIGHT->2); every other mode draws in normal black (0), including the overlay modes
+// which render original-only in the main flow. The shade is DRAWING-only, which is why it is read
+// here (every tick) and not in the section cache key. constexpr keeps this a compile-time lookup
+// with zero runtime/flash overhead.
+static constexpr uint8_t modeToGray(uint8_t mode, uint8_t shade) {
+  return (mode != CrossPointSettings::PT_INTERLEAVED) ? 0 : (shade == CrossPointSettings::SHADE_DIMMED_LIGHT) ? 2 : 1;
 }
 
 void silentRestart() {
@@ -479,7 +481,7 @@ void loop() {
   halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.orientation, activityManager.isReaderActivity());
 
   renderer.setFadingFix(SETTINGS.fadingFix);
-  renderer.setTranslationGrayLevel(modeToGray(SETTINGS.translationDisplayMode));
+  renderer.setTranslationGrayLevel(modeToGray(SETTINGS.translationDisplayMode, SETTINGS.translationShade));
 
   if (Serial && millis() - lastMemPrint >= 10000) {
     LOG_INF("MEM", "Free: %d bytes, Total: %d bytes, Min Free: %d bytes, MaxAlloc: %d bytes", ESP.getFreeHeap(),

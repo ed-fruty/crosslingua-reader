@@ -76,7 +76,7 @@ class FontDecompressor {
   // ── Bounded group cache (non-prewarmed fallback path) ─────────────────────────────────────────
   //
   // getBitmap()'s fast path is the page buffer above (prewarmed, O(log n) binary-search hit). Any
-  // glyph NOT prewarmed falls back here: overlay/tooltip/modal translated text (drawn in a
+  // glyph NOT prewarmed falls back here: overlay/tooltip/page-translation translated text (drawn in a
   // reader-derived font one size smaller than the body, which the held page-prewarm never covers),
   // status-bar codepoints, and first-time glyphs.
   //
@@ -88,7 +88,7 @@ class FontDecompressor {
   //
   // The prior code kept exactly ONE inflated group, so every transition re-inflated: each space
   // (group 0) between two Cyrillic words (group 5) evicted the Cyrillic group and the next letter
-  // re-inflated it -- ~2 full inflates PER WORD. A long tooltip sentence or a full modal page did
+  // re-inflated it -- ~2 full inflates PER WORD. A long tooltip sentence or a full overlay page did
   // hundreds of ~30 KB inflates PER FRAME, redrawn on every step/scroll -- the reported
   // seconds-per-frame lag, correlating exactly with translated-text length. On top of that,
   // getAlignedOffset() re-scanned O(glyphIndex) glyphs on EVERY glyph (even hot-group hits).

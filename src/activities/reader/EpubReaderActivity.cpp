@@ -356,7 +356,7 @@ void EpubReaderActivity::loop() {
           if (auto* fcm = renderer.getFontCacheManager()) {
             const auto t0 = millis();
             auto scope = fcm->createPrewarmScope();
-            p->render(renderer, SETTINGS.getReaderFontId(), 0, 0);  // scan only, no pixels
+            p->render(renderer, SETTINGS.readerPageFontSet(), 0, 0);  // scan only, no pixels
             scope.endScanAndPrewarm();
             LOG_DBG("ERS", "Idle prewarm: page %d in %lums", nextPage, millis() - t0);
           }
@@ -440,7 +440,7 @@ void EpubReaderActivity::loop() {
   }
 
   // Pre-Translation Tooltip (PT_TOOLTIP): the overlay owns its configured nav buttons for
-  // per-sentence stepping. Placed EARLY (before detectPageTurn and the modal overlay, mirroring
+  // per-sentence stepping. Placed EARLY (before detectPageTurn and the Page Translation overlay, mirroring
   // the fork) so a nav press can't be preempted by a normal page turn and a Back release dismisses
   // the tooltip before it would reach the go-home handler. Gated on a live section so it is inert
   // on the end-of-book screen (where section is null and buttons go back to the last page).
@@ -473,10 +473,10 @@ void EpubReaderActivity::loop() {
     }
   }
 
-  // Pre-Translation Modal overlay: when active, the overlay consumes side-button
+  // Pre-Translation Page Translation overlay: when active, the overlay consumes side-button
   // releases for scroll/close and the Back release to dismiss. Inactive overlays
   // pass-through (return false) so normal reader input continues.
-  if (modalOverlay.handleInput(mappedInput)) {
+  if (pageTranslationOverlay.handleInput(mappedInput)) {
     requestUpdate();
     return;
   }
@@ -548,9 +548,9 @@ void EpubReaderActivity::loop() {
     requestUpdate();
   }
 
-  if (showModalNoTranslationToast &&
-      (millis() - modalNoTranslationToastTime) >= ReaderUtils::BOOKMARK_MESSAGE_DURATION_MS) {
-    showModalNoTranslationToast = false;
+  if (showNoTranslationsForPageToast &&
+      (millis() - noTranslationsForPageToastTime) >= ReaderUtils::BOOKMARK_MESSAGE_DURATION_MS) {
+    showNoTranslationsForPageToast = false;
     requestUpdate();
   }
 
@@ -669,23 +669,24 @@ void EpubReaderActivity::loop() {
     return;
   }
 
-  // Pre-Translation Modal (PT_MODAL only): the side buttons are the overlay's control surface, so
+  // Page Translation (PT_PAGE_TRANSLATION only): the side buttons are the overlay's control surface, so
   // they must be RELEASE-based regardless of longPressButtonBehavior. The default (OFF) turns pages
   // on PRESS, which would flip the page on the initial press and never let a long-press register --
   // so the overlay could never open. Handle the side buttons here, before detectPageTurn, and
   // swallow the press/hold so the normal page-turn / chapter-skip / orientation paths below never
   // act on them. Deciding OPEN on the RELEASE (not mid-hold, as the previous code did) is also what
-  // makes it reliable: modalOverlay.handleInput() above declines side releases while inactive, so
+  // makes it reliable: pageTranslationOverlay.handleInput() above declines side releases while inactive, so
   // the same release cannot be double-consumed as a scroll. Front buttons still flow through
-  // detectPageTurn unchanged, so PT_MODAL only repurposes the side buttons -- mirroring develop,
+  // detectPageTurn unchanged, so PT_PAGE_TRANSLATION only repurposes the side buttons -- mirroring develop,
   // which drives chapter-skip / orientation off the side long-press. Gated on a live section so the
   // end-of-book screen (section == nullptr) keeps its normal "any button -> last page" behavior.
-  if (section && SETTINGS.translationDisplayMode == CrossPointSettings::PT_MODAL && !modalOverlay.isActive()) {
+  if (section && SETTINGS.translationDisplayMode == CrossPointSettings::PT_PAGE_TRANSLATION &&
+      !pageTranslationOverlay.isActive()) {
     const bool fwdReleased = mappedInput.wasReleased(MappedInputManager::Button::PageForward);
     const bool backReleased = mappedInput.wasReleased(MappedInputManager::Button::PageBack);
     if (fwdReleased || backReleased) {
       if (mappedInput.getHeldTime() >= ReaderUtils::SKIP_HOLD_MS) {
-        modalOverlay.open();  // long press opens the overlay
+        pageTranslationOverlay.open();  // long press opens the overlay
         requestUpdate();
       } else {
         pageTurn(fwdReleased);  // short press is a normal page turn
@@ -699,14 +700,14 @@ void EpubReaderActivity::loop() {
   }
 
   auto [prevTriggered, nextTriggered, fromTilt] = ReaderUtils::detectPageTurn(mappedInput);
-  // While the Pre-Translation modal overlay is displayed it COVERS the page, so nothing underneath
-  // may turn the page: not a touch, not a tilt, and not a physical side-button press. The modal's
-  // own scroll/close runs from modalOverlay.handleInput() above on the button RELEASE -- but in
+  // While the Page Translation overlay is displayed it COVERS the page, so nothing underneath
+  // may turn the page: not a touch, not a tilt, and not a physical side-button press. The overlay's
+  // own scroll/close runs from pageTranslationOverlay.handleInput() above on the button RELEASE -- but in
   // press-to-turn mode (longPressButtonBehavior == OFF) detectPageTurn fires on the PRESS, which
   // handleInput (release-based) never sees, so without this guard the very first scroll press would
   // page the hidden reader and (via pageTurn -> onPageChanged) snap the overlay shut. Suppress every
   // page-turn trigger while the overlay is active; fold in touch turns only when it is not.
-  if (modalOverlay.isActive()) {
+  if (pageTranslationOverlay.isActive()) {
     prevTriggered = false;
     nextTriggered = false;
   } else {
@@ -748,10 +749,10 @@ void EpubReaderActivity::loop() {
     if (!nextTriggered && section && section->currentPage > 0) {
       section->currentPage = 0;
       // Same-section jump to page 0 is still a page change: reset the overlays' cached page state
-      // so a lingering modal/tooltip (e.g. opened via one button pair while chapter-skip is on the
+      // so a lingering page-translation/tooltip overlay (e.g. opened via one button pair while chapter-skip is on the
       // other) doesn't draw the previous page's data. The cross-chapter branch below resets via
       // render()'s section-load path (section.reset()), so it needs no explicit reset here.
-      modalOverlay.onPageChanged();
+      pageTranslationOverlay.onPageChanged();
       tooltipOverlay.onPageChanged();
       requestUpdate();
       return;
@@ -1005,14 +1006,25 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       break;
     }
     case EpubReaderMenuActivity::MenuAction::PRE_TRANSLATION: {
-      // Remember the layout-affecting display mode as it was before opening the submenu.
-      // The submenu can change SETTINGS.translationDisplayMode live (cycle mode / delete
-      // translations), and translationMode is part of the ReaderRenderSpec cache key, so a
-      // change means the in-RAM Section now holds a stale layout that must be rebuilt.
+      // Remember the two Lingua settings that are part of the ReaderRenderSpec cache key, as they
+      // were before opening the submenu. The submenu can change either live — the display mode
+      // (cycle mode / delete translations), whose PtLayout is keyed, and the INTERLEAVED translation
+      // size, whose resolved font id is keyed — so a change means the in-RAM Section may hold a stale
+      // layout and must be re-resolved (a cache HIT when the new mode shares the old mode's layout).
+      // The Tooltip and Page Translation sizes are absent here BY DESIGN: they only affect text the
+      // overlays composite at view time, so they invalidate nothing and need no re-layout.
       const uint8_t modeBeforeSubmenu = SETTINGS.translationDisplayMode;
+      const int translationFontIdBeforeSubmenu = SETTINGS.getInterleavedTranslationFontId();
+      // The Interlinear annotation font is the second keyed size. It is mode-derived, so a mode change
+      // already covers it — but it ALSO depends on the target language, which the submenu can change
+      // without changing the mode (picking a target whose script the small face cannot cover falls the
+      // rows back to the body font). Without this the in-RAM Section would keep serving pages measured
+      // at the old size until the next section load invalidated them.
+      const int annotationFontIdBeforeSubmenu = SETTINGS.getInterlinearAnnotationFontId();
       startActivityForResult(
           std::make_unique<PreTranslationSubmenuActivity>(renderer, mappedInput, epub, currentSpineIndex),
-          [this, modeBeforeSubmenu](const ActivityResult& result) {
+          [this, modeBeforeSubmenu, translationFontIdBeforeSubmenu,
+           annotationFontIdBeforeSubmenu](const ActivityResult& result) {
             // The submenu hands back a typed request (encoded in MenuResult::action).
             // TRANSLATE_* means "tear down the reader and run the translator"; anything
             // else (a plain Back, or an in-submenu setting change) is just a re-render:
@@ -1027,15 +1039,19 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
             if (kind != PreTranslationResult::NONE) {
               launchTranslation(kind);
             } else {
-              // Display mode changed inside the submenu: force a section re-layout the same
-              // way applyOrientation() does after an orientation change. Preserve the reading
+              // A keyed Lingua setting changed inside the submenu: force a section re-layout the
+              // same way applyOrientation() does after an orientation change. Preserve the reading
               // position, drop the Section, and let render() rebuild against the new spec --
-              // the translationMode cache key makes the rebuild reuse the right cached layout
-              // (or build it), and applyDeferredReposition() remaps the page once the new page
-              // count is known. The renderer's translation gray level tracks
-              // SETTINGS.translationDisplayMode in main.cpp's loop() every tick, so it stays
-              // consistent without extra wiring here.
-              if (SETTINGS.translationDisplayMode != modeBeforeSubmenu) {
+              // the PtLayout / translationFontId cache key makes the rebuild reuse the right cached
+              // layout (or build it), and applyDeferredReposition() remaps the page once the new page
+              // count is known. Translation Colour is deliberately NOT in this gate: it only moves
+              // the renderer's translation gray level, which main.cpp's loop() re-reads from
+              // SETTINGS every tick, so it needs no re-layout and no extra wiring here. The two
+              // overlay sizes are out for the same reason: renderOverlayFrame() re-reads them per
+              // frame, and no cached page was measured with either.
+              if (SETTINGS.translationDisplayMode != modeBeforeSubmenu ||
+                  SETTINGS.getInterleavedTranslationFontId() != translationFontIdBeforeSubmenu ||
+                  SETTINGS.getInterlinearAnnotationFontId() != annotationFontIdBeforeSubmenu) {
                 RenderLock lock(*this);
                 if (section) {
                   cachedSpineIndex = currentSpineIndex;
@@ -1054,6 +1070,13 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
           });
       break;
     }
+    case EpubReaderMenuActivity::MenuAction::AUTO_PAGE_TURN:
+    case EpubReaderMenuActivity::MenuAction::ROTATE_SCREEN:
+      // Adjusted in place inside the menu (an option popup writes MenuResult::orientation /
+      // pageTurnOption and the menu returns early without setting the action), so these never
+      // arrive here as an action. Listed so the switch stays exhaustive (-Werror=switch): a future
+      // menu action added without a handler is then a compile error, not a silent no-op.
+      break;
   }
 }
 
@@ -1212,7 +1235,7 @@ void EpubReaderActivity::pageTurn(bool isForwardTurn) {
     // the live pageCount alone would mistake the build watermark for the end of a giant spine.
     if (section->currentPage < section->pageCount - 1 || section->isBuilding()) {
       section->currentPage++;
-      modalOverlay.onPageChanged();
+      pageTranslationOverlay.onPageChanged();
       tooltipOverlay.onPageChanged();
     } else {
       // We don't want to delete the section mid-render, so grab the semaphore
@@ -1226,7 +1249,7 @@ void EpubReaderActivity::pageTurn(bool isForwardTurn) {
   } else {
     if (section->currentPage > 0) {
       section->currentPage--;
-      modalOverlay.onPageChanged();
+      pageTranslationOverlay.onPageChanged();
       tooltipOverlay.onPageChanged();
     } else if (currentSpineIndex > 0) {
       // We don't want to delete the section mid-render, so grab the semaphore
@@ -1316,7 +1339,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   buildViewportWidth = viewportWidth;
   buildViewportHeight = viewportHeight;
 
-  const ReaderRenderSpec renderSpec = SETTINGS.readerRenderSpec(viewportWidth, viewportHeight);
+  ReaderRenderSpec renderSpec = SETTINGS.readerRenderSpec(viewportWidth, viewportHeight);
 
   if (!section) {
     const auto filepath = epub->getSpineItem(currentSpineIndex).href;
@@ -1327,9 +1350,10 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     partialRebuildStartFailed = false;
 
     // Pre-Translation auto-fallback. A non-Normal display mode is active but THIS chapter has no
-    // committed translation, so Section lays it out in Normal (see Section::effectiveTranslationMode).
+    // committed translation, so Section lays it out under the Both layout -- which on a chapter with
+    // no translated words is just the plain original (see Section::effectiveLayout).
     // Rather than silently downgrading just this one chapter, we PERSIST the switch: set the display
-    // mode to Normal and save it. The user's mental model then matches reality -- the Bilingua menu
+    // mode to Normal and save it. The user's mental model then matches reality -- the Lingua menu
     // shows Normal, every chapter renders the same way, and to get bilingual output again the user
     // downloads a translation and re-enables the mode they want.
     //
@@ -1340,13 +1364,19 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     // after it, the setting IS Normal, so the gate below (renderSpec/SETTINGS both Normal) is never
     // true again until the user deliberately re-enables a bilingual mode.
     //
-    // Same-pass safety: renderSpec was computed above (readerRenderSpec) from the OLD mode and every
-    // build in this `if (!section)` block uses that captured spec; Section::effectiveTranslationMode
-    // has already mapped this untranslated chapter to the Normal layout and Normal cache key, so the
-    // setting write here changes NO build input for this pass and forces no second rebuild. It also
-    // does not touch pendingModeReposition (that is only for the submenu-return relayout), so no
-    // reposition machinery fires. Subsequent chapter loads recompute renderSpec from SETTINGS and
-    // see PT_NORMAL, gating out further toasts.
+    // Same-pass safety: the write DOES change a build input. renderSpec.translationFontId is
+    // mode-derived (CrossPointSettings::getInterleavedTranslationFontId() returns non-zero only while
+    // PT_INTERLEAVED is active) and readerPageFontSet() -- read fresh at draw time in
+    // renderContents() -- resolves through the same accessor. renderSpec was computed above from the
+    // OLD mode, so if it were left as-is, any line the parser tags Translation (a lang-mismatched
+    // block in the chapter's own original HTML; Section::effectiveLayout forces the Both layout here,
+    // which is the one layout that tags such lines) would be BUILT/measured under the old mode's
+    // translation font while every draw resolves the same line back to the (now Normal) body font --
+    // wrong word x-positions, line height and page breaks. So renderSpec is re-resolved immediately
+    // below, before section->loadSectionFile() and every build call in this `if (!section)` block, to
+    // match what draw time will use. It does not touch pendingModeReposition (that is only for the
+    // submenu-return relayout), so no reposition machinery fires. Subsequent chapter loads recompute
+    // renderSpec from SETTINGS and see PT_NORMAL, gating out further toasts.
     //
     // This is the single, cache-state-independent trigger for every user-facing entry into a chapter:
     // the enclosing `if (!section)` block runs exactly once per section (re)creation, i.e. once per
@@ -1354,19 +1384,31 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     // relaunch, mode-change reposition), and never on background/partial extension builds (those reuse
     // the existing section). Gated so there is no toast when the mode is already Normal and none for
     // chapters that do have a translation.
-    if (renderSpec.translationMode != CrossPointSettings::PT_NORMAL) {
+    //
+    // Gated on the DISPLAY MODE, not renderSpec.ptLayout: a mode that shares the Normal layout
+    // (Interleaved) still promises the user bilingual output, and a mode with its own layout
+    // (Interlinear, Side by Side) is degraded to Both by Section::effectiveLayout on an untranslated
+    // chapter, so the layout byte alone cannot tell "the user asked for bilingual" from "the user asked
+    // for plain". Read here rather than captured because the enclosing block runs once and the only
+    // writer is the branch below it.
+    const uint8_t requestedDisplayMode = SETTINGS.translationDisplayMode;
+    if (requestedDisplayMode != CrossPointSettings::PT_NORMAL) {
       const bool chapterHasTranslation = section->hasTranslatedHtml();
       if (!chapterHasTranslation) {
         // Permanent on-device evidence for the auto-fallback. Fires at most once per downgrade (after
         // it the setting is PT_NORMAL and this gate never re-triggers until the user re-enables a
         // bilingual mode), so there is no log-flood risk.
         LOG_INF("ERS", "Pre-Translation auto-fallback: spine=%d oldMode=%d hasTranslatedHtml=%d -> PT_NORMAL",
-                currentSpineIndex, static_cast<int>(renderSpec.translationMode),
-                static_cast<int>(chapterHasTranslation));
+                currentSpineIndex, static_cast<int>(requestedDisplayMode), static_cast<int>(chapterHasTranslation));
         // Persist the downgrade. Value-change-guarded implicitly: the gate above guarantees the current
         // mode is non-Normal, so this assignment always changes the value before we write to SPIFFS.
         SETTINGS.translationDisplayMode = CrossPointSettings::PT_NORMAL;
         SETTINGS.saveToFile();
+        // Re-resolve renderSpec against the just-persisted mode BEFORE any build call below reads it
+        // (loadSectionFile / createSectionFile / startBuild): ptLayout and both keyed font ids
+        // (translationFontId, annotationFontId) are mode-derived, so the spec captured under the old
+        // mode is now stale. See the "Same-pass safety" note above.
+        renderSpec = SETTINGS.readerRenderSpec(viewportWidth, viewportHeight);
         armFallbackDialog();
       }
     }
@@ -1382,10 +1424,12 @@ void EpubReaderActivity::render(RenderLock&& lock) {
       // saved while the section was still building (i.e. a watermark, not the real count)
       // would remap the resume page against the finalized count and teleport the reader.
       //
-      // A mode change is the exception: the new translationMode is a different section.bin cache
-      // key, so a cache HIT here loads a DIFFERENTLY paginated layout. Keeping the pre-switch page
-      // count alive lets applyDeferredReposition() remap the old page number onto the new count --
-      // without this guard a cache-complete re-switch lands on the old raw page under new pagination.
+      // A mode change is the exception: the new mode's PtLayout may be a different section.bin
+      // cache key, so a cache HIT here can load a DIFFERENTLY paginated layout. Keeping the
+      // pre-switch page count alive lets applyDeferredReposition() remap the old page number onto
+      // the new count -- without this guard a cache-complete re-switch lands on the old raw page
+      // under new pagination. When the two modes share a layout the counts match and the remap is
+      // a no-op, so the guard costs nothing.
       cachedChapterTotalPageCount = 0;
     }
     const bool cacheComplete = cacheLoaded && !section->isPartial();
@@ -1562,10 +1606,10 @@ void EpubReaderActivity::render(RenderLock&& lock) {
       pendingPercentJump = false;
     }
 
-    // Pre-Translation Modal: refresh the overlay's chapter binding now that a new
+    // Page Translation: refresh the overlay's chapter binding now that a new
     // section is loaded. onSectionChanged() clears any prior cached page parse.
-    modalOverlay.setTranslatedHtmlPath(section->getTranslatedHtmlPath());
-    modalOverlay.onSectionChanged();
+    pageTranslationOverlay.setTranslatedHtmlPath(section->getTranslatedHtmlPath());
+    pageTranslationOverlay.onSectionChanged();
 
     // Pre-Translation Tooltip: same chapter binding, from the same translated-HTML sidecar (no
     // separate .tooltip.html fallback). The tooltip has no onSectionChanged(); onPageChanged()
@@ -1708,7 +1752,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     currentPageFootnotes = std::move(p->footnotes);
 
     const auto start = millis();
-    // The active translation overlay (PT_TOOLTIP / PT_MODAL) is composited INTO the page's single
+    // The active translation overlay (PT_TOOLTIP / PT_PAGE_TRANSLATION) is composited INTO the page's single
     // refresh inside renderContents(), matching the upstream fork. It is deliberately NOT drawn +
     // flushed separately here: the old code re-refreshed the whole screen a second time (a slow
     // HALF_REFRESH) after every sentence step / scroll, which is what made the tooltip blink and
@@ -1742,7 +1786,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   // is still mid-async-refresh can wedge the controller's BUSY line (the freeze this change fixes for
   // the fallback notice; the same drawPopup choreography is shared here). waitRefreshComplete() is a
   // no-op when nothing is pending, so it costs nothing on the common path.
-  if (showBookmarkMessage || showDictionaryMessage || showModalNoTranslationToast) {
+  if (showBookmarkMessage || showDictionaryMessage || showNoTranslationsForPageToast) {
     renderer.waitRefreshComplete();
   }
 
@@ -1754,8 +1798,8 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     GUI.drawPopup(renderer, tr(STR_DICT_NO_DICT_SET));
   }
 
-  if (showModalNoTranslationToast) {
-    // The PT_MODAL overlay refused to open on a page with no translated paragraphs; tell the user
+  if (showNoTranslationsForPageToast) {
+    // The PT_PAGE_TRANSLATION overlay refused to open on a page with no translated paragraphs; tell the user
     // rather than doing nothing. Wrapped (fits every orientation) like the other translation toasts.
     GUI.drawWrappedPopup(renderer, tr(STR_NO_TRANSLATIONS_FOR_PAGE));
   }
@@ -1788,14 +1832,17 @@ bool EpubReaderActivity::applyDeferredReposition() {
 bool EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageCount) {
   return EpubReaderUtils::saveProgress(*epub, spineIndex, currentPage, pageCount);
 }
-void EpubReaderActivity::renderOverlayFrame(Page& page, const int fontId, const int orientedMarginTop,
+void EpubReaderActivity::renderOverlayFrame(Page& page, const PageFontSet& fonts, const int orientedMarginTop,
                                             const int orientedMarginRight, const int orientedMarginBottom,
                                             const int orientedMarginLeft) {
+  // The overlays measure and draw against the BODY font (they reparse the page's source text), so
+  // the prewarm bookkeeping and the overlay calls below still key on that single id.
+  const int fontId = fonts.body;
   const int viewportWidth = renderer.getScreenWidth() - orientedMarginLeft - orientedMarginRight;
   const int viewportHeight = renderer.getScreenHeight() - orientedMarginTop - orientedMarginBottom;
 
   // Held font-prewarm cache (regression fix for 348cfa90). While the user steps through sentences /
-  // scrolls the modal the page's text is STATIC — only the overlay's own small text changes — so the
+  // scrolls the Page Translation overlay the page's text is STATIC — only the overlay's own small text changes — so the
   // page's reader-font glyphs are wiped, scanned and prewarmed ONCE here (on overlay open or when the
   // page under it turns) and the scope is then HELD across steps: every step's page.render() below is
   // a warm binary-search hit. Without this the page rendered fully on demand each press — the
@@ -1809,29 +1856,37 @@ void EpubReaderActivity::renderOverlayFrame(Page& page, const int fontId, const 
 
   auto* fcm = renderer.getFontCacheManager();
   const int curPage = section ? section->currentPage : -1;
+  // Which overlay is up decides which font ITS text is drawn in, and the two modes carry independent
+  // sizes (tooltipTranslationSize / pageTranslationSize), so resolve that id BEFORE the staleness test
+  // instead of inside the rebuild: a prewarmed set is only valid for the overlay font it was warmed
+  // for. Keying the test on the body font alone considered a prewarm fresh after the overlay font
+  // changed under it — every overlay glyph then missed into the per-glyph slow path, the exact
+  // regression this cache exists to prevent. Both ids are tracked, because either moving invalidates
+  // the warm set. The two accessors are pure SETTINGS reads plus a walk of the point-size ladder (no
+  // allocation), and are already called once per frame further down.
+  const bool pageTranslationActive = pageTranslationOverlay.isActive();
+  const int overlayFontId = pageTranslationActive ? getPageTranslationFontId() : getTooltipFontId();
   const bool cacheStale = !overlayPrewarm_ || overlayPrewarmSpine_ != currentSpineIndex ||
                           overlayPrewarmPage_ != curPage || overlayPrewarmFontId_ != fontId ||
-                          overlayPrewarmGen_ != fcm->cacheGeneration();
+                          overlayPrewarmOverlayFontId_ != overlayFontId || overlayPrewarmGen_ != fcm->cacheGeneration();
   if (cacheStale) {
     // The overlay draws the page's TRANSLATION text, whose alphabet (e.g. Cyrillic) is disjoint from
     // the page's SOURCE text. For an SD-card font the reader body and the overlay resolve to the SAME
     // single loaded font instance (SdCardFontManager loads one point size; getReaderFontId() and
-    // getTooltipFontId()/getModalFontId() all map to it), so the page scan below warms only the source
+    // getTooltipFontId()/getPageTranslationFontId() all map to it), so the page scan below warms only the source
     // glyphs and every overlay glyph would miss into the per-glyph SD overflow path — hundreds of SD
     // reads per frame. Gather the page's FULL overlay text ONCE here (bounded to this page's sentences /
     // paragraphs) and prewarm it alongside the page so stepping/scrolling is zero-SD-I/O. Done only on
-    // rebuild (page turn / overlay open), never per step.
-    const bool modalActive = modalOverlay.isActive();
-    const int overlayFontId = modalActive ? getModalFontId() : getTooltipFontId();
+    // rebuild (page turn / overlay open / either font changing), never per step.
     std::string overlayText;
-    if (modalActive) {
-      modalOverlay.collectPageGlyphText(page, overlayText);
+    if (pageTranslationActive) {
+      pageTranslationOverlay.collectPageGlyphText(page, overlayText);
     } else if (tooltipOverlay.isActive()) {
       tooltipOverlay.collectPageGlyphText(page, overlayText);
     }
 
     overlayPrewarm_.emplace(*fcm);  // dtor of any prior scope + this ctor both clearCache(); scan ON
-    page.render(renderer, fontId, orientedMarginLeft, orientedMarginTop);  // scan pass: records text, draws nothing
+    page.render(renderer, fonts, orientedMarginLeft, orientedMarginTop);  // scan pass: records text, draws nothing
     // Same font instance as the reader body (SD-card fonts, and built-ins at the smallest size, where
     // getTooltipFontId() == getReaderFontId()): fold the overlay's glyphs into the single prewarm so
     // neither the page nor the overlay misses. recordText() appends to the in-progress scan; the font
@@ -1848,28 +1903,29 @@ void EpubReaderActivity::renderOverlayFrame(Page& page, const int fontId, const 
     overlayPrewarmSpine_ = currentSpineIndex;
     overlayPrewarmPage_ = curPage;
     overlayPrewarmFontId_ = fontId;
+    overlayPrewarmOverlayFontId_ = overlayFontId;
     overlayPrewarmGen_ = fcm->cacheGeneration();  // capture AFTER prewarm; any later clear bumps it
   }
 
   // BW frame: the page, the status bar, then the active overlay composited on top. The overlay's
   // fillRect/drawText land in the BW framebuffer, so they ride the SINGLE refresh below — no
-  // separate flush. (The modal's viewport ends above the status-bar margin, so it never covers it.)
-  page.render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+  // separate flush. (The overlay's viewport ends above the status-bar margin, so it never covers it.)
+  page.render(renderer, fonts, orientedMarginLeft, orientedMarginTop);
   renderStatusBar();
 
-  // Mutually exclusive modes, but drawn independently for clarity. The modal may deactivate itself
+  // Mutually exclusive modes, but drawn independently for clarity. The overlay may deactivate itself
   // in render() when the page has no translated paragraphs — surface the toast in that case.
-  bool modalDrew = false;
-  if (modalOverlay.isActive()) {
-    modalOverlay.render(renderer, page, fontId, getModalFontId(), orientedMarginLeft, orientedMarginTop, viewportWidth,
-                        viewportHeight);
-    if (modalOverlay.isActive()) {
-      modalDrew = true;
+  bool pageTranslationDrew = false;
+  if (pageTranslationOverlay.isActive()) {
+    pageTranslationOverlay.render(renderer, page, fontId, getPageTranslationFontId(), orientedMarginLeft,
+                                  orientedMarginTop, viewportWidth, viewportHeight);
+    if (pageTranslationOverlay.isActive()) {
+      pageTranslationDrew = true;
     } else {
-      // No translated paragraphs on this page: the modal refused to open. Tell the user (toast is
+      // No translated paragraphs on this page: the overlay refused to open. Tell the user (toast is
       // drawn by render() after renderContents returns) instead of a silent no-op long-press.
-      showModalNoTranslationToast = true;
-      modalNoTranslationToastTime = millis();
+      showNoTranslationsForPageToast = true;
+      noTranslationsForPageToastTime = millis();
     }
   }
   if (tooltipOverlay.isActive()) {
@@ -1882,19 +1938,22 @@ void EpubReaderActivity::renderOverlayFrame(Page& page, const int fontId, const 
   ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
 
   // Grayscale anti-aliasing pass (fork parity) only when the page is actually visible — i.e. NOT
-  // hidden under the full-screen modal. The overlay lives in the BW framebuffer, which
+  // hidden under the full-screen Page Translation overlay. The overlay lives in the BW framebuffer, which
   // renderAntiAliased store/restores, so a tooltip box survives the pass while the page text gains
-  // AA. Skipping it under the modal avoids re-rendering the hidden page into the gray planes (which
-  // would ghost through the modal) and is faster.
-  if (SETTINGS.textAntiAliasing && !modalDrew) {
+  // AA. Skipping it under the overlay avoids re-rendering the hidden page into the gray planes (which
+  // would ghost through the overlay) and is faster.
+  if (SETTINGS.textAntiAliasing && !pageTranslationDrew) {
     ReaderUtils::renderAntiAliased(renderer,
-                                   [&]() { page.render(renderer, fontId, orientedMarginLeft, orientedMarginTop); });
+                                   [&]() { page.render(renderer, fonts, orientedMarginLeft, orientedMarginTop); });
   }
 }
 
 void EpubReaderActivity::renderContents(Page& page, const int orientedMarginTop, const int orientedMarginRight,
                                         const int orientedMarginBottom, const int orientedMarginLeft) {
-  const int fontId = SETTINGS.getReaderFontId();
+  // THE per-render font set: the body font plus (later) a distinct translated-text font. Built
+  // from SETTINGS so the ids match the ones readerRenderSpec() keyed the section cache on.
+  const PageFontSet fonts = SETTINGS.readerPageFontSet();
+  const int fontId = fonts.body;
 
   // Manual (power-button) refresh latched by handleForcedRefresh() (upstream d7c98adc). Read and
   // CLEARED here, above the overlay early-return below, so one press is consumed by exactly one
@@ -1902,12 +1961,12 @@ void EpubReaderActivity::renderContents(Page& page, const int orientedMarginTop,
   // displayWithRefreshCycle (handleForcedRefresh also set pagesUntilFullRefresh = 1, so the frame
   // goes out HALF); only the image branch further down bypasses that cadence, so it needs the
   // captured bool to issue its own clean base pass. Clearing below the early-return would leave the
-  // flag latched for every press made while a Bilingua overlay is open, firing a spurious extra
+  // flag latched for every press made while a Lingua overlay is open, firing a spurious extra
   // full-screen HALF_REFRESH on the next image page rendered without an overlay.
   const bool manualRefreshPending = forcedRefreshPending;
   forcedRefreshPending = false;
 
-  // A translation overlay (PT_TOOLTIP / PT_MODAL) takes the upstream-fork choreography: the page,
+  // A translation overlay (PT_TOOLTIP / PT_PAGE_TRANSLATION) takes the upstream-fork choreography: the page,
   // status bar and overlay are composited into ONE BW frame and refreshed once (FAST, HALF only on
   // the periodic cadence), instead of the image / tiled-grayscale machinery below — a normal-reading
   // page-turn optimization whose second slow HALF_REFRESH used to make the tooltip blink and lag.
@@ -1918,8 +1977,8 @@ void EpubReaderActivity::renderContents(Page& page, const int orientedMarginTop,
   // re-wipes or re-decodes the page. Do NOT prewarm here for it — that would wipe the held cache on
   // every press (the 348cfa90 regression skipped prewarm entirely instead, which was WORSE: the page
   // then rendered fully on demand each press, ~10x slower).
-  if (tooltipOverlay.isActive() || modalOverlay.isActive()) {
-    renderOverlayFrame(page, fontId, orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
+  if (tooltipOverlay.isActive() || pageTranslationOverlay.isActive()) {
+    renderOverlayFrame(page, fonts, orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
     return;
   }
 
@@ -1927,7 +1986,7 @@ void EpubReaderActivity::renderContents(Page& page, const int orientedMarginTop,
   // held) so the per-frame scope below owns the glyph cache exactly as it did before any overlay
   // opened. Its dtor re-wipes anyway, but releasing here keeps ownership single and teardown eager.
   overlayPrewarm_.reset();
-  overlayPrewarmSpine_ = overlayPrewarmPage_ = overlayPrewarmFontId_ = -1;
+  overlayPrewarmSpine_ = overlayPrewarmPage_ = overlayPrewarmFontId_ = overlayPrewarmOverlayFontId_ = -1;
 
   // The image pixel-cache RAM slot lives for exactly one page render (it feeds
   // the BW double-refresh and every grayscale band pass); release it on every
@@ -1940,7 +1999,7 @@ void EpubReaderActivity::renderContents(Page& page, const int orientedMarginTop,
   // Font prewarm: scan pass accumulates text, then prewarm, then real render
   auto* fcm = renderer.getFontCacheManager();
   auto scope = fcm->createPrewarmScope();
-  page.render(renderer, fontId, orientedMarginLeft, orientedMarginTop);  // scan pass
+  page.render(renderer, fonts, orientedMarginLeft, orientedMarginTop);  // scan pass
   scope.endScanAndPrewarm();
   const auto tPrewarm = millis();
 
@@ -1957,20 +2016,20 @@ void EpubReaderActivity::renderContents(Page& page, const int orientedMarginTop,
   const bool overlapRefresh = tiledGrayscale && renderer.supportsAsyncRefresh() && !pageHasImages;
   auto renderGrayscalePass = [&]() {
     if (needsTextGrayscale) {
-      page.render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+      page.render(renderer, fonts, orientedMarginLeft, orientedMarginTop);
     } else {
-      page.renderImages(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+      page.renderImages(renderer, fonts, orientedMarginLeft, orientedMarginTop);
     }
   };
 
   if (pageHasImagesNeedingDecode) {
-    page.renderWithImagePlaceholders(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+    page.renderWithImagePlaceholders(renderer, fonts, orientedMarginLeft, orientedMarginTop);
     renderStatusBar();
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     renderer.clearScreen();
   }
 
-  page.render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+  page.render(renderer, fonts, orientedMarginLeft, orientedMarginTop);
   renderStatusBar();
   const auto tBwRender = millis();
 
@@ -1996,7 +2055,7 @@ void EpubReaderActivity::renderContents(Page& page, const int orientedMarginTop,
 
       // Re-render page content to restore images into the blanked area
       // Status bar is not re-rendered here to avoid reading stale dynamic values (e.g. battery %)
-      page.render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+      page.render(renderer, fonts, orientedMarginLeft, orientedMarginTop);
       renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     } else {
       renderer.displayBuffer(HalDisplay::HALF_REFRESH);
@@ -2393,7 +2452,7 @@ void EpubReaderActivity::armFallbackDialog() {
 }
 
 void EpubReaderActivity::drawFallbackDialog() const {
-  // Full-screen confirm/prompt-style modal (matches ClearCacheActivity and the Bilingua submenu):
+  // Full-screen confirm/prompt-style modal (matches ClearCacheActivity and the Lingua submenu):
   // header + centered wrapped message + a single OK/Back button hint. ONE clearScreen + ONE
   // displayBuffer, so it never composites a second refresh over a page refresh.
   const auto& metrics = UITheme::getInstance().getMetrics();

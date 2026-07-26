@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-class ModalOverlay {
+class PageTranslationOverlay {
  public:
   // Public because static XML callbacks in the .cpp need access.
   // Sparse: only paragraphs in the current page's [first..last] range get an entry, and each
@@ -27,37 +27,47 @@ class ModalOverlay {
 
   bool handleInput(MappedInputManager& input);
 
-  void render(GfxRenderer& renderer, const Page& page, int fontId, int modalFontId, int xOffset, int yOffset,
+  void render(GfxRenderer& renderer, const Page& page, int fontId, int pageTranslationFontId, int xOffset, int yOffset,
               int viewportWidth, int viewportHeight);
 
   void onPageChanged();
   void onSectionChanged();
 
   // Prepare this page's paragraph translations (idempotent with render()'s own preparePage) and append
-  // every string the modal will draw for this page — each visible paragraph's text plus the
+  // every string the overlay will draw for this page — each visible paragraph's text plus the
   // STR_NO_TRANSLATION marker when any paragraph is a source fallback — into `out`. Lets the caller
-  // prewarm the modal font's glyph cache ONCE per page (see EpubReaderActivity::renderOverlayFrame)
+  // prewarm the overlay font's glyph cache ONCE per page (see EpubReaderActivity::renderOverlayFrame)
   // instead of taking a per-glyph SD read while scrolling. Text only: no rendering, no SD I/O.
   void collectPageGlyphText(const Page& page, std::string& out);
 
   bool isActive() const { return active; }
 
  private:
-  // One paragraph to display in the modal, in reading order. `text` is either a
+  // One paragraph to display in the overlay, in reading order. `text` is either a
   // real translation or — when no translation exists for this paragraph — the
   // page's own SOURCE text (Option C fallback), in which case render() appends a
   // short dim STR_NO_TRANSLATION marker so the gap is visible but unobtrusive.
   struct DisplayPara {
     std::string text;
+    // First-line indent in PIXELS, read straight off the page layout: the x position the layout
+    // engine gave this paragraph's first line ON THIS PAGE (PageLine's TextBlock word 0). It is
+    // therefore 0 for a paragraph that began on an earlier page, and 0 whenever the layout applied
+    // no indent — nothing is recomputed or synthesized here. See preparePage().
+    int16_t indent = 0;
     bool translated = true;  // false => source fallback; render() adds the dim marker line
   };
 
   bool active = false;
+  // Always a LINE TOP in content coordinates (0, or a value published by render() below), so a
+  // drawn line can never straddle the top of the viewport.
   int16_t scrollOffset = 0;
-  int16_t totalContentHeight = 0;
+  // Scroll targets for the window currently on screen, published by render() from the real line
+  // positions; -1 = none (nothing more below / nothing above). Line-top aligned, which is what lets
+  // the draw pass demand a fully-visible line box without ever losing a line: a line that straddles
+  // the bottom edge is skipped now and becomes the FIRST line of the next window.
+  int16_t nextScrollOffset = -1;
+  int16_t prevScrollOffset = -1;
   bool pagePrepared = false;
-  int16_t cachedViewportHeight = 0;
-  int16_t cachedLineHeight = 0;
 
   std::string translatedHtmlPath;
 
@@ -71,4 +81,4 @@ class ModalOverlay {
   void preparePage(const Page& page);
 };
 
-int getModalFontId();
+int getPageTranslationFontId();

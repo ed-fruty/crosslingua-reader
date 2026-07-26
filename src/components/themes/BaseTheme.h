@@ -118,6 +118,14 @@ enum UIIcon {
   BookShelf
 };
 
+// How far drawList() shifts a row that its `rowIndented` predicate marks as a child (sub-setting of
+// the row above it). This is a DRAWING offset, not leading spaces in the title, because a title is
+// bidi-reordered before it is drawn: for an Arabic or Hebrew label drawText resolves an RTL paragraph
+// direction and moves the leading run to the visual RIGHT, so a textual indent lands on the wrong
+// side of the label (and, next to a right-aligned value column, reads as a random gap). Shared by
+// every theme so the indent step is one number, not three that drift.
+inline constexpr int kListChildIndent = 16;
+
 // Default theme implementation (Classic Theme)
 // Additional themes can inherit from this and override methods as needed
 
@@ -204,12 +212,16 @@ class BaseTheme {
   virtual void drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn) const;
   virtual int getListRowStep(bool hasSubtitle) const;
   virtual int getListPageItems(int contentHeight, bool hasSubtitle) const;
+  // rowIndented: rows it returns true for are drawn one kListChildIndent step in from the left, and
+  // lose that much title width. Use it for a sub-setting row that belongs to the row above it — never
+  // leading spaces in the title, which bidi moves to the wrong side for RTL labels.
   virtual void drawList(const GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex,
                         const std::function<std::string(int index)>& rowTitle,
                         const std::function<std::string(int index)>& rowSubtitle = nullptr,
                         const std::function<UIIcon(int index)>& rowIcon = nullptr,
                         const std::function<std::string(int index)>& rowValue = nullptr, bool highlightValue = false,
-                        const std::function<bool(int index)>& rowDimmed = nullptr) const;
+                        const std::function<bool(int index)>& rowDimmed = nullptr,
+                        const std::function<bool(int index)>& rowIndented = nullptr) const;
   virtual void drawHeader(const GfxRenderer& renderer, Rect rect, const char* title,
                           const char* subtitle = nullptr) const;
   virtual void drawSubHeader(const GfxRenderer& renderer, Rect rect, const char* label,

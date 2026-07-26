@@ -271,7 +271,7 @@ The Settings screen allows you to configure the device's behavior. There are a f
 - **Images**: Whether to display embedded images (JPG/PNG) found in EPUB files; options are "ON" (default) or "OFF".
 
 - **Focus Reading**: Bolds the first part of each word to create visual fixation points, similar to Bionic Reading. This can help improve reading speed and focus; options are "ON" or "OFF" (default).
-- **Pre-Translation**: Translate EPUBs on-device using Google, DeepL, OpenAI, DeepSeek, Gemini, or other engines. Pick a display mode (Normal, Dark, Light, Original Only, Translation Only, Side by Side, Modal). See [Pre-Translation](./docs/pre-translation.md).
+- **Pre-Translation**: Translate EPUBs on-device using Google, DeepL, OpenAI, DeepSeek, Gemini, or other engines. Pick a display mode (Normal, Interleaved, Original Only, Translation Only, Side by Side, Page Translation). See [Pre-Translation](./docs/pre-translation.md).
 
 #### 3.6.3 Controls
 
@@ -649,11 +649,11 @@ While reading, open the Reader Menu and select **Pre-Translation** to translate 
 Available display modes:
 
 - **Normal** — original and translation interleaved
-- **Dark / Light** — same as Normal but with translated paragraphs rendered in gray
+- **Interleaved** — same as Normal but with translated paragraphs rendered in gray (Dimmed or Dimmed Light shade)
 - **Original Only** — drops translated paragraphs
 - **Translation Only** — drops original paragraphs
 - **Side by Side** — paired layout with no spacing between original and its translation
-- **Modal** — shows only original text on page; long-press either side button to open a modal overlay with translations for paragraphs visible on the current page
+- **Page Translation** — shows only original text on page; long-press either side button to open an overlay with translations for paragraphs visible on the current page
 
 For full instructions including all display modes, engine setup, and storage location, see the standalone [Pre-Translation guide](./docs/pre-translation.md).
 

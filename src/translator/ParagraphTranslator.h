@@ -8,7 +8,7 @@ class TranslationHttpSession;  // network/HttpDownloader.h — reusable keep-ali
 
 /**
  * Translates text paragraphs using configurable translation engines.
- * Supports: Google Free, DeepL, DeepL Pro, OpenAI, DeepSeek, Gemini.
+ * Supports: Google Free, DeepL, DeepL Pro, OpenAI, DeepSeek, Gemini, Azure.
  */
 class ParagraphTranslator {
  public:
@@ -37,6 +37,10 @@ class ParagraphTranslator {
   //   - DeepL / DeepL Pro / OpenAI / DeepSeek send the user key as auth.
   //   - Gemini appends the user key to the request URL (no built-in key), so it
   //     needs one too.
+  //   - Azure targets Microsoft's Edge translator deployment, whose bearer token
+  //     comes from an anonymous public endpoint — keyless from the user's side,
+  //     so `false`. (The paid Azure Translator resource WOULD need a key plus a
+  //     region; that is a different endpoint and is not what this engine calls.)
   static constexpr bool engineNeedsApiKey(uint8_t engine) {
     switch (engine) {
       case CrossPointSettings::ENGINE_DEEPL:
@@ -48,10 +52,40 @@ class ParagraphTranslator {
       case CrossPointSettings::ENGINE_GOOGLE_FREE:
       case CrossPointSettings::ENGINE_GOOGLE_V2:
       case CrossPointSettings::ENGINE_GOOGLE_HTML:
+      case CrossPointSettings::ENGINE_AZURE:
       default:
         return false;
     }
   }
+
+  // Fetch (and cache) the anonymous Azure/Edge bearer token, discarding it.
+  // Call this BEFORE constructing the per-chapter TranslationHttpSession: the
+  // token host (edge.microsoft.com) differs from the translate host, so fetching
+  // it through the session would (a) force two extra handshakes as the kept-alive
+  // socket bounces between hosts, and (b) mark the session "everConnected", which
+  // would then gate the next — genuinely re-handshaking — request with the small
+  // reuse heap floor instead of the full TLS floor. Priming before the session
+  // exists also means the token handshake peaks alone rather than on top of a
+  // live TLS context. Returns false if the token could not be fetched; callers
+  // may ignore that (the first translate() simply retries the fetch).
+  static bool primeAzureToken();
+
+  // Renew the Azure/Edge bearer token EARLY, if it is close to expiry — call this only
+  // at a clean-heap moment (the rewriter's batch boundary), never mid-batch.
+  //
+  // The token lives ~10 minutes and translateAzure() would otherwise refresh it lazily,
+  // in the middle of a chapter, while the chapter's TranslationHttpSession socket and
+  // wolfSSL context are live. That refresh goes through the STATIC GET path (deliberately
+  // — see primeAzureToken above), which stands up its own SecureHttpClient behind
+  // insufficientHeapForTls(): 45 KB free plus a 20 KB contiguous block, a bar the heap
+  // usually cannot clear with a session already open. So the refresh is moved to the
+  // between-batch moment, where the batch's HTTP transients are freed and (for the
+  // activity callers) the framebuffer is still released.
+  //
+  // No-op — returns true — while the token has more than the refresh window left. On
+  // failure the existing token is kept, so a refused early refresh costs nothing and the
+  // lazy in-place refresh inside translateAzure() remains the last-resort fallback.
+  static bool refreshAzureTokenIfExpiring();
 
  private:
   static std::string urlEncode(const std::string& s);
@@ -73,6 +107,8 @@ class ParagraphTranslator {
                                 std::string& result, TranslationHttpSession* session);
   static bool translateGoogleHtml(const std::string& text, const char* sourceLang, const char* targetLang,
                                   std::string& result, TranslationHttpSession* session);
+  static bool translateAzure(const std::string& text, const char* sourceLang, const char* targetLang,
+                             std::string& result, TranslationHttpSession* session);
 
   // Response parsers
   static bool parseDeepLResponse(const std::string& json, std::string& result);
@@ -80,6 +116,14 @@ class ParagraphTranslator {
   static bool parseGeminiResponse(const std::string& json, std::string& result);
   static bool parseGoogleV2Response(const std::string& json, std::string& result);
   static bool parseGoogleHtmlResponse(const std::string& json, std::string& result);
+  // Azure returns one object per input item, in input order. `expectedCount` is the
+  // number of items we sent; the parser must yield exactly that many pieces (rejoined
+  // with "\n\n") or fail, because the rewriter's write-out loop is POSITIONAL and a
+  // miscounted reply would attach translations to the wrong paragraphs.
+  static bool parseAzureResponse(const std::string& json, size_t expectedCount, std::string& result);
+
+  // Map our stored BCP-47 code to the code Azure's language list uses.
+  static const char* azureLangCode(const char* code);
 
   // Build LLM translation prompt. When batch=true, adds instructions to preserve \n\n separators.
   static std::string buildLlmPrompt(const char* sourceLang, const char* targetLang, bool batch = false);

@@ -2,7 +2,7 @@
 
 Pre-Translation lets CrossPoint produce a bilingual copy of any EPUB on
 device, then read it in one of several display modes — original-only,
-translation-only, side-by-side, modal overlay, or with translated paragraphs
+translation-only, side-by-side, a page-translation overlay, or with translated paragraphs
 shaded gray.
 
 <img src="./images/pre-translation/overview.jpg" height="500" alt="Side-by-Side mode showing English original above each Russian translation" />
@@ -18,8 +18,8 @@ shaded gray.
 
 ## What it doesn't do
 
-- It is **not** an on-the-fly translator for the page you're looking at —
-  that's the upcoming **Page Translation** feature (separate PR).
+- It is **not** an on-the-fly translator that renders the page you are looking
+  at through a live translation engine (separate PR).
 - It does not modify your EPUB files.
 
 ## Setup
@@ -38,9 +38,10 @@ translations in.
 
 ### 2. Pick your engine (optional)
 
-Default is Google V2 (Free) which needs no API key. For DeepL, OpenAI,
-DeepSeek, Gemini, or other engines requiring authentication, enter your
-API key under **API Key**.
+Default is Google V2 (Free) which needs no API key. Azure is also keyless.
+For DeepL, OpenAI, DeepSeek, Gemini, or other engines requiring
+authentication, enter your API key under **API Key** (the row only appears
+for engines that need one).
 
 <img src="./images/pre-translation/engine.jpg" height="500" alt="Engine picker" />
 
@@ -72,14 +73,28 @@ EPUBs prepared elsewhere (e.g. Calibre's Polyglot output).
 
 <img src="./images/pre-translation/mode-normal.jpg" height="500" alt="Normal mode" />
 
-### Dark / Light
+### Interleaved
 
-Like Normal, but translated paragraphs are rendered in dark gray (Dark) or
-light gray (Light) to visually distinguish them from the original.
+Like Normal — original and translation alternate paragraph by paragraph —
+but translated paragraphs are drawn in gray so you can tell them apart at a
+glance.
 
-<img src="./images/pre-translation/mode-dark.jpg" height="500" alt="Dark mode" />
+The gray level is a separate stored setting (**Dimmed** or **Dimmed
+Light**), not a mode of its own. It affects drawing only: switching shade
+never re-lays out the chapter.
 
-<img src="./images/pre-translation/mode-light.jpg" height="500" alt="Light mode" />
+<img src="./images/pre-translation/mode-dark.jpg" height="500" alt="Interleaved mode, Dimmed shade" />
+
+*Dimmed shade.*
+
+<img src="./images/pre-translation/mode-light.jpg" height="500" alt="Interleaved mode, Dimmed Light shade" />
+
+*Dimmed Light shade.*
+
+> Earlier builds exposed the two shades as two separate display modes
+> ("Dark" and "Light"). They are now one mode plus a shade setting; an
+> existing setting saved under either old mode is migrated automatically on
+> upgrade.
 
 ### Original Only
 
@@ -103,17 +118,17 @@ between paired paragraphs and normal spacing between pairs.
 
 <img src="./images/pre-translation/mode-side-by-side.jpg" height="500" alt="Side by side mode" />
 
-### Modal
+### Page Translation
 
 The reader shows only the original text on each page. **Long-press either
-side button** to bring up a modal overlay with the translations of the
+side button** to bring up an overlay with the translations of the
 paragraphs visible on the current page.
 
-<img src="./images/pre-translation/mode-modal.gif" height="500" alt="Modal mode overlay" />
+<img src="./images/pre-translation/mode-modal.gif" height="500" alt="Page Translation mode overlay" />
 
 *Long-press to open, side buttons scroll, Back to close.*
 
-In Modal mode, when a paragraph spans page boundaries (starts on one page
+In Page Translation mode, when a paragraph spans page boundaries (starts on one page
 and continues on the next), the overlay shows only the translation of the
 sentences actually visible on the current page — not the whole paragraph.
 
@@ -166,13 +181,37 @@ invalidates them.
 | OpenAI | API key | Translation via chat-completion API. |
 | DeepSeek | API key | Translation via DeepSeek chat API. |
 | Gemini | API key | Translation via Google Gemini API. |
+| Azure | None | Microsoft's Edge-browser translator endpoint. Keyless — see below. |
+
+### Azure
+
+Azure needs **no API key and no region**: pick it in the engine cycler and
+translate. It calls `api-edge.cognitive.microsofttranslator.com`, the
+deployment behind Microsoft Edge's built-in page translator, and
+authenticates with a short-lived bearer token fetched anonymously from
+`edge.microsoft.com/translate/auth` (cached for 8 minutes — normally one
+fetch per chapter, renewed between batches on a chapter long enough to
+outlive it). No credentials of any kind are sent.
+
+This is **not** the paid Azure Translator resource
+(`api.cognitive.microsofttranslator.com`), which would require a
+subscription key plus a region. Neither Edge endpoint is a documented,
+supported API, so Microsoft can change or withdraw them without notice —
+the same durability caveat that applies to the free Google engines.
+
+Azure is one of the engines that batches: a whole batch of paragraphs goes
+out as a single array of text items and comes back as one result per item,
+in order, so it makes far fewer requests per chapter than the per-paragraph
+engines. Chinese targets are sent as `zh-Hans` / `zh-Hant`, Norwegian as
+`nb` and Serbian as `sr-Cyrl`, which are the codes Azure's language list
+uses.
 
 ## Notes
 
 - **Network required only during translation.** Once translated, the book
   reads offline.
 - **CJK sentence detection** is limited in v1 — paragraphs straddling pages
-  in Modal mode may show the whole translated paragraph rather than the
+  in Page Translation mode may show the whole translated paragraph rather than the
   sentences corresponding to visible text. Latin, Cyrillic, Greek, and
   Vietnamese punctuation work correctly.
 - **Translation engines have rate limits.** Google Free can throttle on
@@ -181,7 +220,7 @@ invalidates them.
   server certificate is not verified, matching the firmware's standard
   HTTPS stack. API keys for paid engines (DeepL, OpenAI, DeepSeek,
   Gemini) travel over this connection; treat them as you would any
-  credential on an untrusted network. The free Google engines send only
-  the text being translated.
+  credential on an untrusted network. The free Google engines and Azure
+  send only the text being translated.
 - The first run takes longer than re-runs — chapter layouts re-index after
   translation completes.

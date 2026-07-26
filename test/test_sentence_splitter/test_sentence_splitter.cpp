@@ -5,59 +5,31 @@
 #include <string>
 #include <vector>
 
-// Forward declarations — implementation lives in src/translator/SentenceSplitter.cpp.
-// (The native test env has no -I for src/translator, so we declare rather than
-// include the header; the struct layout below mirrors SentenceSplitter.h exactly.)
-int countSentences(const std::string& text);
-std::string trimToSentences(const std::string& text, int maxSentences);
-std::string trimToLastSentences(const std::string& text, int maxSentences);
-int countSentencesBefore(const std::string& origText, const std::string& visibleStart);
+// The real headers. `[env:native]` puts src/translator on the include path and compiles
+// SentenceSplitter.cpp + TextNormalize.cpp + SentencePairing.cpp, so nothing here is mirrored:
+// every struct and every helper under test is the production one. (This file used to carry a
+// hand-copied clone of groupTranslationSteps, kept in sync by comment, because its home TU pulled
+// GfxRenderer/Page/HalStorage and could not link on the host. Extracting the rule into
+// SentencePairing.cpp -- pure text logic -- removed the need for the clone.)
+#include "SentencePairing.h"
+#include "SentenceSplitter.h"
 
-// Word-array splitter (used by TooltipOverlay). Mirror of SentenceSplitter.h.
-static constexpr int TEST_MAX_SENTENCES = 50;
-struct SentenceSpan {
-  uint16_t startWord;
-  uint16_t endWord;
-};
-struct SentenceSplitResult {
-  SentenceSpan spans[TEST_MAX_SENTENCES];
-  int count = 0;
-};
-SentenceSplitResult splitSentences(const char* const* words, int wordCount);
+static constexpr int TEST_MAX_SENTENCES = MAX_SENTENCES;
 
-// ── Tooltip translation-unit grouping (mirror of TooltipOverlay.cpp) ─────────
-//
-// groupTranslationSteps is a PURE helper, but its home TU (TooltipOverlay.cpp)
-// pulls GfxRenderer/Page/HalStorage and cannot link on the native host, and the
-// native env's build_src_filter is fixed. So — exactly like the SentenceSplitResult
-// struct mirror above — this is a byte-for-byte copy of the production function kept
-// in sync by hand; it lets the collapse RULE (the photo-verified bug) be asserted on
-// the host. Keep identical to src/translator/TooltipOverlay.cpp::groupTranslationSteps.
-struct TooltipStep {
-  int16_t firstSentence;
-  int16_t lastSentence;
-};
-static int groupTranslationSteps(const std::vector<std::string>& sentenceTranslations, TooltipStep* out, int maxSteps) {
-  const int total = static_cast<int>(sentenceTranslations.size());
-  int count = 0;
-  int i = 0;
-  while (i < total && count < maxSteps) {
-    if (sentenceTranslations[i].empty()) {
-      i++;
-      continue;
-    }
-    int j = i;
-    while (j + 1 < total && !sentenceTranslations[j + 1].empty() &&
-           sentenceTranslations[j + 1] == sentenceTranslations[i]) {
-      j++;
-    }
-    out[count].firstSentence = static_cast<int16_t>(i);
-    out[count].lastSentence = static_cast<int16_t>(j);
-    count++;
-    i = j + 1;
+// Wrap a brace-init word list into the (const char* const*, count) shape the splitter and the
+// aligner both take. Keeps the std::string storage alive for the caller's statement.
+struct WordArray {
+  std::vector<std::string> storage;
+  std::vector<const char*> ptrs;
+  explicit WordArray(std::initializer_list<const char*> words) {
+    storage.reserve(words.size());
+    ptrs.reserve(words.size());
+    for (const char* w : words) storage.emplace_back(w);
+    for (const auto& w : storage) ptrs.push_back(w.c_str());
   }
-  return count;
-}
+  const char* const* data() const { return ptrs.data(); }
+  int count() const { return static_cast<int>(ptrs.size()); }
+};
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -266,7 +238,7 @@ void test_countSentencesBefore_start_of_text(void) {
 // source sentences resolve to the SAME translation string. Pre-fix the tooltip showed
 // that identical translation twice (once per underlined source sentence). Grouping must
 // collapse them into ONE step whose span covers BOTH source sentences, drawn once.
-static TooltipStep g_steps[TEST_MAX_SENTENCES];
+static SentenceStep g_steps[TEST_MAX_SENTENCES];
 
 // « = U+00AB (C2 AB), » = U+00BB (C2 BB). The merged Ukrainian sentence, joined with «і».
 static const char* UK_MERGED =
@@ -350,6 +322,109 @@ void test_groupSteps_one_source_concatenated_translation(void) {
   TEST_ASSERT_EQUAL(0, g_steps[0].lastSentence);
 }
 
+// ── Sentence pairing: source sentence -> translation word span ────────────────
+//
+// The mapper shared by the Tooltip overlay (which joins each span back into a string for its index)
+// and by PtLayout::Interlinear (which emits the span's words straight into an annotation row). The
+// span form is only equivalent to the old string form because splitSentences' spans are contiguous
+// and the midpoints are monotonic, so a source sentence's matches are always ONE run — these tests
+// pin that property along with the mapping itself.
+static SentencePairScratch g_scratch;
+
+// Lay out the whole pipeline the way both callers do.
+static int mapPair(const WordArray& src, const WordArray& trans, bool mergeJunk = false) {
+  if (!splitSentencePair(src.data(), src.count(), trans.data(), trans.count(), g_scratch)) return 0;
+  if (mergeJunk) mergeJunkSentences(g_scratch.origSplits, src.data());
+  mapSentenceSpans(src.data(), trans.data(), g_scratch);
+  return g_scratch.origSplits.count;
+}
+
+// 1:1 — two source sentences, two translated sentences of similar length: each takes its own.
+void test_mapPair_one_to_one(void) {
+  const WordArray src({"Hello", "world.", "Goodbye", "moon."});
+  const WordArray trans({"Privet", "mir.", "Proshchai", "luna."});
+  TEST_ASSERT_EQUAL(2, mapPair(src, trans));
+  TEST_ASSERT_EQUAL(0, g_scratch.transFor[0].startWord);
+  TEST_ASSERT_EQUAL(2, g_scratch.transFor[0].endWord);
+  TEST_ASSERT_EQUAL(2, g_scratch.transFor[1].startWord);
+  TEST_ASSERT_EQUAL(4, g_scratch.transFor[1].endWord);
+}
+
+// K:1 — the engine merged both source sentences into ONE translated sentence. Both source sentences
+// map to the SAME span, and the span grouping must collapse them into a single annotation/step so the
+// identical text is not printed twice.
+void test_mapPair_engine_merged_collapses_to_one_step(void) {
+  const WordArray src({"Hello", "world.", "Goodbye", "moon."});
+  const WordArray trans({"Privet", "mir", "i", "proshchai", "luna."});
+  TEST_ASSERT_EQUAL(2, mapPair(src, trans));
+  TEST_ASSERT_EQUAL(g_scratch.transFor[0].startWord, g_scratch.transFor[1].startWord);
+  TEST_ASSERT_EQUAL(g_scratch.transFor[0].endWord, g_scratch.transFor[1].endWord);
+  const int steps =
+      groupTranslationSpanSteps(g_scratch.transFor, g_scratch.origSplits.count, g_steps, TEST_MAX_SENTENCES);
+  TEST_ASSERT_EQUAL(1, steps);
+  TEST_ASSERT_EQUAL(0, g_steps[0].firstSentence);
+  TEST_ASSERT_EQUAL(1, g_steps[0].lastSentence);
+}
+
+// 1:K — the engine split one source sentence into several. All of them fall inside the single source
+// sentence's range, so the span must cover the WHOLE translation as one contiguous run (this is the
+// property that lets one span replace the joined string).
+void test_mapPair_engine_split_spans_whole_translation(void) {
+  const WordArray src({"One", "long", "sentence", "here."});
+  const WordArray trans({"Odno.", "Dlinnoe.", "Predlozhenie.", "Zdes."});
+  TEST_ASSERT_EQUAL(1, mapPair(src, trans));
+  TEST_ASSERT_EQUAL(0, g_scratch.transFor[0].startWord);
+  TEST_ASSERT_EQUAL(4, g_scratch.transFor[0].endWord);
+}
+
+// Every source sentence always gets SOMETHING: with fewer translated sentences than source ones the
+// closest-midpoint fallback fires rather than leaving a hole, so no source sentence is silently
+// dropped. Grouping then collapses whatever ended up shared.
+void test_mapPair_more_source_than_translation_no_unmapped(void) {
+  const WordArray src({"A.", "B.", "C.", "D."});
+  const WordArray trans({"Alpha.", "Omega."});
+  TEST_ASSERT_EQUAL(4, mapPair(src, trans));
+  for (int i = 0; i < 4; i++) {
+    TEST_ASSERT_TRUE(g_scratch.transFor[i].endWord > g_scratch.transFor[i].startWord);
+  }
+  const int steps =
+      groupTranslationSpanSteps(g_scratch.transFor, g_scratch.origSplits.count, g_steps, TEST_MAX_SENTENCES);
+  TEST_ASSERT_EQUAL(2, steps);
+}
+
+// An explicitly empty span is not a step and terminates a run — the span-form counterpart of
+// test_groupSteps_empty_breaks_run, and what keeps a sentence with no translation from emitting a
+// blank annotation row.
+void test_groupSpanSteps_empty_span_emits_nothing(void) {
+  const SentenceSpan spans[3] = {{0, 2}, {0, 0}, {0, 2}};
+  const int steps = groupTranslationSpanSteps(spans, 3, g_steps, TEST_MAX_SENTENCES);
+  TEST_ASSERT_EQUAL(2, steps);
+  TEST_ASSERT_EQUAL(0, g_steps[0].firstSentence);
+  TEST_ASSERT_EQUAL(0, g_steps[0].lastSentence);
+  TEST_ASSERT_EQUAL(2, g_steps[1].firstSentence);
+  TEST_ASSERT_EQUAL(2, g_steps[1].lastSentence);
+}
+
+// A stray "." left by a spaced ellipsis must not become a sentence of its own, or Interlinear would
+// print an annotation row above it.
+void test_mergeJunkSentences_folds_stray_dot(void) {
+  const WordArray src({"Real", "sentence", "here.", "."});
+  SentenceSplitResult splits = splitSentences(src.data(), src.count());
+  TEST_ASSERT_EQUAL(2, splits.count);
+  mergeJunkSentences(splits, src.data());
+  TEST_ASSERT_EQUAL(1, splits.count);
+  TEST_ASSERT_EQUAL(0, splits.spans[0].startWord);
+  TEST_ASSERT_EQUAL(4, splits.spans[0].endWord);
+}
+
+// Nothing to align: an empty side is reported by splitSentencePair, never by a bogus mapping.
+void test_splitSentencePair_empty_side_rejected(void) {
+  const WordArray src({"Hello", "world."});
+  const WordArray empty({});
+  TEST_ASSERT_FALSE(splitSentencePair(src.data(), src.count(), empty.data(), empty.count(), g_scratch));
+  TEST_ASSERT_FALSE(splitSentencePair(empty.data(), empty.count(), src.data(), src.count(), g_scratch));
+}
+
 int main(int /*argc*/, char** /*argv*/) {
   UNITY_BEGIN();
 
@@ -387,6 +462,14 @@ int main(int /*argc*/, char** /*argv*/) {
   RUN_TEST(test_groupSteps_empty_breaks_run);
   RUN_TEST(test_groupSteps_all_empty_zero_steps);
   RUN_TEST(test_groupSteps_one_source_concatenated_translation);
+
+  RUN_TEST(test_mapPair_one_to_one);
+  RUN_TEST(test_mapPair_engine_merged_collapses_to_one_step);
+  RUN_TEST(test_mapPair_engine_split_spans_whole_translation);
+  RUN_TEST(test_mapPair_more_source_than_translation_no_unmapped);
+  RUN_TEST(test_groupSpanSteps_empty_span_emits_nothing);
+  RUN_TEST(test_mergeJunkSentences_folds_stray_dot);
+  RUN_TEST(test_splitSentencePair_empty_side_rejected);
 
   RUN_TEST(test_trimToSentences_first2);
   RUN_TEST(test_trimToSentences_more_than_exists);

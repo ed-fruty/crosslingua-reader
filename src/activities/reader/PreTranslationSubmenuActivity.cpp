@@ -13,6 +13,7 @@
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
+#include "PreTranslationModes.h"
 #include "activities/ActivityResult.h"
 #include "activities/reader/ReaderUtils.h"
 #include "activities/translator/LanguagePickerActivity.h"
@@ -85,16 +86,7 @@ void PreTranslationSubmenuActivity::buildMenuItems() {
   menuItems.reserve(10);
 
   menuItems.push_back({Action::CYCLE_DISPLAY_MODE, StrId::STR_DISPLAY_MODE});
-
-  // Per-mode controls sit directly under Display Mode (they belong to the selected mode),
-  // shown only while that mode is selected so they don't clutter the menu otherwise.
-  if (SETTINGS.translationDisplayMode == CrossPointSettings::PT_TOOLTIP) {
-    menuItems.push_back({Action::CYCLE_TOOLTIP_BUTTONS, StrId::STR_TOOLTIP_BUTTONS});
-    menuItems.push_back({Action::CYCLE_TOOLTIP_BEHAVIOR, StrId::STR_TOOLTIP_NAV});
-  }
-  if (SETTINGS.translationDisplayMode == CrossPointSettings::PT_MODAL) {
-    menuItems.push_back({Action::CYCLE_MODAL_BUTTONS, StrId::STR_MODAL_BUTTONS});
-  }
+  appendModeChildren();
 
   // Translation Engine follows the mode block; the API-key row is only meaningful for engines
   // that authenticate with a user key — keyless engines (the Google variants ship a built-in
@@ -122,6 +114,59 @@ void PreTranslationSubmenuActivity::buildMenuItems() {
   // the rows can be resurrected by simply re-adding the two push_back()s below.
   //   menuItems.push_back({Action::PICK_TARGET_LANG, StrId::STR_TARGET_LANGUAGE});
   //   menuItems.push_back({Action::PICK_SOURCE_LANG, StrId::STR_SOURCE_LANGUAGE});
+}
+
+void PreTranslationSubmenuActivity::appendModeChildren() {
+  // Sub-settings of the SELECTED mode only, directly under the Display Mode row and indented, so it
+  // reads as "these belong to that mode" — and so the menu is not cluttered with controls for six
+  // modes the user is not in. buildMenuItems() re-runs on every mode cycle, so the block swaps
+  // immediately.
+  const auto child = [this](const Action action, const StrId label) {
+    menuItems.push_back({action, label, /*isChild=*/true});
+  };
+
+  // Switch (no `default:`) over the mode enum rather than an if-chain: a mode added to
+  // PRE_TRANSLATION_MODE then fails the build here until someone decides whether it has
+  // sub-settings, instead of silently getting none. Same rationale as ptLayoutForDisplayMode().
+  switch (static_cast<CrossPointSettings::PRE_TRANSLATION_MODE>(SETTINGS.translationDisplayMode)) {
+    case CrossPointSettings::PT_INTERLEAVED:
+      // Colour is Interleaved-only: it is the gray level the inline translated words are drawn at,
+      // and no other mode draws translated text in the main flow.
+      child(Action::CYCLE_TRANSLATION_COLOUR, StrId::STR_TRANSLATION_COLOUR);
+      // Same label on all three Size rows, three DIFFERENT fields behind them: the row lives under
+      // the mode it belongs to, so "Translation Size" already reads as that mode's size and needs no
+      // per-mode wording (and so no new i18n keys).
+      child(Action::CYCLE_INTERLEAVED_SIZE, StrId::STR_TRANSLATION_SIZE);
+      return;
+    case CrossPointSettings::PT_TOOLTIP:
+      child(Action::CYCLE_TOOLTIP_BUTTONS, StrId::STR_TOOLTIP_BUTTONS);
+      child(Action::CYCLE_TOOLTIP_BEHAVIOR, StrId::STR_TOOLTIP_NAV);
+      child(Action::CYCLE_TOOLTIP_SIZE, StrId::STR_TRANSLATION_SIZE);
+      return;
+    case CrossPointSettings::PT_PAGE_TRANSLATION:
+      child(Action::CYCLE_PAGE_TRANSLATION_BUTTONS, StrId::STR_PAGE_TRANSLATION_BUTTONS);
+      child(Action::CYCLE_PAGE_TRANSLATION_SIZE, StrId::STR_TRANSLATION_SIZE);
+      return;
+    // No sub-settings. Normal is NOT "no translated text": it maps to PtLayout::Both exactly as
+    // Interleaved does, so its pages are byte-identical and do carry the translation inline. What
+    // makes it Normal is the gray level -- modeToGray() (src/main.cpp) hands the renderer 0 for every
+    // mode except Interleaved, so translated words are drawn in plain black, indistinguishable from
+    // the source. Presenting the two languages as one undifferentiated flow is the whole point of the
+    // mode, so neither a shade nor a size row belongs on it. Side by Side and Translation Only show
+    // the translation in the body font and colour by design (a dimmed or shrunken column would defeat
+    // them). Interlinear fixes its annotation face at the small UI size in v1 — the one place that
+    // choice lives is CrossPointSettings::getInterlinearAnnotationFontId(), so a future Annotation
+    // Size row plugs in there and gets a child() line here. The retired holes are migrated away at
+    // load and can never be the current mode.
+    case CrossPointSettings::PT_NORMAL:
+    case CrossPointSettings::PT_ORIGINAL_ONLY:
+    case CrossPointSettings::PT_TRANSLATION_ONLY:
+    case CrossPointSettings::PT_SIDE_BY_SIDE:
+    case CrossPointSettings::PT_INTERLINEAR:
+    case CrossPointSettings::PT_LEGACY_DIMMED:
+    case CrossPointSettings::PT_LEGACY_DIMMED_LIGHT:
+      return;
+  }
 }
 
 // ─── input ────────────────────────────────────────────────────────────────────
@@ -165,8 +210,9 @@ void PreTranslationSubmenuActivity::loop() {
 void PreTranslationSubmenuActivity::onActionSelected(Action a) {
   switch (a) {
     case Action::CYCLE_DISPLAY_MODE: {
-      const uint8_t newMode =
-          static_cast<uint8_t>((SETTINGS.translationDisplayMode + 1) % CrossPointSettings::PT_MODE_COUNT);
+      // Cycle through PT_SELECTABLE_MODES, not the raw value range: values 1 and 2 are retired
+      // holes and must stay unreachable.
+      const uint8_t newMode = ptNextSelectableMode(SETTINGS.translationDisplayMode);
       // Switching to any translation-display mode while no translated.html exists for
       // the current chapter would render a blank page; reject the change with a
       // toast and keep the mode at Normal.
@@ -176,9 +222,9 @@ void PreTranslationSubmenuActivity::onActionSelected(Action a) {
       }
       SETTINGS.translationDisplayMode = newMode;
       SETTINGS.saveToFile();
-      // The tooltip-control rows are shown only in PT_TOOLTIP; rebuild so they appear/disappear as
-      // the mode is cycled through. The cursor is on the Display Mode row (index 0), which the
-      // rebuild preserves.
+      // Each mode carries its own child rows; rebuild so the indented block under Display Mode
+      // swaps as the mode is cycled through. The cursor is on the Display Mode row (index 0), which
+      // the rebuild preserves.
       buildMenuItems();
       if (selectedIndex >= static_cast<int>(menuItems.size())) {
         selectedIndex = static_cast<int>(menuItems.size()) - 1;
@@ -290,11 +336,36 @@ void PreTranslationSubmenuActivity::onActionSelected(Action a) {
       requestUpdate();
       return;
 
-    case Action::CYCLE_MODAL_BUTTONS:
-      SETTINGS.modalButtons =
-          static_cast<uint8_t>((SETTINGS.modalButtons + 1) % CrossPointSettings::OVERLAY_BUTTONS_COUNT);
+    case Action::CYCLE_PAGE_TRANSLATION_BUTTONS:
+      SETTINGS.pageTranslationButtons =
+          static_cast<uint8_t>((SETTINGS.pageTranslationButtons + 1) % CrossPointSettings::OVERLAY_BUTTONS_COUNT);
       SETTINGS.saveToFile();
       requestUpdate();
+      return;
+
+    case Action::CYCLE_TRANSLATION_COLOUR:
+      // Drawing-only: main.cpp's loop() re-reads the shade into the renderer's translation gray
+      // level every tick, so no section cache is invalidated and the reader shows it on its next
+      // paint. Nothing to rebuild here beyond this row's value.
+      SETTINGS.translationShade =
+          static_cast<uint8_t>((SETTINGS.translationShade + 1) % CrossPointSettings::TRANSLATION_SHADE_COUNT);
+      SETTINGS.saveToFile();
+      requestUpdate();
+      return;
+
+    // Three rows, three independent fields, one shared cycle rule. Only the Interleaved one changes
+    // line breaking; the reader's result handler compares getInterleavedTranslationFontId() and so
+    // re-lays out the section for that row alone, while the two overlay rows just repaint.
+    case Action::CYCLE_INTERLEAVED_SIZE:
+      cycleTranslationSize(SETTINGS.interleavedTranslationSize);
+      return;
+
+    case Action::CYCLE_TOOLTIP_SIZE:
+      cycleTranslationSize(SETTINGS.tooltipTranslationSize);
+      return;
+
+    case Action::CYCLE_PAGE_TRANSLATION_SIZE:
+      cycleTranslationSize(SETTINGS.pageTranslationSize);
       return;
 
     case Action::ENTER_API_KEY: {
@@ -319,16 +390,24 @@ void PreTranslationSubmenuActivity::onActionSelected(Action a) {
   }
 }
 
+void PreTranslationSubmenuActivity::cycleTranslationSize(uint8_t& storedSize) {
+  // Not cyclable when the active family has no smaller face (every SD family — SdCardFontSystem::
+  // resolveFontId ignores its pointSize argument by design — and a built-in already at its smallest
+  // point size): the row then reads Same permanently. Author's call — no "(n/a)" state, no toast, the
+  // option simply is not there. Guarded before the write so a press on a locked row costs no SPIFFS
+  // cycle. Availability is a property of the FAMILY, not of the mode, so all three rows share it.
+  if (SETTINGS.smallerReaderFontId() == 0) return;
+  storedSize = static_cast<uint8_t>((storedSize + 1) % CrossPointSettings::TRANSLATION_SIZE_COUNT);
+  SETTINGS.saveToFile();
+  requestUpdate();
+}
+
 // ─── value labels ─────────────────────────────────────────────────────────────
 
 const char* PreTranslationSubmenuActivity::displayModeLabel() const {
-  static const StrId labels[] = {
-      StrId::STR_PT_NORMAL,           StrId::STR_PT_DARK,         StrId::STR_PT_LIGHT, StrId::STR_PT_ORIGINAL_ONLY,
-      StrId::STR_PT_TRANSLATION_ONLY, StrId::STR_PT_SIDE_BY_SIDE, StrId::STR_PT_MODAL, StrId::STR_PT_TOOLTIP,
-  };
   const uint8_t mode = SETTINGS.translationDisplayMode;
-  if (mode >= sizeof(labels) / sizeof(labels[0])) return I18N.get(StrId::STR_PT_NORMAL);
-  return I18N.get(labels[mode]);
+  if (mode >= CrossPointSettings::PT_MODE_COUNT) return I18N.get(StrId::STR_PT_NORMAL);
+  return I18N.get(ptModeLabel(static_cast<CrossPointSettings::PRE_TRANSLATION_MODE>(mode)));
 }
 
 const char* PreTranslationSubmenuActivity::tooltipButtonsLabel() const {
@@ -341,16 +420,42 @@ const char* PreTranslationSubmenuActivity::tooltipBehaviorLabel() const {
                                                                                         : StrId::STR_LOOP);
 }
 
-const char* PreTranslationSubmenuActivity::modalButtonsLabel() const {
-  return I18N.get(SETTINGS.modalButtons == CrossPointSettings::OVERLAY_BUTTONS_SIDE ? StrId::STR_SIDE_BUTTONS
-                                                                                    : StrId::STR_FRONT_BUTTONS);
+const char* PreTranslationSubmenuActivity::pageTranslationButtonsLabel() const {
+  return I18N.get(SETTINGS.pageTranslationButtons == CrossPointSettings::OVERLAY_BUTTONS_SIDE
+                      ? StrId::STR_SIDE_BUTTONS
+                      : StrId::STR_FRONT_BUTTONS);
+}
+
+// Dedicated value keys, NOT the retired modes' STR_PT_DARK / STR_PT_LIGHT. Those two were written as
+// MODE NAMES ("Dimmed" / "Dimmed Light"), and a mode name does not survive being moved into a value
+// column: in inflected languages the adjective has to agree with that language's word for "colour"
+// (Slovak "Farba" is feminine, so the masculine "Sivý" it inherited was simply wrong), and several
+// languages had rendered the pair as an adverb phrase that is ungrammatical read as a colour
+// ("Gedimmt hell", "Atténué clair"). The shade IS the renderer's gray level, so each language now
+// names the colour outright — grey / light grey in its own standalone form. STR_PT_DARK /
+// STR_PT_LIGHT stay: ptModeLabel() still maps the two retired PT_LEGACY_DIMMED* modes to them.
+const char* PreTranslationSubmenuActivity::translationColourLabel() const {
+  return I18N.get(SETTINGS.translationShade == CrossPointSettings::SHADE_DIMMED_LIGHT ? StrId::STR_SHADE_DIMMED_LIGHT
+                                                                                      : StrId::STR_SHADE_DIMMED);
+}
+
+const char* PreTranslationSubmenuActivity::translationSizeLabel(const uint8_t storedSize) const {
+  // Report Same whenever no smaller face exists, whatever is stored: translationFontIdForSize() also
+  // degrades to the body font there, so Same is what the reader actually does. The stored value is
+  // left alone on purpose — switch back to a family that ships a smaller face and the user's
+  // Smaller choice is still in effect, without this screen having spent an SPIFFS write to erase it.
+  // Takes the value rather than reading a field, so the three per-mode rows cannot diverge in how
+  // they present it.
+  const bool smaller = storedSize == CrossPointSettings::SIZE_SMALLER && SETTINGS.smallerReaderFontId() != 0;
+  return I18N.get(smaller ? StrId::STR_SIZE_SMALLER : StrId::STR_SIZE_SAME);
 }
 
 const char* PreTranslationSubmenuActivity::engineLabel() const {
+  // Positional: index == CrossPointSettings::TRANSLATION_ENGINE value. Append only.
   static const StrId labels[] = {
       StrId::STR_ENGINE_GOOGLE_FREE, StrId::STR_ENGINE_DEEPL,       StrId::STR_ENGINE_DEEPL_PRO,
       StrId::STR_ENGINE_OPENAI,      StrId::STR_ENGINE_DEEPSEEK,    StrId::STR_ENGINE_GEMINI,
-      StrId::STR_ENGINE_GOOGLE_V2,   StrId::STR_ENGINE_GOOGLE_HTML,
+      StrId::STR_ENGINE_GOOGLE_V2,   StrId::STR_ENGINE_GOOGLE_HTML, StrId::STR_ENGINE_AZURE,
   };
   const uint8_t eng = SETTINGS.translationEngine;
   if (eng >= sizeof(labels) / sizeof(labels[0])) return I18N.get(StrId::STR_ENGINE_GOOGLE_V2);
@@ -433,8 +538,16 @@ void PreTranslationSubmenuActivity::render(RenderLock&&) {
             return tooltipButtonsLabel();
           case Action::CYCLE_TOOLTIP_BEHAVIOR:
             return tooltipBehaviorLabel();
-          case Action::CYCLE_MODAL_BUTTONS:
-            return modalButtonsLabel();
+          case Action::CYCLE_PAGE_TRANSLATION_BUTTONS:
+            return pageTranslationButtonsLabel();
+          case Action::CYCLE_TRANSLATION_COLOUR:
+            return translationColourLabel();
+          case Action::CYCLE_INTERLEAVED_SIZE:
+            return translationSizeLabel(SETTINGS.interleavedTranslationSize);
+          case Action::CYCLE_TOOLTIP_SIZE:
+            return translationSizeLabel(SETTINGS.tooltipTranslationSize);
+          case Action::CYCLE_PAGE_TRANSLATION_SIZE:
+            return translationSizeLabel(SETTINGS.pageTranslationSize);
           case Action::PICK_TARGET_LANG:
             return targetLangLabel();
           case Action::PICK_SOURCE_LANG:
@@ -445,14 +558,22 @@ void PreTranslationSubmenuActivity::render(RenderLock&&) {
             maskedApiKey(buf, sizeof(buf));
             return std::string(buf);
           }
+          // Plain command rows: no value column. Listed explicitly, with no `default:`, for the same
+          // reason onActionSelected() has none — an Action added without deciding what its value
+          // column shows must fail the build here (-Werror=switch), not silently render blank.
           case Action::TRANSLATE_CHAPTER:
           case Action::TRANSLATE_BOOK:
           case Action::DELETE_TRANSLATIONS:
-          default:
             return "";
         }
+        return "";  // unreachable: every enumerator returns above
       },
-      /*highlightValue=*/true);
+      /*highlightValue=*/true, /*rowDimmed=*/nullptr,
+      // Sub-setting rows are indented by a DRAWING offset, not by leading spaces in the title: a
+      // title goes through bidi before it is drawn, so for an Arabic or Hebrew label drawText
+      // resolves an RTL paragraph and moves the leading run to the visual right -- the indent would
+      // land on the wrong side, wedged against the right-aligned value column. See kListChildIndent.
+      [this](int index) { return menuItems[index].isChild; });
 
   // Button hints follow EpubReaderMenuActivity's pattern (Back / Select / Up / Down).
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));

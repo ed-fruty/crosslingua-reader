@@ -251,6 +251,31 @@ bool isWordCharacter(uint32_t cp) {
 
 }  // namespace
 
+void ParsedText::reserveAdditionalWords(const size_t additionalTokens) {
+  if (additionalTokens == 0) return;
+  const size_t requiredSize = words.size() + additionalTokens;
+  if (words.capacity() >= requiredSize) return;
+
+  size_t newCapacity = words.capacity();
+  if (newCapacity < 16) {
+    newCapacity = 16;
+  }
+  while (newCapacity < requiredSize) {
+    newCapacity *= 2;
+  }
+
+  words.reserve(newCapacity);
+  wordStyles.reserve(newCapacity);
+  wordContinues.reserve(newCapacity);
+  wordNoSpaceBefore.reserve(newCapacity);
+  wordIsFocusSuffix.reserve(newCapacity);
+  // Only when ruby is actually in use: an empty rubyTexts costs nothing and setRubyForWordAt resizes
+  // it on demand, so reserving it here would allocate for every ruby-free paragraph.
+  if (!rubyTexts.empty()) {
+    rubyTexts.reserve(newCapacity);
+  }
+}
+
 void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle, const bool underline,
                          const bool attachToPrevious) {
   if (word.empty()) return;
@@ -289,33 +314,10 @@ void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle,
     effectiveNoSpaceBefore = true;
   }
 
-  const auto ensureTokenCapacity = [&](const size_t additionalTokens) {
-    if (additionalTokens == 0) return;
-    const size_t requiredSize = words.size() + additionalTokens;
-    if (words.capacity() >= requiredSize) return;
-
-    size_t newCapacity = words.capacity();
-    if (newCapacity < 16) {
-      newCapacity = 16;
-    }
-    while (newCapacity < requiredSize) {
-      newCapacity *= 2;
-    }
-
-    words.reserve(newCapacity);
-    wordStyles.reserve(newCapacity);
-    wordContinues.reserve(newCapacity);
-    wordNoSpaceBefore.reserve(newCapacity);
-    wordIsFocusSuffix.reserve(newCapacity);
-    if (!rubyTexts.empty()) {
-      rubyTexts.reserve(newCapacity);
-    }
-  };
-
   if (auto breakOffsets = cjkCharacterBreakByteOffsets(word); !breakOffsets.empty()) {
     // CJK-heavy paragraphs can push hundreds of tiny tokens quickly when CSS toggles
     // inline styles. Reserve once up front to avoid repeated vector growth reallocations.
-    ensureTokenCapacity(breakOffsets.size() + 1);
+    reserveAdditionalWords(breakOffsets.size() + 1);
     bool firstToken = true;
     size_t tokenStart = 0;
     for (const size_t breakOffset : breakOffsets) {
@@ -355,7 +357,7 @@ void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle,
   // --- FOCUS READING LOGIC BELOW ---
 
   // Worst case: a segment boundary on each byte (highly punctuated UTF-8 text).
-  ensureTokenCapacity(word.length());
+  reserveAdditionalWords(word.length());
 
   // Lambda helper to process and push individual sub-segments of the string
   // Use std::string_view to avoid heap allocations when slicing

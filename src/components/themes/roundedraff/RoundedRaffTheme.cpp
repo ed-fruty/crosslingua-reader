@@ -276,7 +276,8 @@ void RoundedRaffTheme::drawList(const GfxRenderer& renderer, Rect rect, int item
                                 const std::function<std::string(int index)>& rowSubtitle,
                                 const std::function<UIIcon(int index)>& rowIcon,
                                 const std::function<std::string(int index)>& rowValue, bool highlightValue,
-                                const std::function<bool(int index)>& rowDimmed) const {
+                                const std::function<bool(int index)>& rowDimmed,
+                                const std::function<bool(int index)>& rowIndented) const {
   (void)rowIcon;
   (void)highlightValue;
   (void)rowDimmed;
@@ -302,9 +303,13 @@ void RoundedRaffTheme::drawList(const GfxRenderer& renderer, Rect rect, int item
     const bool isSelected = i == selectedIndex;
     renderer.fillRoundedRect(rowX, rowY, rowWidth, rowHeight, kRowRadius, isSelected ? Color::Black : Color::White);
 
+    // Child rows shift right and give up that much title width; see kListChildIndent.
+    const int indent = (rowIndented && rowIndented(i)) ? kListChildIndent : 0;
+    const int titleX = rowX + kInteractiveInsetX + indent;
+
     constexpr int kMinTitleWidth = 40;
     constexpr int kMinValueGap = kInteractiveInsetX;
-    int textAreaWidth = rowWidth - kInteractiveInsetX * 2;
+    int textAreaWidth = rowWidth - kInteractiveInsetX * 2 - indent;
     if (rowValue) {
       std::string valueText = rowValue(i);
       if (!valueText.empty()) {
@@ -328,23 +333,19 @@ void RoundedRaffTheme::drawList(const GfxRenderer& renderer, Rect rect, int item
       if (subtitleRaw.empty()) {
         // If there is no subtitle/author, center title vertically in the full row.
         const int centeredTitleY = rowY + (rowHeight - titleLineHeight) / 2;
-        renderer.drawText(kTitleFontId, rowX + kInteractiveInsetX, centeredTitleY, title.c_str(), !isSelected,
-                          EpdFontFamily::BOLD);
+        renderer.drawText(kTitleFontId, titleX, centeredTitleY, title.c_str(), !isSelected, EpdFontFamily::BOLD);
       } else {
         const int titleY = rowY + subtitleTopPadding;
         const int subtitleY = titleY + titleLineHeight + subtitleInterLineGap;
         auto subtitle =
             renderer.truncatedText(kSubtitleFontId, subtitleRaw.c_str(), textAreaWidth, EpdFontFamily::REGULAR);
-        renderer.drawText(kTitleFontId, rowX + kInteractiveInsetX, titleY, title.c_str(), !isSelected,
-                          EpdFontFamily::BOLD);
-        renderer.drawText(kSubtitleFontId, rowX + kInteractiveInsetX, subtitleY, subtitle.c_str(), !isSelected,
-                          EpdFontFamily::REGULAR);
+        renderer.drawText(kTitleFontId, titleX, titleY, title.c_str(), !isSelected, EpdFontFamily::BOLD);
+        renderer.drawText(kSubtitleFontId, titleX, subtitleY, subtitle.c_str(), !isSelected, EpdFontFamily::REGULAR);
       }
     } else {
       auto title = renderer.truncatedText(kTitleFontId, rowTitle(i).c_str(), textAreaWidth, EpdFontFamily::BOLD);
-      renderer.drawText(kTitleFontId, rowX + kInteractiveInsetX,
-                        rowY + (rowHeight - renderer.getLineHeight(kTitleFontId)) / 2, title.c_str(), !isSelected,
-                        EpdFontFamily::BOLD);
+      renderer.drawText(kTitleFontId, titleX, rowY + (rowHeight - renderer.getLineHeight(kTitleFontId)) / 2,
+                        title.c_str(), !isSelected, EpdFontFamily::BOLD);
     }
   }
 

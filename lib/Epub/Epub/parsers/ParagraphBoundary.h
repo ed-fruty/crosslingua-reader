@@ -8,7 +8,7 @@
 //   1. ChapterHtmlSlimParser  — the layout parser; its per-paragraph counter is
 //      the authority every consumer aligns to (PageLine::paragraphIdx,
 //      Page::first/lastParagraphIdx).
-//   2. ModalOverlay's ModalParseCtx — a SAX reparse of the same HTML that maps
+//   2. PageTranslationOverlay's PageTranslationParseCtx — a SAX reparse of the same HTML that maps
 //      translation paragraphs back to the layout parser's indices.
 //
 // If those two disagree on the boundary rule by even one tag, their paragraph

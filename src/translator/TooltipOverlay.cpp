@@ -5,15 +5,14 @@
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <Memory.h>
 #include <expat.h>
 
 #include <algorithm>
 #include <cstring>
-#include <iterator>
 
-#include "ReaderFontSizes.h"
+#include "SentencePairing.h"
 #include "TextNormalize.h"
-#include "fontIds.h"
 
 // ── Button handling ───────────────────────────────────────────────────────────
 
@@ -131,10 +130,14 @@ struct SentEntry {
 };
 
 // Forward declaration — builds index entries for one paragraph pair.
-static void addPairToIndex(const std::string& origText, const std::string& transText, std::vector<SentEntry>& index);
+static void addPairToIndex(const std::string& origText, const std::string& transText, SentencePairScratch& scratch,
+                           std::vector<SentEntry>& index);
 
 struct ParseCtx {
   std::vector<SentEntry>* index;
+  // The sentence aligner's fixed scratch (~800 B). Allocated ONCE per index build and reused for
+  // every paragraph pair, so it is neither a >256 B stack local nor a per-paragraph allocation.
+  SentencePairScratch* scratch = nullptr;
   int blockDepth = 0;
   bool inBlock = false;
   bool isTranslation = false;
@@ -151,7 +154,7 @@ struct ParseCtx {
   std::string lastOrigText;
   bool hasLastOrig = false;
   int pairCount = 0;
-  // Selective parse (mirrors ModalOverlay): only build index entries for paragraphs the current
+  // Selective parse (mirrors PageTranslationOverlay): only build index entries for paragraphs the current
   // page actually shows. Without this the index holds every translated sentence in the chapter,
   // which exhausts the heap on long chapters and reboots the device.
   int wantFirst = 0;
@@ -384,7 +387,7 @@ static void XMLCALL chOnEnd(void* ud, const XML_Char* name) {
     // hasLastOrig is set only for in-range originals, so this naturally skips out-of-range pairs.
     if (!t.empty() && ctx->hasLastOrig) {
       // Process pair immediately — don't accumulate all pairs in memory.
-      addPairToIndex(ctx->lastOrigText, t, *ctx->index);
+      addPairToIndex(ctx->lastOrigText, t, *ctx->scratch, *ctx->index);
       ctx->pairCount++;
       ctx->lastOrigText.clear();
       ctx->hasLastOrig = false;
@@ -413,8 +416,6 @@ static void XMLCALL chOnChar(void* ud, const XML_Char* data, int len) {
 
 // ── Sentence index: map original sentences to translations ───────────────────
 
-static inline bool isAsciiSpace(char c) { return c == ' ' || c == '\n' || c == '\r' || c == '\t'; }
-
 // Split text into whitespace-delimited words. Separators are recognized via the shared
 // textnorm::whitespaceLenAt SSOT — the SAME set the char-offset SentenceSplitter fix and
 // foldForMatch use — so ASCII space/tab/CR/LF AND Unicode NBSP-style separators (U+00A0,
@@ -439,72 +440,15 @@ static std::vector<std::string> tokenizeWords(const std::string& text) {
   return words;
 }
 
-static std::string joinSpan(const std::vector<std::string>& words, const SentenceSpan& span) {
-  std::string result;
-  for (int i = span.startWord; i < span.endWord && i < (int)words.size(); i++) {
-    if (!result.empty()) result += ' ';
-    result += words[i];
-  }
-  return result;
-}
-
-// Build a match key from the first N meaningful words of a sentence.
-// Skips whitespace-only words (from NBSP), strips leading em-space,
-// and stops before hyphenated line-break fragments (e.g., "dun-").
-static std::string sentenceKey(const char* const* words, int start, int end, int n = 6) {
-  std::string key;
-  int count = 0;
-  for (int i = start; i < end && count < n; i++) {
-    const char* w = words[i];
-    int wlen = (int)strlen(w);
-    if (wlen == 0) continue;
-    // Skip whitespace-only words
-    bool allSpace = true;
-    for (int j = 0; j < wlen; j++) {
-      if (!isAsciiSpace(w[j])) {
-        allSpace = false;
-        break;
-      }
-    }
-    if (allSpace) continue;
-    // Skip single-char punctuation words (spaced ellipsis ".", stray punctuation)
-    if (wlen == 1 && !((w[0] >= 'A' && w[0] <= 'Z') || (w[0] >= 'a' && w[0] <= 'z') || (w[0] >= '0' && w[0] <= '9') ||
-                       (uint8_t)w[0] >= 0x80))
-      continue;
-    // Skip Unicode ellipsis … (U+2026 = E2 80 A6) — standalone or as entire word
-    if (wlen == 3 && (uint8_t)w[0] == 0xE2 && (uint8_t)w[1] == 0x80 && (uint8_t)w[2] == 0xA6) continue;
-    // Join hyphenated line-break fragments: "over-" + "whelming" → "overwhelming"
-    if (wlen > 1 && w[wlen - 1] == '-' && i + 1 < end) {
-      if (!key.empty()) key += ' ';
-      key.append(w, wlen - 1);   // "over" (strip hyphen)
-      key.append(words[i + 1]);  // + "whelming" → "overwhelming"
-      i++;                       // skip the continuation word
-      count++;
-      continue;
-    }
-    // Strip leading em-space (U+2003 = E2 80 83)
-    while (wlen >= 3 && (uint8_t)w[0] == 0xE2 && (uint8_t)w[1] == 0x80 && (uint8_t)w[2] == 0x83) {
-      w += 3;
-      wlen -= 3;
-    }
-    // Strip trailing Unicode ellipsis … (U+2026 = E2 80 A6) — e.g., "relief…" → "relief"
-    while (wlen >= 3 && (uint8_t)w[wlen - 3] == 0xE2 && (uint8_t)w[wlen - 2] == 0x80 && (uint8_t)w[wlen - 1] == 0xA6) {
-      wlen -= 3;
-    }
-    // Strip trailing ASCII dots (e.g., "word..." → "word")
-    while (wlen > 0 && w[wlen - 1] == '.') wlen--;
-    if (wlen == 0) continue;
-    if (!key.empty()) key += ' ';
-    key.append(w, wlen);
-    count++;
-  }
-  return key;
-}
-
-// Process one (original, translation) paragraph pair: split both into sentences,
-// map by character-midpoint, and add entries to the index.
-// Called during HTML parsing — only one pair in memory at a time.
-static void addPairToIndex(const std::string& origText, const std::string& transText, std::vector<SentEntry>& index) {
+// Process one (original, translation) paragraph pair: split both into sentences, map by
+// character-midpoint, and add entries to the index. Called during HTML parsing — only one pair in
+// memory at a time, and the aligner's fixed scratch is the caller's (ParseCtx), so this frame stays
+// small.
+//
+// The alignment RULE itself lives in SentencePairing (shared with PtLayout::Interlinear and
+// host-tested); this function is now just tokenize -> align -> materialize the index strings.
+static void addPairToIndex(const std::string& origText, const std::string& transText, SentencePairScratch& scratch,
+                           std::vector<SentEntry>& index) {
   auto origWords = tokenizeWords(origText);
   auto transWords = tokenizeWords(transText);
   if (origWords.empty() || transWords.empty()) return;
@@ -515,59 +459,20 @@ static void addPairToIndex(const std::string& origText, const std::string& trans
   for (auto& w : origWords) origPtrs.push_back(w.c_str());
   for (auto& w : transWords) transPtrs.push_back(w.c_str());
 
-  SentenceSplitResult origSplits = splitSentences(origPtrs.data(), (int)origPtrs.size());
-  SentenceSplitResult transSplits = splitSentences(transPtrs.data(), (int)transPtrs.size());
-  if (origSplits.count == 0 || transSplits.count == 0) return;
-
-  int origTotalChars = 0;
-  for (auto& w : origWords) origTotalChars += (int)w.size() + 1;
-  int transTotalChars = 0;
-  for (auto& w : transWords) transTotalChars += (int)w.size() + 1;
-
-  // Precompute translation sentence midpoints as fractions.
-  float transMidFrac[MAX_SENTENCES];
-  {
-    int tCum = 0;
-    for (int ts = 0; ts < transSplits.count; ts++) {
-      int tStart = tCum;
-      for (int w = transSplits.spans[ts].startWord; w < transSplits.spans[ts].endWord; w++)
-        tCum += (int)transWords[w].size() + 1;
-      transMidFrac[ts] = transTotalChars > 0 ? (float)(tStart + tCum) / 2.0f / transTotalChars : 0;
-    }
+  if (!splitSentencePair(origPtrs.data(), (int)origPtrs.size(), transPtrs.data(), (int)transPtrs.size(), scratch)) {
+    return;
   }
+  // No junk merge here, deliberately: the index is keyed per SOURCE sentence and preparePage merges
+  // the PAGE's sentences before looking anything up, so merging here too would drop keys the page
+  // still asks for.
+  mapSentenceSpans(origPtrs.data(), transPtrs.data(), scratch);
 
-  int oCum = 0;
-  for (int os = 0; os < origSplits.count; os++) {
-    int oStart = oCum;
-    for (int w = origSplits.spans[os].startWord; w < origSplits.spans[os].endWord; w++)
-      oCum += (int)origWords[w].size() + 1;
-    float origStartFrac = origTotalChars > 0 ? (float)oStart / origTotalChars : 0;
-    float origEndFrac = origTotalChars > 0 ? (float)oCum / origTotalChars : 1;
-
-    // Collect ALL translation sentences whose midpoint falls in [origStart, origEnd).
-    std::string trans;
-    for (int ts = 0; ts < transSplits.count; ts++) {
-      if (transMidFrac[ts] >= origStartFrac && transMidFrac[ts] < origEndFrac) {
-        if (!trans.empty()) trans += ' ';
-        trans += joinSpan(transWords, transSplits.spans[ts]);
-      }
-    }
-    // Fallback: closest midpoint if none fell in range.
-    if (trans.empty()) {
-      float origMid = (origStartFrac + origEndFrac) / 2;
-      int bestTs = 0;
-      float bestDist = 999.0f;
-      for (int ts = 0; ts < transSplits.count; ts++) {
-        float dist = std::abs(transMidFrac[ts] - origMid);
-        if (dist < bestDist) {
-          bestDist = dist;
-          bestTs = ts;
-        }
-      }
-      trans = joinSpan(transWords, transSplits.spans[bestTs]);
-    }
-
-    std::string key = sentenceKey(origPtrs.data(), origSplits.spans[os].startWord, origSplits.spans[os].endWord);
+  for (int os = 0; os < scratch.origSplits.count; os++) {
+    // One contiguous span == exactly the string the previous per-sentence joining produced (see
+    // mapSentenceSpans): splitSentences' spans abut, so joining the merged span is the same text.
+    std::string trans = joinSpan(transWords, scratch.transFor[os]);
+    std::string key =
+        sentenceKey(origPtrs.data(), scratch.origSplits.spans[os].startWord, scratch.origSplits.spans[os].endWord);
     if (!key.empty() && !trans.empty()) {
       index.push_back({std::move(key), std::move(trans)});
     }
@@ -596,8 +501,18 @@ static std::vector<SentEntry> parseAndBuildIndex(const std::string& path, int wa
     return index;
   }
 
+  // One aligner scratch (~800 B) for the whole parse, not one per paragraph pair and not on the
+  // stack: addPairToIndex runs inside the expat callback chain.
+  const auto scratch = makeUniqueNoThrow<SentencePairScratch>();
+  if (!scratch) {
+    LOG_ERR("TIP", "OOM: sentence pairing scratch");
+    XML_ParserFree(parser);
+    return index;
+  }
+
   ParseCtx ctx;
   ctx.index = &index;
+  ctx.scratch = scratch.get();
   ctx.wantFirst = wantFirst;
   ctx.wantLast = wantLast;
   ctx.parser = parser;
@@ -628,44 +543,6 @@ static std::vector<SentEntry> parseAndBuildIndex(const std::string& path, int wa
   LOG_DBG("TIP", "Index: %d entries from %d pairs in [%d..%d]%s", (int)index.size(), ctx.pairCount, wantFirst, wantLast,
           stopped ? " (early-stop)" : "");
   return index;
-}
-
-// ── Translation-unit grouping ─────────────────────────────────────────────────
-//
-// Collapse consecutive source sentences that display the SAME translation into one
-// navigation step. Two mapping paths produce such duplicates:
-//   • count mismatch — the engine merged K source sentences into ONE translated
-//     sentence, so addPairToIndex maps each of the K source sentences (distinct keys)
-//     to the SAME translated span, giving K identical translation strings;
-//   • gap-fill — an unmatched sentence inherits a neighbor's translation.
-// Either way the user would otherwise see the identical tooltip several times in a row
-// (the photo-verified PT_TOOLTIP bug). Grouping steps by byte-identical, non-empty
-// translation makes stepping advance per translation and lets the underline span every
-// source sentence in the group. Empty (untranslated) sentences are never a step and
-// break a run — a page-boundary partial sentence therefore stays out of a group's span.
-//
-// Pure: depends only on the translation strings, so the grouping rule is unit-testable
-// on the host (see test/test_sentence_splitter). Returns the number of steps (<= maxSteps).
-static int groupTranslationSteps(const std::vector<std::string>& sentenceTranslations, TooltipStep* out, int maxSteps) {
-  const int total = static_cast<int>(sentenceTranslations.size());
-  int count = 0;
-  int i = 0;
-  while (i < total && count < maxSteps) {
-    if (sentenceTranslations[i].empty()) {
-      i++;  // untranslated sentence: not a step, and it terminates any current run
-      continue;
-    }
-    int j = i;
-    while (j + 1 < total && !sentenceTranslations[j + 1].empty() &&
-           sentenceTranslations[j + 1] == sentenceTranslations[i]) {
-      j++;
-    }
-    out[count].firstSentence = static_cast<int16_t>(i);
-    out[count].lastSentence = static_cast<int16_t>(j);
-    count++;
-    i = j + 1;
-  }
-  return count;
 }
 
 // ── Page preparation ──────────────────────────────────────────────────────────
@@ -705,17 +582,10 @@ void TooltipOverlay::preparePage(const Page& page) {
   }
 
   // 2. Split into sentences, then merge any "empty" sentences (dots, fragments)
-  //    into the previous sentence so the user doesn't click through junk.
+  //    into the previous sentence so the user doesn't click through junk. Shared with
+  //    PtLayout::Interlinear, which must not give a stray "." an annotation row either.
   splits = splitSentences(origWordPtrs, origWordCount);
-  for (int i = splits.count - 1; i > 0; i--) {
-    std::string key = sentenceKey(origWordPtrs, splits.spans[i].startWord, splits.spans[i].endWord);
-    if (key.empty() || (key.size() <= 2 && splits.spans[i].endWord - splits.spans[i].startWord <= 3)) {
-      // Merge into previous sentence: extend its endWord.
-      splits.spans[i - 1].endWord = splits.spans[i].endWord;
-      for (int j = i; j < splits.count - 1; j++) splits.spans[j] = splits.spans[j + 1];
-      splits.count--;
-    }
-  }
+  mergeJunkSentences(splits, origWordPtrs);
   LOG_DBG("TIP", "Page: %d words, %d sentences (after merge)", origWordCount, splits.count);
 
   // 3. Parse HTML and build sentence index in one pass (memory-efficient). Restrict to the
@@ -1013,7 +883,7 @@ void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId,
   SentenceSpan span{};
   const char* text = nullptr;
   if (stepCount == 0) {
-    // Nothing translated on this page (Option C parity with ModalOverlay): the source still
+    // Nothing translated on this page (Option C parity with PageTranslationOverlay): the source still
     // shows through, so surface the marker over the first source sentence rather than a blank
     // popup. Never triggers for a correctly-translated book. No sentences at all → nothing to do.
     if (splits.count == 0) return;
@@ -1109,50 +979,29 @@ void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId,
 
 // ── Font helper ───────────────────────────────────────────────────────────────
 //
-// Tooltip text renders one size SMALLER than the reader body (upstream-fork parity) in the reader's
-// own family, so the popup translation reads as a secondary annotation below the source. At the
-// smallest reader size there is nothing smaller, so fall back to the reader font itself. Adapted to
-// v2's font set (NOTOSERIF / NOTOSANS + SD card fonts); the fork's family switch used a different
-// built-in font lineup (Bookerly/EdsLab/Caecilia/GPro).
+// Tooltip text renders in the reader's own family, at the size the Lingua submenu's Translation Size
+// row selects: Same = the body font, Smaller = one step down the family's point-size ladder, so the
+// popup translation reads as a secondary annotation below the source. Adapted to v2's font set
+// (NOTOSERIF / NOTOSANS + SD card fonts); the fork's family switch used a different built-in font
+// lineup (Bookerly/EdsLab/Caecilia/GPro).
 //
 // Reader size is a point size since 91900484 (CrossPointSettings::fontPointSize), not a
 // SMALL/MEDIUM/LARGE slot, so "one smaller" means the previous entry in the active family's
-// selectable point sizes rather than an enum decrement. Whenever there is no smaller size this
-// returns getReaderFontId() unchanged, which also keeps renderOverlayFrame's
-// overlayFontId == fontId fast path (one shared prewarm for page + overlay) intact.
+// selectable point sizes rather than an enum decrement.
 //
-// Runs from the render loop: no allocation, so it walks the built-in array directly instead of
-// building the readerFontPointSizes() vector.
+// The size is read through CrossPointSettings::getTooltipTranslationFontId() — the TOOLTIP's own
+// stored size, not a value shared with the inline modes: the tooltip is composited over a finished
+// page, so its size must not be able to re-break a line of the book (see TRANSLATION_SIZE). It
+// returns 0 both for SIZE_SAME and for a SIZE_SMALLER that cannot be honoured (every SD family, and
+// a built-in already at its smallest point size, ship no smaller face — which is also why the Lingua
+// row reads Same and refuses to cycle there). Reading the setting here rather than
+// smallerReaderFontId() directly is what makes the row mean something; before the row existed this
+// stepped down unconditionally, which is exactly why tooltipTranslationSize defaults to SIZE_SMALLER.
+//
+// 0 becomes getReaderFontId() — the body font — which also keeps renderOverlayFrame's
+// overlayFontId == fontId fast path (one shared prewarm for page + overlay) intact for SIZE_SAME.
 
 int getTooltipFontId() {
-  // SD card family: the manager keeps exactly ONE reader-size face loaded and
-  // SdCardFontSystem::resolveFontId() ignores the size argument by design, so there is no smaller
-  // SD size to drop to — SD tooltips render at body size.
-  if (SETTINGS.sdFontFamilyName[0] != '\0' && SETTINGS.sdFontIdResolver) {
-    const int id =
-        SETTINGS.sdFontIdResolver(SETTINGS.sdFontResolverCtx, SETTINGS.sdFontFamilyName, SETTINGS.fontPointSize);
-    if (id != 0) return id;
-    // Fall through to a built-in font if the SD family has no loaded face.
-  }
-
-  // Built-in families ship exactly BUILTIN_READER_POINT_SIZES. Snap first (fontPointSize may still
-  // carry a size only an SD family had), then step one entry down.
-  constexpr size_t kCount = std::size(BUILTIN_READER_POINT_SIZES);
-  const uint8_t body = snapToNearestPointSize(BUILTIN_READER_POINT_SIZES, kCount, SETTINGS.fontPointSize);
-  size_t idx = 0;
-  while (idx < kCount && BUILTIN_READER_POINT_SIZES[idx] != body) idx++;
-  if (idx == 0 || idx >= kCount) return SETTINGS.getReaderFontId();  // already the smallest
-
-  const bool sans = (SETTINGS.fontFamily == CrossPointSettings::NOTOSANS);
-  switch (BUILTIN_READER_POINT_SIZES[idx - 1]) {
-    case 12:
-      return sans ? NOTOSANS_12_FONT_ID : NOTOSERIF_12_FONT_ID;
-    case 16:
-      return sans ? NOTOSANS_16_FONT_ID : NOTOSERIF_16_FONT_ID;
-    case 18:
-      return sans ? NOTOSANS_18_FONT_ID : NOTOSERIF_18_FONT_ID;
-    case 14:
-    default:
-      return sans ? NOTOSANS_14_FONT_ID : NOTOSERIF_14_FONT_ID;
-  }
+  const int translationFontId = SETTINGS.getTooltipTranslationFontId();
+  return translationFontId != 0 ? translationFontId : SETTINGS.getReaderFontId();
 }

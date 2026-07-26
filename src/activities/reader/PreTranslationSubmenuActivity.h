@@ -51,8 +51,17 @@ class PreTranslationSubmenuActivity final : public Activity {
     // (NOT SettingsList.h) so they aren't double-written; edited only from this submenu.
     CYCLE_TOOLTIP_BUTTONS,
     CYCLE_TOOLTIP_BEHAVIOR,
-    // Modal-mode (PT_MODAL) control: which button pair scrolls/closes the open modal.
-    CYCLE_MODAL_BUTTONS,
+    // Page Translation mode (PT_PAGE_TRANSLATION) control: which button pair scrolls/closes the
+    // open overlay.
+    CYCLE_PAGE_TRANSLATION_BUTTONS,
+    // Interleaved mode (PT_INTERLEAVED) control: gray level translated words are drawn at.
+    CYCLE_TRANSLATION_COLOUR,
+    // Translated-text type size relative to the body text. THREE actions, one per owning mode, each
+    // bound to that mode's own stored field — not one action over a shared field, which made the
+    // tooltip row silently retune the Interleaved layout (and invalidate its section cache).
+    CYCLE_INTERLEAVED_SIZE,
+    CYCLE_TOOLTIP_SIZE,
+    CYCLE_PAGE_TRANSLATION_SIZE,
   };
 
   explicit PreTranslationSubmenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
@@ -67,6 +76,9 @@ class PreTranslationSubmenuActivity final : public Activity {
   struct MenuItem {
     Action action;
     StrId labelId;
+    // Sub-setting of the row above it (in practice: of the currently selected display mode). Drawn
+    // indented so the ownership is visible; otherwise an ordinary, selectable row.
+    bool isChild = false;
   };
 
   std::shared_ptr<Epub> epub;
@@ -85,10 +97,16 @@ class PreTranslationSubmenuActivity final : public Activity {
   const char* toastMessage = nullptr;
 
   void buildMenuItems();
+  // Sub-settings of the currently selected display mode, appended directly under the Display Mode
+  // row. Empty for modes that have none.
+  void appendModeChildren();
   // Re-scans on-disk translation state and rebuilds menu items. Called from
   // onEnter() and from each child-activity result handler.
   void rebuildAfterReturn();
   void onActionSelected(Action a);
+  // Advances one of the three per-mode size fields, or does nothing when the active family ships no
+  // smaller face. Shared so the availability rule and the SPIFFS-write guard exist in ONE place.
+  void cycleTranslationSize(uint8_t& storedSize);
 
   // Dynamic right-hand value labels for the list rows.
   const char* displayModeLabel() const;
@@ -97,7 +115,10 @@ class PreTranslationSubmenuActivity final : public Activity {
   const char* sourceLangLabel() const;
   const char* tooltipButtonsLabel() const;
   const char* tooltipBehaviorLabel() const;
-  const char* modalButtonsLabel() const;
+  const char* pageTranslationButtonsLabel() const;
+  const char* translationColourLabel() const;
+  // Value label for any of the three Size rows: pass the mode's own stored TRANSLATION_SIZE.
+  const char* translationSizeLabel(uint8_t storedSize) const;
   // Writes a masked representation of the API key into `out`.
   void maskedApiKey(char* out, size_t outSize) const;
 
