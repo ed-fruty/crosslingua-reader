@@ -32,7 +32,24 @@ class ParsedText {
   std::vector<bool> reorderedNoSpaceBeforeScratch;
   std::vector<bool> reorderedFocusSuffixScratch;
   std::vector<uint16_t> visualOrderScratch;
+  // Word indices (in the CURRENT layout call's PRE-layout index space) that must begin a line.
+  // Ascending, at most INTERLINEAR_MAX_ANNOTATIONS entries. Empty for every layout but
+  // PtLayout::Interlinear, and every path below short-circuits on empty, so an untouched block
+  // breaks byte-for-byte as it did before this member existed.
+  std::vector<uint16_t> forcedBreakBefore;
 
+  // True when a line break before `idx` is both REQUESTED and ACHIEVABLE.
+  //
+  // Achievability is not a detail: computeLineBreaks refuses to end a line before a continuation
+  // token (the `continuesVec[j + 1]` skip) and computeHyphenatedLineBreaks backtracks off one, so a
+  // forced break on a continuation could never be honoured — bounding the DP by it would leave no
+  // legal line at all and collapse the paragraph into the single-word fallback. Such an entry is
+  // ignored here instead, and the sentence degrades to "annotation above the line that CONTAINS its
+  // start", i.e. exactly the pre-v41 behaviour, for that one sentence.
+  bool isForcedBreakAt(size_t idx) const;
+  // Smallest achievable forced index strictly greater than `i`, or words.size() when there is none.
+  // A line starting at `i` may not extend to or past it.
+  size_t nextForcedBreakAfter(size_t i) const;
   int resolveFirstLineIndent(bool isFirstLine, const GfxRenderer& renderer, int fontId) const;
   std::vector<size_t> computeLineBreaks(const GfxRenderer& renderer, int fontId, int pageWidth,
                                         std::vector<uint16_t>& wordWidths, std::vector<bool>& continuesVec,
@@ -104,7 +121,23 @@ class ParsedText {
   BlockStyle& getBlockStyle() { return blockStyle; }
   size_t size() const { return words.size(); }
   bool isEmpty() const { return words.empty(); }
+  // Constrain line breaking so each listed word STARTS a line. Indices are into the word stream as
+  // it stands right now, i.e. before layoutAndExtractLines hyphenates and consumes it; the list is
+  // re-based internally whenever hyphenation inserts a remainder word, so post-layout it still
+  // points at the same tokens. Must be ascending. Only PtLayout::Interlinear calls this, to make a
+  // source sentence never begin mid-line so its translation row can sit squarely above it.
+  //
+  // Scoped to ONE layout call: a caller that lays a block out in parts (includeLastLine = false)
+  // must set the list again for the next part, since the consumed words are erased and the surviving
+  // indices shift down. No caller does that today.
+  void setForcedLineBreaks(std::vector<uint16_t> wordIndices) { forcedBreakBefore = std::move(wordIndices); }
+  // `forcedBreakLineOrdinals`, when non-null, is filled with ONE entry per index passed to
+  // setForcedLineBreaks, in the same order: the 0-based ordinal of the emitted line that index
+  // landed on. For an achievable break that is the line it STARTS; for an ignored one (see
+  // isForcedBreakAt) the line that merely contains it. The strict 1:1 correspondence is what lets
+  // renderInterlinear map annotation k to a line without re-deriving word offsets, so nothing is
+  // ever deduplicated or dropped from it.
   void layoutAndExtractLines(const GfxRenderer& renderer, int fontId, uint16_t viewportWidth,
                              const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
-                             bool includeLastLine = true);
+                             bool includeLastLine = true, std::vector<uint16_t>* forcedBreakLineOrdinals = nullptr);
 };

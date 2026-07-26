@@ -28,12 +28,15 @@ enum class PtLayout : uint8_t {
   TranslationOnly = 2,
   // Original and translation paired into two half-width columns (renderSideBySide).
   SideBySide = 3,
-  // The source flows full-width and normally, but each sentence's translation is emitted as its OWN
-  // line in a much smaller face directly ABOVE the source line that sentence starts on, left-aligned
-  // to the sentence start with the wrap hanging back to the margin (renderInterlinear). Those rows
-  // are ordinary PageLines tagged LineFontRole::Annotation, so they consume real vertical space and
-  // the source text tiles around them -- which is why this cannot be an overlay composited at view
-  // time (Tooltip / Page Translation) and must be a layout of its own. Costs roughly +40% pages at
-  // the 14pt default: the page carries a second full rendition of the text at ~57% of the body pitch.
+  // The source flows full-width, but every SENTENCE starts a new line and its translation is emitted
+  // as its own line(s) in a much smaller face directly ABOVE that line, both flush to the same left
+  // margin (renderInterlinear). Those rows are ordinary PageLines tagged LineFontRole::Annotation, so
+  // they consume real vertical space and the source text tiles around them -- which is why this
+  // cannot be an overlay composited at view time (Tooltip / Page Translation) and must be a layout of
+  // its own.
+  //
+  // Costs roughly +70% pages at the 14pt portrait default, and more for short-sentence prose. Two
+  // multipliers: the page carries a second full rendition of the text at ~57% of the body pitch, and
+  // each sentence leaves about half a line of white space where the next one used to continue.
   Interlinear = 4,
 };

@@ -245,17 +245,17 @@ class ChapterHtmlSlimParser {
   void appendSideBySideNoTranslationMarkerIfUnpaired();
   // Pre-Translation (PtLayout::Interlinear). Same buffering shape as SideBySide --
   // makePagesInterlinearMode holds an original until its translation arrives -- but the pair is
-  // emitted as one full-width flow with small annotation rows interleaved above the source lines
-  // whose sentences they translate. An unpaired original falls back to plain makePages() (via
-  // flushBufferedOriginal), i.e. no annotation and no marker.
+  // emitted as one full-width flow in which every source SENTENCE starts a new line and its
+  // translation occupies the small rows directly above that line. An unpaired original falls back to
+  // plain makePages() (via flushBufferedOriginal), i.e. no annotation and no marker.
   void makePagesInterlinearMode();
   void renderInterlinear(std::unique_ptr<ParsedText> origBlock, std::unique_ptr<ParsedText> transBlock);
-  // Lay ONE annotation (a group of source sentences sharing a translation) out at the full measure
-  // with a hanging indent, appending its rows to `rows`. anchorOffset is the block-relative x of the
-  // sentence start; it becomes the first row's text-indent, so row 1 begins exactly at the sentence
-  // and continuation rows fall back to the margin. Emits nothing for an empty translation.
-  void buildAnnotationRows(const InterlinearAnnotation& annotation, const ParsedText& transBlock, int16_t anchorOffset,
-                           uint16_t measureWidth, int annotationFont, std::vector<std::shared_ptr<TextBlock>>& rows);
+  // Lay ONE annotation (a group of source sentences sharing a translation) out at the full measure,
+  // flush to the margin, appending its rows to `rows`. There is no x anchoring: the sentence is
+  // guaranteed to start the source line these rows sit above, so the margin IS the sentence.
+  // Emits nothing for an empty translation.
+  void buildAnnotationRows(const InterlinearAnnotation& annotation, const ParsedText& transBlock, uint16_t measureWidth,
+                           int annotationFont, std::vector<std::shared_ptr<TextBlock>>& rows);
   // Place one already-laid-out row at currentPageNextY and advance by exactly its own height, which
   // is what lets two type sizes tile edge to edge (see addLineToPage). `breakIfNeeded` is the
   // degenerate path only: renderInterlinear normally page-breaks ONCE per source line, before the

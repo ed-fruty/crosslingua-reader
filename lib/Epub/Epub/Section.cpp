@@ -91,7 +91,17 @@ namespace {
 //      makes it mandatory, for precisely the reason the v39 note above spells out (every field after
 //      it would be read shifted, and the pageCount / LUT offsets are consumed before the
 //      parameter-mismatch check can save you).
-constexpr uint8_t SECTION_FILE_VERSION = 40;
+// v41: PtLayout::Interlinear changes its LINE BREAKING: a source sentence now always starts a new
+//      line and its translation rows sit squarely above that line at the margin, instead of the
+//      source breaking as under OriginalOnly with each row anchored at the x of the sentence's first
+//      word. The header layout and every per-page/per-line structure are BYTE-IDENTICAL to v40 --
+//      nothing was added, removed or reordered, and a v40 file is still structurally decodable.
+//      The bump is still mandatory, because the version is the CACHE KEY and the pages it keys are
+//      no longer the same pages: a device holding v40 entries would otherwise keep serving the old
+//      jumbled layout forever, since no other keyed parameter changed. Note this invalidates every
+//      cached chapter of every book for EVERY layout, not just Interlinear -- the next open of each
+//      book pays one background re-layout. Unavoidable: the key is a single version number.
+constexpr uint8_t SECTION_FILE_VERSION = 41;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects

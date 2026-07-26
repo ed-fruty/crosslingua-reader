@@ -363,9 +363,9 @@ PtLayout CrossPointSettings::ptLayoutForDisplayMode(const uint8_t mode) {
       return PtLayout::TranslationOnly;
     case PT_SIDE_BY_SIDE:
       return PtLayout::SideBySide;
-    // Its own layout: the translation is emitted as a small annotation row ABOVE the source line each
-    // sentence starts on, so the pages genuinely differ from every other mode's and cannot share a
-    // cache entry with them.
+    // Its own layout: every source sentence starts a new line and the translation is emitted as a
+    // small annotation row ABOVE that line, so the pages genuinely differ from every other mode's and
+    // cannot share a cache entry with them.
     case PT_INTERLINEAR:
       return PtLayout::Interlinear;
     // Everything inline-bilingual. Interleaved differs from Normal only in the gray level translated
@@ -443,13 +443,13 @@ bool CrossPointSettings::interlinearAnnotationScriptSupported() const {
   // is the intended v1 degradation, and it is the ONLY thing this predicate does -- it is a face
   // decision, not a suppression.
   //
-  // Hebrew/Arabic/Persian are listed for a second reason, but note what that does and does not buy:
-  // the rows are still emitted for an RTL target, they are simply not ANCHORED. Anchoring an RTL row
-  // over an LTR source sentence needs an end-side first-line inset, which BlockStyle cannot express
-  // (CSS text-indent insets from the start edge, i.e. the right, under RTL), so v1 lays those rows out
-  // un-anchored at the full measure on their own natural margin (flush right). See buildAnnotationRows
-  // in lib/Epub/Epub/parsers/ChapterHtmlSlimParser.cpp and the Version 40 section of
-  // docs/file-formats.md.
+  // Hebrew/Arabic/Persian are here for GLYPH COVERAGE alone, like every other entry. They used to
+  // carry a second justification -- an RTL row could not be x-anchored over an LTR source sentence --
+  // but that argument died with the anchoring: from section.bin v41 no annotation row is anchored at
+  // all, LTR or RTL. Every row is laid out at the full measure on its own natural margin, directly
+  // above the line its sentence starts, so an RTL target reads flush right and is no worse placed
+  // than an LTR one. See buildAnnotationRows in lib/Epub/Epub/parsers/ChapterHtmlSlimParser.cpp and
+  // the Version 41 section of docs/file-formats.md.
   //
   // Listed by BCP-47 code rather than by table index so the list survives LANGUAGES[] being extended;
   // a language added there is treated as supported, which is right for the Latin/Cyrillic ones that

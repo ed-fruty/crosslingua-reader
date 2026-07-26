@@ -10,7 +10,7 @@
 // Two consumers need exactly the same answer to "which translated sentence belongs to this source
 // sentence?", so the rule lives here once instead of in each of them:
 //   * TooltipOverlay  — builds a key -> translation index at view time and shows one unit per press;
-//   * PtLayout::Interlinear — emits an annotation row above the source line each sentence starts on.
+//   * PtLayout::Interlinear — forces each sentence to start a line and emits its annotation row above it.
 // It used to live only in TooltipOverlay.cpp, whose TU pulls GfxRenderer / Page / HalStorage and
 // therefore cannot link on the native host; the host test kept a hand-copied MIRROR of the grouping
 // rule in sync by comment. This TU is pure text logic (SentenceSplitter + std::string), is listed in

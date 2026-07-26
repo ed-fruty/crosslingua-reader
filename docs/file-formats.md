@@ -90,6 +90,49 @@ if (parsedSize != fileSize) {
 
 ## `section.bin`
 
+### Version 41
+
+Version 41 changes **no bytes**. The header, the page records, the line records and
+every LUT are laid out exactly as in version 40, and a version 40 file is still
+structurally decodable by the pattern below — only the `EXPECTED_VERSION` guard
+rejects it.
+
+The bump exists because the version number *is* the cache key, and under
+`PtLayout::Interlinear` the pages it keys are no longer the same pages:
+
+- **A source sentence now always begins a new line.** Sentence starts are resolved
+  *before* line breaking and fed into it as hard constraints
+  (`ParsedText::setForcedLineBreaks`), instead of being discovered afterwards over the
+  already-broken word array. A sentence that wraps flows normally onto the lines below
+  it.
+- **An annotation row sits at the block's left margin, directly above the source line
+  its sentence starts.** `text-indent` is always `0`. The version 40 hanging indent —
+  first row inset to the x of the sentence's first word, continuation rows falling back
+  to the margin, indent dropped entirely past 3/4 of the measure — **is gone**, and the
+  two version 40 bullets describing it below are superseded. That scheme produced
+  several row-sets stacked over one line while neighbouring lines carried none, and
+  parked a shard of translation against the right margin whenever a sentence started
+  late.
+- **The last line of every sentence is not justified.** It is now usually short, since
+  the following sentence no longer fills it; stretching it to the full measure would
+  open gaping word gaps. This reuses the rule the paragraph's own last line already had
+  (`ParsedText::extractLine`).
+- **A sentence whose translation is empty produces no row and no forced break**, and
+  simply continues on the previous sentence's last line — there is no row that could be
+  mispaired, and the next translated sentence still starts a line of its own.
+- **A sentence opening on a continuation token** (one glued to the word before it) is
+  the one case the constraint cannot honour: no line breaker may break there. That
+  sentence keeps the version 40 placement — its rows sit above the line that *contains*
+  its start — but at the margin, not anchored.
+- **RTL is unchanged.** An RTL source paragraph is still not annotated at all. An RTL
+  *target* still lays its rows out at the full measure on their own natural margin
+  (flush right); with the indent gone that is now their only behaviour rather than a
+  fallback.
+
+Page cost rises accordingly: each sentence ends with roughly half a line of white
+space, so Interlinear is now about **+70% pages versus Normal** at the 14pt portrait
+default (was ~+40%), and more for dialogue-heavy prose.
+
 ### Version 40
 
 Version 40 adds a fifth `PtLayout` value and one header field. Either change alone
@@ -122,12 +165,14 @@ is exactly the failure mode the version 39 note below was written about.
   ordinary `PageLine` — nothing new is serialized per line or per page. It is
   left-aligned, laid out at the *full* text measure with a hanging indent (the first
   row's text-indent is the x of the sentence start, so continuation rows fall back to
-  the margin), placed at `xPos` = the block's left inset, and stamped with the
+  the margin — **superseded by version 41, which always uses `text-indent = 0`**),
+  placed at `xPos` = the block's left inset, and stamped with the
   original paragraph's index just as its source line is. Its height is
   `getLineHeight(annotationFontId)`, which is what lets two type sizes tile edge to
   edge on one page (see the per-line font role bullet under version 38). No sentence
   metadata reaches disk: alignment is fully resolved before the page is written.
-  - **The indent is dropped, not clamped, for a sentence that starts very late.** A
+  - **The indent is dropped, not clamped, for a sentence that starts very late.**
+    *(Superseded by version 41: there is no indent at all.)* A
     first row needs a usable measure — `computeLineBreaks` force-hyphenates any word
     wider than the width left to it — so a sentence beginning past 3/4 of the measure
     gets `text-indent = 0` and its row sits at the margin. That is deliberate: a row
@@ -135,7 +180,8 @@ is exactly the failure mode the version 39 note below was written about.
     sentence and read as their translation, whereas a row at the margin reads as
     "this whole line". Everything up to 3/4 is anchored exactly.
   - **An RTL source paragraph is not annotated at all, and an RTL target is not
-    anchored.** `extractLine` permutes a line into visual order whenever the block
+    anchored.** *(Version 41: the second half is moot — nothing is anchored any more.)*
+    `extractLine` permutes a line into visual order whenever the block
     resolves RTL *or* contains any RTL word, and the anchoring reads flat post-layout
     word indices — so a source paragraph that is RTL, or that merely carries an inline
     Hebrew/Arabic run, lays out as plain unannotated source. In the other direction, a
@@ -346,7 +392,7 @@ import std.mem;
 import std.string;
 import std.core;
 
-#define EXPECTED_VERSION 40
+#define EXPECTED_VERSION 41
 #define MAX_STRING_LENGTH 65535
 #define FOOTNOTE_NUMBER_LEN 32
 #define FOOTNOTE_HREF_LEN 96

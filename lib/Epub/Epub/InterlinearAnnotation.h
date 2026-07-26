@@ -4,22 +4,26 @@
 // PtLayout::Interlinear: the boundary between the LAYOUT (this library) and the sentence ALIGNMENT
 // (the app).
 //
-// lib/Epub owns everything geometric: where a sentence starts on a laid-out line, how tall an 8pt
-// annotation row is, and when a page must break so an annotation never leaves the line it belongs
-// to. It deliberately owns NONE of "which translated sentence belongs above which source
+// lib/Epub owns everything geometric: how a sentence start constrains line breaking, how tall an
+// 8pt annotation row is, and when a page must break so an annotation never leaves the line it
+// belongs to. It deliberately owns NONE of "which translated sentence belongs above which source
 // sentence" — that heuristic is shared with the Tooltip display mode, is host-unit-tested
 // (test/test_sentence_splitter) and lives in src/translator/SentencePairing. Injecting it as a
 // plain function pointer is what keeps this library free of an app-level include, exactly as
 // PtLayout keeps it free of the app's display-mode enum.
 
 // One annotation row-set: the translated words to draw above the source line the group's FIRST
-// sentence starts on. A "group" is the run of consecutive source sentences that resolve to the same
+// sentence starts. A "group" is the run of consecutive source sentences that resolve to the same
 // translation (an engine that merged K source sentences into one produces such a run); it gets ONE
 // annotation, so the identical text is never printed K times.
 struct InterlinearAnnotation {
-  uint16_t sourceStartWord;  // index into the flat POST-layout source word array
-  uint16_t transStartWord;   // [transStartWord, transEndWord) into the translation word array
-  uint16_t transEndWord;     // == transStartWord means "no translation": emit no row
+  // Index into the source word array as the caller passed it, i.e. PRE-layout and in logical order.
+  // renderInterlinear turns these into forced line breaks (ParsedText::setForcedLineBreaks) so the
+  // sentence begins the line its rows sit above, which is why they must be pre-layout: the pairing
+  // now runs before line breaking, not after it.
+  uint16_t sourceStartWord;
+  uint16_t transStartWord;  // [transStartWord, transEndWord) into the translation word array
+  uint16_t transEndWord;    // == transStartWord means "no translation": emit no row
 };
 
 // Upper bound on annotations per paragraph, and therefore the size of the parser's one reusable
