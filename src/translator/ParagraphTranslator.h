@@ -70,6 +70,23 @@ class ParagraphTranslator {
   // may ignore that (the first translate() simply retries the fetch).
   static bool primeAzureToken();
 
+  // Renew the Azure/Edge bearer token EARLY, if it is close to expiry — call this only
+  // at a clean-heap moment (the rewriter's batch boundary), never mid-batch.
+  //
+  // The token lives ~10 minutes and translateAzure() would otherwise refresh it lazily,
+  // in the middle of a chapter, while the chapter's TranslationHttpSession socket and
+  // wolfSSL context are live. That refresh goes through the STATIC GET path (deliberately
+  // — see primeAzureToken above), which stands up its own SecureHttpClient behind
+  // insufficientHeapForTls(): 45 KB free plus a 20 KB contiguous block, a bar the heap
+  // usually cannot clear with a session already open. So the refresh is moved to the
+  // between-batch moment, where the batch's HTTP transients are freed and (for the
+  // activity callers) the framebuffer is still released.
+  //
+  // No-op — returns true — while the token has more than the refresh window left. On
+  // failure the existing token is kept, so a refused early refresh costs nothing and the
+  // lazy in-place refresh inside translateAzure() remains the last-resort fallback.
+  static bool refreshAzureTokenIfExpiring();
+
  private:
   static std::string urlEncode(const std::string& s);
   static void codePointToUtf8(uint32_t cp, std::string& out);

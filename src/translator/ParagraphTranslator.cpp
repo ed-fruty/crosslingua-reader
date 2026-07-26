@@ -501,9 +501,20 @@ bool ParagraphTranslator::translateGoogleHtml(const std::string& text, const cha
 namespace {
 constexpr char kAzureAuthUrl[] = "https://edge.microsoft.com/translate/auth";
 constexpr char kAzureTranslateUrl[] = "https://api-edge.cognitive.microsofttranslator.com/translate";
+// The auth endpoint is undocumented and UA-sensitive; the reference implementation
+// (readest's azure.ts) sends a browser User-Agent on this anonymous GET, so we send
+// the same value rather than our own "CrossPoint-ESP32-<version>". This one GET is the
+// single point of failure for the whole engine — every translate request needs its
+// token — so it matches the reference exactly, as the rest of the flow already does.
+constexpr char kAzureAuthUserAgent[] = "Mozilla/5.0";
 // The issued JWT lives ~10 minutes; refresh at 8 so a request is never sent with
 // a token that expires in flight.
 constexpr uint32_t kAzureTokenTtlMs = 8u * 60u * 1000u;
+// Proactive-refresh window: at a batch boundary, a token with less than this much of
+// its cached lifetime left is renewed early (see refreshAzureTokenIfExpiring). Sized
+// well above a worst-case batch (two attempts plus backoff) so the token cannot lapse
+// while a batch is in flight and force the lazy mid-chapter refresh.
+constexpr uint32_t kAzureRefreshWindowMs = 2u * 60u * 1000u;
 
 // Function-local statics, so the ~1 KB token string is only ever allocated if the
 // Azure engine is actually selected — no permanent .bss cost for the other engines.
@@ -542,17 +553,26 @@ bool azureAuthToken(std::string& out) {
   }
 
   std::string jwt;
-  if (!HttpDownloader::fetchUrl(kAzureAuthUrl, jwt)) {
-    LOG_ERR("Translator", "Azure: auth token fetch failed");
-    return false;
+  const bool fetched = HttpDownloader::fetchUrl(kAzureAuthUrl, jwt, "", "", kAzureAuthUserAgent);
+  if (fetched) {
+    // The endpoint returns the raw JWT as text/plain; strip any trailing newline so
+    // it cannot corrupt the Authorization header.
+    while (!jwt.empty() && (jwt.back() == '\n' || jwt.back() == '\r' || jwt.back() == ' ')) {
+      jwt.pop_back();
+    }
   }
-  // The endpoint returns the raw JWT as text/plain; strip any trailing newline so
-  // it cannot corrupt the Authorization header.
-  while (!jwt.empty() && (jwt.back() == '\n' || jwt.back() == '\r' || jwt.back() == ' ')) {
-    jwt.pop_back();
-  }
-  if (jwt.empty()) {
-    LOG_ERR("Translator", "Azure: auth token empty");
+  if (!fetched || jwt.empty()) {
+    // Give this GET its own status. The GET path never touches lastHttpCode (see
+    // HttpDownloader.h and TranslationHttpSession::fetchUrl), so without this the
+    // caller would classify a TOKEN failure using whatever the last POST left behind
+    // — and with the in-place 401 recovery in translateAzure() that stale value is a
+    // 401, i.e. a transient token refusal (typically the heap guard declining the
+    // handshake) would be misread as a real auth failure and abort the entire run.
+    // -1 is HttpDownloader's own encoding for a connection-level failure, which is all
+    // we can observe here: fetchUrl collapses the GET to a bool, so no HTTP status is
+    // available to thread out. It classifies as transient -> retry with backoff.
+    HttpDownloader::lastHttpCode = -1;
+    LOG_ERR("Translator", "Azure: auth token %s", fetched ? "empty" : "fetch failed");
     return false;
   }
 
@@ -588,6 +608,34 @@ void appendJsonEscaped(const char* data, size_t len, std::string& out) {
 bool ParagraphTranslator::primeAzureToken() {
   std::string token;
   return azureAuthToken(token);
+}
+
+bool ParagraphTranslator::refreshAzureTokenIfExpiring() {
+  const uint32_t now = millis();
+  // Signed difference, as in azureAuthToken(), so a millis() rollover reads as expired.
+  const int32_t remaining = static_cast<int32_t>(azureTokenExpiresAtMs() - now);
+  if (!azureTokenCache().empty() && remaining > static_cast<int32_t>(kAzureRefreshWindowMs)) {
+    return true;  // plenty of lifetime left; nothing to do
+  }
+
+  // Keep the old token until the new one is in hand. This refresh is EARLY — the
+  // current token still has up to kAzureRefreshWindowMs of life — and it can still be
+  // refused (the static GET stands up its own TLS context while the chapter's session
+  // is live). Discarding the old token up front would turn a refused early refresh into
+  // a hard failure of the very next batch, which is precisely what this is here to
+  // prevent. Costs one ~1 KB string copy, at the point in the run where the heap is at
+  // its cleanest.
+  std::string previous = azureTokenCache();
+  const uint32_t previousExpiry = azureTokenExpiresAtMs();
+  azureInvalidateToken();
+  std::string token;
+  if (azureAuthToken(token)) return true;
+
+  if (previous.empty()) return false;  // nothing to put back (no token to begin with)
+  azureTokenCache() = std::move(previous);
+  azureTokenExpiresAtMs() = previousExpiry;
+  LOG_INF("Translator", "Azure: early token refresh refused; keeping current token (%d ms left)", (int)remaining);
+  return false;
 }
 
 const char* ParagraphTranslator::azureLangCode(const char* code) {
@@ -633,8 +681,14 @@ bool ParagraphTranslator::parseAzureResponse(const std::string& json, size_t exp
     if (t == std::string::npos) return false;
     t = json.find(':', t + 6);
     if (t == std::string::npos) return false;
-    const size_t q = json.find('"', t + 1);
-    if (q == std::string::npos) return false;
+    // The value must be a STRING and must start right here. Scanning ahead for the
+    // next quote would happily walk over a non-string value and pick up the following
+    // KEY's quote instead: for {"text":null,"to":"fr"} that returned "to" as the
+    // translation — a fabricated result written into the book. Anything but a string
+    // (null, a number, an object) fails the batch cleanly instead.
+    size_t q = t + 1;
+    while (q < json.size() && (json[q] == ' ' || json[q] == '\t' || json[q] == '\n' || json[q] == '\r')) q++;
+    if (q >= json.size() || json[q] != '"') return false;
     if (q + 1 < json.size() && json[q + 1] == '"') {
       // A legitimately empty translation. extractJsonStringValue() reports empty as a
       // parse failure, which under the exact-N rule below would sink the whole batch,
@@ -694,14 +748,33 @@ bool ParagraphTranslator::translateAzure(const std::string& text, const char* so
   auth += token;
 
   std::string response;
-  if (!httpPostJson(session, url, body, auth, response)) {
+  bool posted = httpPostJson(session, url, body, auth, response);
+  if (!posted) {
     const int code = HttpDownloader::lastHttpCode;
-    // A rejected token would otherwise stay cached until its 8-minute TTL lapses and
-    // fail every subsequent chapter the same way; drop it so the next run refetches.
-    // The caller still treats 401/403 as fatal to this chapter (shouldRetryAfterFailure).
-    if (code == 401 || code == 403) azureInvalidateToken();
-    LOG_ERR("Translator", "Azure HTTP POST failed (code %d)", code);
-    return false;
+    if (code == 401 || code == 403) {
+      // The cached token was rejected — expired early, or revoked. Recover HERE rather
+      // than dropping the cache and returning false: the caller classifies 401/403 as
+      // an unrecoverable auth failure and aborts the whole chapter/book run
+      // (TranslatingHtmlRewriter::shouldRetryAfterFailure), so a token refreshed for
+      // "next time" would never be used. That classification stays as it is — for a
+      // keyed engine a 401 really is fatal — but for this engine the credential is
+      // ours to renew, so renew it and re-issue the request once.
+      LOG_INF("Translator", "Azure: token rejected (%d), refreshing and retrying once", code);
+      azureInvalidateToken();
+      std::string fresh;
+      if (azureAuthToken(fresh)) {
+        auth = "Bearer ";
+        auth += fresh;
+        posted = httpPostJson(session, url, body, auth, response);
+      }
+      // If the refetch itself failed, lastHttpCode is now the token GET's own -1
+      // (transient) instead of the POST's 401, so the caller retries the batch rather
+      // than killing the run over what is usually a heap-refused handshake.
+    }
+    if (!posted) {
+      LOG_ERR("Translator", "Azure HTTP POST failed (code %d)", HttpDownloader::lastHttpCode);
+      return false;
+    }
   }
 
   if (!parseAzureResponse(response, count, result)) {

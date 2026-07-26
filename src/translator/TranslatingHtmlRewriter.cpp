@@ -431,6 +431,20 @@ void TranslatingHtmlRewriter::flushBatch() {
   batch.clear();
   batchTextBytes = 0;
 
+  // Azure's bearer token expires mid-chapter on a long one. Renew it HERE, before the
+  // caller's repaint: this batch's HTTP/TLS transients are already freed and the
+  // framebuffer is still released, whereas the repaint hook below hands off to the main
+  // task, which restores the 48 KB framebuffer to draw. This is the cleanest heap of the
+  // whole run, and the static GET the token fetch uses has to stand up its own TLS
+  // context alongside the chapter's live session. No-op unless the token is close to
+  // expiring; a refusal keeps the current token and translateAzure() still refreshes
+  // lazily as a fallback. Skipped for a run that is already ending — a failure inside
+  // THIS batch can have set abortedOnErrors after the fast-path check at the top, and
+  // that run will not issue another request.
+  if (engine == CrossPointSettings::ENGINE_AZURE && !abortedOnErrors && !wasCancelled && !(cancelled && *cancelled)) {
+    ParagraphTranslator::refreshAzureTokenIfExpiring();
+  }
+
   // Between-batch boundary: this batch's HTTP/TLS transients are freed and progressOut
   // reflects the blocks just written, so the heap has a clean hole. Let the caller
   // repaint here if it wants to (ChapterTranslator uses this for periodic progress

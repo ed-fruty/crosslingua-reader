@@ -175,8 +175,9 @@ Azure needs **no API key and no region**: pick it in the engine cycler and
 translate. It calls `api-edge.cognitive.microsofttranslator.com`, the
 deployment behind Microsoft Edge's built-in page translator, and
 authenticates with a short-lived bearer token fetched anonymously from
-`edge.microsoft.com/translate/auth` (one fetch per chapter, cached for 8
-minutes). No credentials of any kind are sent.
+`edge.microsoft.com/translate/auth` (cached for 8 minutes — normally one
+fetch per chapter, renewed between batches on a chapter long enough to
+outlive it). No credentials of any kind are sent.
 
 This is **not** the paid Azure Translator resource
 (`api.cognitive.microsofttranslator.com`), which would require a
