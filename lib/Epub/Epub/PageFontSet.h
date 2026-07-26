@@ -22,7 +22,7 @@ enum class LineFontRole : uint8_t {
 //
 // UNSET SENTINEL: 0, matching the "font not found" sentinel that fontIds.h reserves. A role left
 // at 0 falls back to the body font. Note that -1 is NOT a sentinel here — font ids are signed
-// hashes and negative ids are perfectly normal (NOTOSERIF_14_FONT_ID is negative), so only 0 can
+// hashes and negative ids are perfectly normal (NOTOSANS_14_FONT_ID is negative), so only 0 can
 // safely mean "unset".
 struct PageFontSet {
   int body = 0;

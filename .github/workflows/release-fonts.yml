@@ -39,8 +39,17 @@ jobs:
           echo "binary=$(python3 -c 'from cpfont_version import CPFONT_VERSION; print(CPFONT_VERSION)')" >> "$GITHUB_OUTPUT"
           echo "metadata=$(python3 -c 'from cpfont_version import FONTS_MANIFEST_VERSION; print(FONTS_MANIFEST_VERSION)')" >> "$GITHUB_OUTPUT"
 
+      # EdsLab is excluded from the shared catalogue on purpose. FONTS_REPO is
+      # the upstream project's repo, not this fork's: publishing there is
+      # redistribution by a third party, and EdsLab is the one family here that
+      # is not under the SIL OFL (its grant, "free for personal and commercial
+      # use", does not address redistribution). Being the font's author settles
+      # whether that MAY happen, not whether it SHOULD -- and it no longer needs
+      # to, since EdsLab is built into this firmware and ships as an optional zip
+      # with release.yml. Drop it from --exclude only on an explicit decision to
+      # list it in the upstream catalogue.
       - name: Build SD card fonts
-        run: python3 lib/EpdFont/scripts/build-sd-fonts.py --clean --verbose -j 1
+        run: python3 lib/EpdFont/scripts/build-sd-fonts.py --clean --verbose -j 1 --exclude EdsLab
 
       - name: Flatten output for release assets
         run: |

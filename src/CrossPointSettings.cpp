@@ -30,17 +30,22 @@ void copyToField(char* dest, const char* src, const size_t maxLen) {
 
 // The built-in reader face at `pt` in the requested family. `pt` MUST already be one of
 // BUILTIN_READER_POINT_SIZES (snap first); anything else lands on the 14pt default.
+//
+// THE single (family, point size) -> font id lookup: getReaderFontId() and smallerReaderFontId()
+// both route through here, so adding a built-in point size means editing one switch, not three.
+// `sans` selects NOTOSANS; false means the EDSLAB slot (which is also family index 0, so a stored
+// legacy Noto Serif value lands here — see LEGACY_NOTOSERIF).
 int builtinReaderFontId(const uint8_t pt, const bool sans) {
   switch (pt) {
     case 12:
-      return sans ? NOTOSANS_12_FONT_ID : NOTOSERIF_12_FONT_ID;
+      return sans ? NOTOSANS_12_FONT_ID : EDSLAB_12_FONT_ID;
     case 16:
-      return sans ? NOTOSANS_16_FONT_ID : NOTOSERIF_16_FONT_ID;
+      return sans ? NOTOSANS_16_FONT_ID : EDSLAB_16_FONT_ID;
     case 18:
-      return sans ? NOTOSANS_18_FONT_ID : NOTOSERIF_18_FONT_ID;
+      return sans ? NOTOSANS_18_FONT_ID : EDSLAB_18_FONT_ID;
     case 14:
     default:
-      return sans ? NOTOSANS_14_FONT_ID : NOTOSERIF_14_FONT_ID;
+      return sans ? NOTOSANS_14_FONT_ID : EDSLAB_14_FONT_ID;
   }
 }
 
@@ -231,19 +236,28 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   fontPointSize = storedFontSize;
 
   // Font family — uses dynamic getter/setter in SettingsList so the generic loop skips it.
-  const uint8_t storedFontFamily = doc["fontFamily"] | (uint8_t)0;
-  fontFamily = clamp(storedFontFamily, BUILTIN_FONT_COUNT, 0);
+  // An ABSENT key adopts the struct-initializer default (EdsLab); a present key is
+  // honoured, so an existing user's choice survives the upgrade untouched.
+  const uint8_t storedFontFamily = doc["fontFamily"] | fontFamily;
+  fontFamily = clamp(storedFontFamily, BUILTIN_FONT_COUNT, EDSLAB);
   // SD card font family name — not in SettingsList, load manually
   const char* sfn = doc["sdFontFamilyName"] | "";
   strncpy(sdFontFamilyName, sfn, sizeof(sdFontFamilyName) - 1);
   sdFontFamilyName[sizeof(sdFontFamilyName) - 1] = '\0';
   if (storedFontFamily == LEGACY_OPENDYSLEXIC && sdFontFamilyName[0] == '\0') {
-    fontFamily = NOTOSERIF;
+    fontFamily = EDSLAB;
     strncpy(sdFontFamilyName, "OpenDyslexic", sizeof(sdFontFamilyName) - 1);
     sdFontFamilyName[sizeof(sdFontFamilyName) - 1] = '\0';
     needsResave = true;
   } else if (storedFontFamily >= BUILTIN_FONT_COUNT) {
     needsResave = true;
+  } else if (storedFontFamily == LEGACY_NOTOSERIF) {
+    // Noto Serif was dropped from the firmware and EdsLab took its slot, so the
+    // stored index already resolves to the right family and the file needs no
+    // rewrite. Logged rather than silently reinterpreted, because the reader font
+    // visibly changes for these users and their section cache is invalidated (the
+    // font id is part of the cache key — see getReaderFontId / Section.cpp:195).
+    LOG_DBG("CPS", "Font family 0 (was Noto Serif) now resolves to EdsLab");
   }
   // Dictionary folder name — uses dynamic getter/setter in SettingsList, load manually
   copyToField(dictionaryName, doc["dictionaryName"] | "", sizeof(dictionaryName));
@@ -400,9 +414,13 @@ int CrossPointSettings::getInterlinearAnnotationFontId() const {
   // (ReaderRenderSpec::annotationFontId) and the render-time font set (readerPageFontSet), so an
   // annotation row is always drawn in the face it was measured and advanced with.
   //
-  // THE single place the annotation face is chosen. A future user-facing Annotation Size row, and the
-  // EdsLab 8pt face merging on another branch, plug in here and are picked up by the layout engine,
-  // the renderer and the cache key at once -- nothing downstream names a font id.
+  // THE single place the annotation face is chosen. A future user-facing Annotation Size row, and a
+  // switch to the now-merged EdsLab 8pt face (EDSLAB_8_FONT_ID), plug in here and are picked up by
+  // the layout engine, the renderer and the cache key at once -- nothing downstream names a font id.
+  // Still SMALL_FONT_ID for now, deliberately: notosans_8 is what interlinearAnnotationScriptSupported()
+  // below reasons about, EdsLab's ~590-codepoint repertoire covers far less of it, EDSLAB_8_FONT_ID is
+  // registered only under #ifndef OMIT_FONTS unlike SMALL_FONT_ID, and the swap would invalidate every
+  // cached interlinear section. Changing the annotation face is a decision, not a merge fixup.
   if (translationDisplayMode != PT_INTERLINEAR) return 0;
   if (!interlinearAnnotationScriptSupported()) return 0;
   // v1: the 8pt UI face. Registered unconditionally at startup (src/main.cpp), so no new font
@@ -506,7 +524,9 @@ float CrossPointSettings::getReaderLineCompression() const {
   }
 
   switch (fontFamily) {
-    case NOTOSERIF:
+    // EdsLab keeps the neutral spacing Noto Serif used in this slot; the values are
+    // unchanged from that family, not retuned for EdsLab's metrics.
+    case EDSLAB:
     default:
       switch (lineSpacing) {
         case TIGHT:

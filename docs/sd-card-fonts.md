@@ -3,6 +3,60 @@
 CrossPoint supports loading additional fonts from the SD card, including fonts
 with extended Unicode coverage (CJK, Cyrillic, Greek, etc.).
 
+## EdsLab (built in — nothing to install)
+
+**EdsLab**, a slab serif with genuine Ukrainian Cyrillic (і, ї, є, ґ), is
+compiled into this firmware and is the **default reading font**. It needs no SD
+card and no download: flash the firmware and it is already selected under
+**Settings > Reader > Font Family**, at 12/14/16/18 pt.
+
+It replaced Noto Serif as the built-in serif family, so a device that was using
+Noto Serif comes up on EdsLab after the upgrade; Noto Sans is unchanged and
+still selectable. Because the reader font id is part of the page-cache key, the
+first open of each book after upgrading re-lays it out.
+
+An SD-card build of the same family is still published with each release as
+`EdsLab-sdcard-font.zip`, and `lib/EpdFont/scripts/sd-fonts.yaml` still carries
+its recipe. That build is **optional** — it exists so an updated cut of the font
+can be shipped without reflashing, and because the SD build carries wider
+coverage than the firmware one (see below). Install it exactly like any other SD
+family (Option 3 below); it then appears as a second "EdsLab" entry in the font
+list alongside the built-in one.
+
+Coverage differs between the two builds, which is the one thing worth knowing:
+
+| | built-in | SD `.cpfont` |
+|---|---|---|
+| interval set | the shared built-in set (`lib/EpdFont/scripts/fontconvert.py`) | `reading,(0x2100-0x214F)` (`sd-fonts.yaml`) |
+| Latin, Russian/Ukrainian Cyrillic | yes | yes |
+| numero sign № | no — outside the built-in interval set | yes |
+| Vietnamese (U+1EA0–U+1EF9), combining marks, most of Latin Ext-B | **no — the TTFs have no such glyphs** | no |
+
+The font's own repertoire is ~590 codepoints, so neither build can render
+Vietnamese, polytonic Greek or the full Cyrillic range. Text in those scripts
+renders as *nothing at all* on a built-in family — EdsLab has no U+FFFD
+replacement glyph either, so `EpdFont::getGlyph()` returns `nullptr` and the
+character is skipped with zero advance rather than drawn as a box. Switch to
+Noto Sans (built in, full coverage) or an SD family for those books.
+
+To regenerate either build after changing the TTFs:
+
+    # built-in headers (sizes live in EDSLAB_FONT_SIZES at the top of the script)
+    bash lib/EpdFont/scripts/convert-builtin-fonts.sh
+    bash lib/EpdFont/scripts/build-font-ids.sh > src/fontIds.h
+
+    # SD card .cpfont build
+    python3 lib/EpdFont/scripts/build-sd-fonts.py --only EdsLab
+
+EdsLab is *not* listed under **Manage Fonts** — that browser downloads from
+the shared [crosspoint-fonts repository](https://github.com/crosspoint-reader/crosspoint-fonts),
+which carries the upstream catalogue only.
+
+**Licence.** EdsLab is © 2026 Eds Lab, released by its author as "free for
+personal and commercial use" (the terms are embedded in the font's own name
+table; see `lib/EpdFont/builtinFonts/source/EdsLab/LICENSE.txt`). Unlike the
+other families in this repository it is not under the SIL Open Font Licence.
+
 ## Installing Fonts
 
 There are three ways to install fonts:

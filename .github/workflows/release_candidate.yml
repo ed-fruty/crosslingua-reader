@@ -42,6 +42,25 @@ jobs:
           CROSSPOINT_RC_HASH: ${{ env.SHORT_SHA }}
         run: pio run -e gh_release_rc
 
+      # Mirrors release.yml. Optional for RC testers -- EdsLab is built into the
+      # firmware -- but kept so an updated font cut can be tried without a reflash.
+      - name: Install font tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y libfreetype6-dev
+          pip install freetype-py fonttools pyyaml
+
+      - name: Build EdsLab SD card font
+        run: python3 lib/EpdFont/scripts/build-sd-fonts.py --only EdsLab --clean
+
+      - name: Package EdsLab for the SD card
+        run: |
+          # Extracting this zip at the SD card root yields /fonts/EdsLab/*.cpfont.
+          mkdir -p dist/sdcard/fonts/EdsLab
+          cp lib/EpdFont/scripts/output/EdsLab/*.cpfont dist/sdcard/fonts/EdsLab/
+          cp lib/EpdFont/builtinFonts/source/EdsLab/LICENSE.txt dist/sdcard/fonts/EdsLab/
+          (cd dist/sdcard && zip -r ../EdsLab-sdcard-font.zip fonts)
+          ls -l dist/
+
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -52,3 +71,4 @@ jobs:
             .pio/build/gh_release_rc/firmware.elf
             .pio/build/gh_release_rc/firmware.map
             .pio/build/gh_release_rc/partitions.bin
+            dist/EdsLab-sdcard-font.zip

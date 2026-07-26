@@ -982,8 +982,8 @@ void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId,
 // Tooltip text renders in the reader's own family, at the size the Lingua submenu's Translation Size
 // row selects: Same = the body font, Smaller = one step down the family's point-size ladder, so the
 // popup translation reads as a secondary annotation below the source. Adapted to v2's font set
-// (NOTOSERIF / NOTOSANS + SD card fonts); the fork's family switch used a different built-in font
-// lineup (Bookerly/EdsLab/Caecilia/GPro).
+// (EDSLAB / NOTOSANS + SD card fonts); the fork's family switch offered a wider built-in lineup
+// (Bookerly/EdsLab/Caecilia/GPro), of which v2 ships only EdsLab.
 //
 // Reader size is a point size since 91900484 (CrossPointSettings::fontPointSize), not a
 // SMALL/MEDIUM/LARGE slot, so "one smaller" means the previous entry in the active family's
@@ -992,11 +992,13 @@ void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId,
 // The size is read through CrossPointSettings::getTooltipTranslationFontId() — the TOOLTIP's own
 // stored size, not a value shared with the inline modes: the tooltip is composited over a finished
 // page, so its size must not be able to re-break a line of the book (see TRANSLATION_SIZE). It
-// returns 0 both for SIZE_SAME and for a SIZE_SMALLER that cannot be honoured (every SD family, and
-// a built-in already at its smallest point size, ship no smaller face — which is also why the Lingua
-// row reads Same and refuses to cycle there). Reading the setting here rather than
-// smallerReaderFontId() directly is what makes the row mean something; before the row existed this
-// stepped down unconditionally, which is exactly why tooltipTranslationSize defaults to SIZE_SMALLER.
+// returns 0 both for SIZE_SAME and for a SIZE_SMALLER that cannot be honoured, which is every SD
+// family (the manager keeps exactly ONE reader-size face loaded and SdCardFontSystem::resolveFontId()
+// ignores its pointSize argument by design, so there is no smaller SD face to drop to) and a
+// built-in already at the smallest point size its family ships — which is also why the Lingua row
+// reads Same and refuses to cycle there. Reading the setting here rather than smallerReaderFontId()
+// directly is what makes the row mean something; before the row existed this stepped down
+// unconditionally, which is exactly why tooltipTranslationSize defaults to SIZE_SMALLER.
 //
 // 0 becomes getReaderFontId() — the body font — which also keeps renderOverlayFrame's
 // overlayFontId == fontId fast path (one shared prewarm for page + overlay) intact for SIZE_SAME.
