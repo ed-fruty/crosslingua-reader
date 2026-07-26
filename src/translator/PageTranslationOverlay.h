@@ -49,15 +49,25 @@ class PageTranslationOverlay {
   // short dim STR_NO_TRANSLATION marker so the gap is visible but unobtrusive.
   struct DisplayPara {
     std::string text;
+    // First-line indent in PIXELS, read straight off the page layout: the x position the layout
+    // engine gave this paragraph's first line ON THIS PAGE (PageLine's TextBlock word 0). It is
+    // therefore 0 for a paragraph that began on an earlier page, and 0 whenever the layout applied
+    // no indent — nothing is recomputed or synthesized here. See preparePage().
+    int16_t indent = 0;
     bool translated = true;  // false => source fallback; render() adds the dim marker line
   };
 
   bool active = false;
+  // Always a LINE TOP in content coordinates (0, or a value published by render() below), so a
+  // drawn line can never straddle the top of the viewport.
   int16_t scrollOffset = 0;
-  int16_t totalContentHeight = 0;
+  // Scroll targets for the window currently on screen, published by render() from the real line
+  // positions; -1 = none (nothing more below / nothing above). Line-top aligned, which is what lets
+  // the draw pass demand a fully-visible line box without ever losing a line: a line that straddles
+  // the bottom edge is skipped now and becomes the FIRST line of the next window.
+  int16_t nextScrollOffset = -1;
+  int16_t prevScrollOffset = -1;
   bool pagePrepared = false;
-  int16_t cachedViewportHeight = 0;
-  int16_t cachedLineHeight = 0;
 
   std::string translatedHtmlPath;
 

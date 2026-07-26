@@ -8,7 +8,6 @@
 #include <Logging.h>
 #include <expat.h>
 
-#include <algorithm>
 #include <cstring>
 
 #include "SentenceSplitter.h"
@@ -23,12 +22,15 @@ void PageTranslationOverlay::setTranslatedHtmlPath(const std::string& path) { tr
 void PageTranslationOverlay::open() {
   active = true;
   scrollOffset = 0;
+  nextScrollOffset = -1;
+  prevScrollOffset = -1;
 }
 
 void PageTranslationOverlay::onSectionChanged() {
   active = false;
   scrollOffset = 0;
-  totalContentHeight = 0;
+  nextScrollOffset = -1;
+  prevScrollOffset = -1;
   pagePrepared = false;
   pageParagraphs.clear();
   translatedCount = 0;
@@ -37,7 +39,8 @@ void PageTranslationOverlay::onSectionChanged() {
 void PageTranslationOverlay::onPageChanged() {
   active = false;
   scrollOffset = 0;
-  totalContentHeight = 0;
+  nextScrollOffset = -1;
+  prevScrollOffset = -1;
   pagePrepared = false;
   pageParagraphs.clear();
   translatedCount = 0;
@@ -466,6 +469,38 @@ static std::string sliceTranslationForPage(const PageTranslationOverlay::Paragra
   return trimmed;
 }
 
+// The paragraph indent the PAGE LAYOUT already baked into this line — never a recomputed or
+// synthesized one. ParsedText::resolveFirstLineIndent() resolves the indent ONCE at layout time
+// (CSS text-indent, or a 3-space-width fallback when Extra Paragraph Spacing is off) and
+// extractLine() seeds the line's first word with it (`xpos = firstLineIndent`, ParsedText.cpp:1315,
+// and 1228 on the bidi-reordered path), so word 0's x IS that indent, in the body font's metrics and
+// already in the section cache (the word arena is serialized verbatim). Two properties fall out of
+// reading it rather than deriving it:
+//   • A paragraph that started on an EARLIER page reaches us as a continuation line, which the
+//     layout resolved with isFirstLine=false => indent 0 => it renders flush, correctly.
+//   • Extra Paragraph Spacing ON (the default) means the layout indents nothing => 0 here too, so
+//     the overlay stops claiming an indent the page never had.
+// Only a naturally-aligned LTR line's word-0 x is an indent: for Center/Right the layout overwrites
+// that x with an alignment offset, and an RTL line is positioned from the right edge (its indent
+// shrinks effectiveWidth instead). Both resolve to 0 — matching resolveFirstLineIndent(), which
+// returns 0 for any non-natural alignment, and matching this overlay, which re-wraps LTR only.
+static int16_t bakedFirstLineIndent(const PageLine& line) {
+  const auto& block = line.getBlock();
+  if (!block || block->wordCount() == 0) return 0;
+  const BlockStyle& style = block->getBlockStyle();
+  if (style.isRtl) return 0;
+  switch (style.alignment) {
+    case CssTextAlign::Justify:
+    case CssTextAlign::Left:
+      return block->wordXpos(0);
+    case CssTextAlign::Center:
+    case CssTextAlign::Right:
+    case CssTextAlign::None:
+      return 0;
+  }
+  return 0;  // unreachable: the switch is exhaustive (-Werror=switch proves it)
+}
+
 void PageTranslationOverlay::collectPageGlyphText(const Page& page, std::string& out) {
   preparePage(page);  // idempotent (pagePrepared guard); render() will find it already done
   size_t need = 0;
@@ -489,7 +524,6 @@ void PageTranslationOverlay::preparePage(const Page& page) {
   pagePrepared = true;
   pageParagraphs.clear();
   translatedCount = 0;
-  totalContentHeight = 0;
 
   // The page knows exactly which paragraph indices it contains (set by the parser).
   LOG_DBG("PGT", "Page paragraph indices: first=%d last=%d", page.firstParagraphIdx, page.lastParagraphIdx);
@@ -511,6 +545,7 @@ void PageTranslationOverlay::preparePage(const Page& page) {
   // safety-check. Lines of one paragraph are contiguous, so one entry per idx.
   struct ParaText {
     int16_t idx;
+    int16_t indent;  // the layout's own first-line indent, taken from this paragraph's FIRST line here
     std::string text;
   };
   std::vector<ParaText> pageParas;
@@ -519,7 +554,9 @@ void PageTranslationOverlay::preparePage(const Page& page) {
     const auto* line = static_cast<const PageLine*>(el.get());
     const int16_t pIdx = line->paragraphIdx;
     if (pIdx < 0) continue;
-    if (pageParas.empty() || pageParas.back().idx != pIdx) pageParas.push_back({pIdx, ""});
+    // A new idx starts a paragraph, so THIS line is the first one of it on this page — the only line
+    // whose x carries an indent (every later line of the same paragraph starts at 0).
+    if (pageParas.empty() || pageParas.back().idx != pIdx) pageParas.push_back({pIdx, bakedFirstLineIndent(*line), ""});
     // v2 flattened TextBlock word storage: iterate by index (wordCount/wordText),
     // NOT the fork's getWords() container.
     const auto& block = line->getBlock();
@@ -540,15 +577,16 @@ void PageTranslationOverlay::preparePage(const Page& page) {
   // or one that fails the boundary safety-check, is source-filled and marked
   // untranslated (Option C: source text + dim marker).
   for (int idx = first; idx <= last; idx++) {
-    const std::string* visiblePtr = nullptr;
+    const ParaText* visiblePara = nullptr;
     for (const auto& pp : pageParas) {
       if (pp.idx == idx) {
-        visiblePtr = &pp.text;
+        visiblePara = &pp;
         break;
       }
     }
-    if (visiblePtr == nullptr) continue;  // image/gap index with no visible text line — nothing to show
-    const std::string& visibleText = *visiblePtr;
+    if (visiblePara == nullptr) continue;  // image/gap index with no visible text line — nothing to show
+    const std::string& visibleText = visiblePara->text;
+    const int16_t indent = visiblePara->indent;
 
     const PageTranslationOverlay::ParagraphPair* pair = nullptr;
     for (const auto& p : pairs) {
@@ -577,19 +615,17 @@ void PageTranslationOverlay::preparePage(const Page& page) {
     // gross drift while tolerating benign in-text hyphenation.
     bool forceSource = false;
     if (pair != nullptr && (isFirst || isLast) && !pair->origText.empty() && !visibleText.empty()) {
-      // ChapterHtmlSlimParser prepends a U+2022 bullet as the first word of every <li> (and, when
-      // Extra Paragraph Spacing is OFF, a U+2003 em-space indent before it), so a list item's
-      // visibleText reads "• <text>" / " • <text>". The reparsed origText has neither, and
-      // foldForMatch folds neither, so the needle would never be found and a correctly-translated
-      // <li> at a page boundary would be wrongly source-filled. Strip a leading em-space indent
-      // and/or bullet (+ following spaces) here -- LOCAL to the boundary needle only, so the
-      // general fold is untouched and origText is unchanged. The em-space strip also fixes the
-      // same-cause artifact on non-list indented boundary paragraphs.
+      // ChapterHtmlSlimParser prepends a U+2022 bullet as the first word of every <li>, so a list
+      // item's visibleText reads "• <text>". The reparsed origText has no bullet, and foldForMatch
+      // does not fold it, so the needle would never be found and a correctly-translated <li> at a
+      // page boundary would be wrongly source-filled. Strip a leading bullet (+ following spaces)
+      // here -- LOCAL to the boundary needle only, so the general fold is untouched and origText is
+      // unchanged. (No em-space strip is needed: the layout expresses a paragraph indent as a pixel
+      // x offset, never as a character, so no synthetic em-space can reach the page words.)
       std::string vis = visibleText;
       size_t bo = 0;
-      if (vis.compare(0, 3, "\xe2\x80\x83") == 0) bo += 3;  // U+2003 em-space paragraph indent
-      if (vis.compare(bo, 3, "\xe2\x80\xa2") == 0) {        // U+2022 <li> bullet
-        bo += 3;
+      if (vis.compare(0, 3, "\xe2\x80\xa2") == 0) {  // U+2022 <li> bullet
+        bo = 3;
         while (bo < vis.size() && vis[bo] == ' ') bo++;
       }
       if (bo) vis.erase(0, bo);
@@ -613,29 +649,18 @@ void PageTranslationOverlay::preparePage(const Page& page) {
     }
 
     if (pair == nullptr || pair->translation.empty() || forceSource) {
-      pageParagraphs.push_back({visibleText, false});  // Option C source fallback
+      pageParagraphs.push_back({visibleText, indent, false});  // Option C source fallback
       continue;
     }
 
     const int visibleSentences = countSentences(visibleText);
     std::string shown = sliceTranslationForPage(*pair, visibleText, visibleSentences, isFirst, isLast);
     if (shown.empty()) {
-      pageParagraphs.push_back({visibleText, false});  // defensive: never show a blank translated line
+      pageParagraphs.push_back({visibleText, indent, false});  // defensive: never show a blank translated line
       continue;
     }
-    pageParagraphs.push_back({std::move(shown), true});
+    pageParagraphs.push_back({std::move(shown), indent, true});
     translatedCount++;
-  }
-
-  // Match the reader's paragraph presentation: when "Extra Paragraph Spacing" is
-  // OFF, the reader indents each paragraph's first line with an em-space (U+2003)
-  // instead of adding a gap. Mirror that here for the paragraph body (translation
-  // or source). Applied once (preparePage is guarded by pagePrepared). The dim
-  // marker line added in render() is never indented. The gap is handled in render().
-  if (!SETTINGS.extraParagraphSpacing) {
-    for (auto& p : pageParagraphs) {
-      if (!p.text.empty()) p.text.insert(0, "\xe2\x80\x83");
-    }
   }
 
   LOG_DBG("PGT", "Result: %d paragraph(s), %d translated", (int)pageParagraphs.size(), (int)translatedCount);
@@ -653,35 +678,33 @@ bool PageTranslationOverlay::handleInput(MappedInputManager& input) {
   const auto nextBtn = useFrontButtons ? MappedInputManager::Button::Right : MappedInputManager::Button::PageForward;
   const auto backBtn = useFrontButtons ? MappedInputManager::Button::Left : MappedInputManager::Button::PageBack;
 
-  // Next button: scroll down one screenful, or close if we're at the end.
+  // Next/Back move to a scroll offset render() derived from the REAL line positions (see
+  // nextScrollOffset / prevScrollOffset), instead of stepping by a fixed pixel arithmetic that
+  // assumed every vertical step was a whole line height. With paragraph gaps of half a line height
+  // (what the page layout uses) a fixed step drifts off the line grid; a line-top target keeps the
+  // window aligned to real lines, which is what lets the draw pass require a fully-visible line box
+  // and still never lose one. EpubReaderActivity re-renders on every accepted press
+  // (handleInput -> requestUpdate), so these targets always describe the window on screen.
+
+  // Next button: advance to the first line that is not fully visible, or close if there is none.
   if (input.wasReleased(nextBtn)) {
     if (!active) return false;
-    const int lh = cachedLineHeight > 0 ? cachedLineHeight : 20;
-    const int vpH = cachedViewportHeight > 0 ? cachedViewportHeight : 700;
-    const int screenScroll = (vpH / lh) * lh;
-    const int maxScroll = std::max(0, (int)totalContentHeight - vpH);
-    LOG_DBG("PGT", "SCROLL NEXT: offset %d -> %d (step=%d, vpH=%d, lh=%d, totalH=%d, maxScroll=%d)", scrollOffset,
-            scrollOffset + screenScroll, screenScroll, vpH, lh, totalContentHeight, maxScroll);
-    if (scrollOffset + vpH < totalContentHeight) {
-      // More content below — scroll down.
-      scrollOffset += screenScroll;
+    LOG_DBG("PGT", "SCROLL NEXT: offset %d -> %d", scrollOffset, nextScrollOffset);
+    if (nextScrollOffset >= 0) {
+      scrollOffset = nextScrollOffset;
     } else {
-      // Already showing last content — close the overlay.
+      // Already showing the last content — close the overlay.
       active = false;
       scrollOffset = 0;
     }
     return true;
   }
 
-  // Back button: scroll up, or close if already at the top.
+  // Back button: step back one screenful (line-aligned), or close if already at the top.
   if (input.wasReleased(backBtn)) {
     if (!active) return false;
-    if (scrollOffset > 0) {
-      // Scroll by exactly one screenful — no overlap, next press = next content.
-      const int lh = cachedLineHeight > 0 ? cachedLineHeight : 20;
-      const int screenScroll = (cachedViewportHeight / lh) * lh;
-      scrollOffset -= screenScroll;
-      if (scrollOffset < 0) scrollOffset = 0;
+    if (scrollOffset > 0 && prevScrollOffset >= 0) {
+      scrollOffset = prevScrollOffset;
     } else {
       active = false;
       scrollOffset = 0;
@@ -710,7 +733,12 @@ namespace {
 // measurement and the draw pass — a single source of truth so the scroll height can never drift
 // from what's actually drawn.
 struct PageTranslationLine {
-  std::string content;           // words joined by single spaces (no trailing hyphen)
+  std::string content;  // words joined by single spaces (no trailing hyphen)
+  // Pixel indent for THIS line: the page layout's own first-line paragraph indent, carried on the
+  // paragraph's first line only (0 on every other line, and on the dim marker line). It shifts the
+  // line's start and shrinks its usable width, exactly as it does in the page layout
+  // (extractLine: xpos starts at firstLineIndent, effectivePageWidth = pageWidth - firstLineIndent).
+  int16_t indent = 0;
   bool hyphen = false;           // append '-' when drawing (word was hyphenated here)
   bool lastInParagraph = false;  // last line of its paragraph — never justified
   bool dim = false;              // dim/greyed marker line (STR_NO_TRANSLATION) — left-aligned, never justified
@@ -730,8 +758,10 @@ std::vector<std::string> splitWords(const std::string& s) {
 
 // Greedy word-wrap with optional Liang hyphenation (mirrors the reader): when a word overflows the
 // remaining space and hyphenation is on, break it at the longest language-valid point that fits.
+// `firstIndent` is the paragraph's baked first-line indent: it narrows the FIRST line's usable width
+// (and, at draw time, shifts its start) — the same two effects the page layout applies.
 std::vector<PageTranslationLine> breakParagraph(const GfxRenderer& r, int fontId, const std::string& text, int maxW,
-                                                int spW, bool hyphenate) {
+                                                int firstIndent, int spW, bool hyphenate) {
   std::vector<PageTranslationLine> lines;
   std::vector<std::string> words = splitWords(text);
   if (words.empty()) return lines;
@@ -741,18 +771,20 @@ std::vector<PageTranslationLine> breakParagraph(const GfxRenderer& r, int fontId
   int lineW = 0;
   bool lineHyphen = false;
   auto pushLine = [&](bool last) {
-    lines.push_back({line, lineHyphen, last, false});
+    lines.push_back({line, static_cast<int16_t>(lines.empty() ? firstIndent : 0), lineHyphen, last, false});
     line.clear();
     lineW = 0;
     lineHyphen = false;
   };
 
   for (size_t wi = 0; wi < words.size();) {
+    // Only the line still being built as the paragraph's first one pays the indent.
+    const int lineMaxW = lines.empty() ? maxW - firstIndent : maxW;
     const std::string word = words[wi];
     const int wW = r.getTextWidth(fontId, word.c_str());
     const int need = (line.empty() ? 0 : spW) + wW;
 
-    if (line.empty() || lineW + need <= maxW) {
+    if (line.empty() || lineW + need <= lineMaxW) {
       if (!line.empty()) {
         line += ' ';
         lineW += spW;
@@ -765,7 +797,7 @@ std::vector<PageTranslationLine> breakParagraph(const GfxRenderer& r, int fontId
 
     // Word doesn't fit on the current (non-empty) line.
     if (hyphenate) {
-      const int avail = maxW - lineW - spW - hyphenW;  // room for a prefix after a space + hyphen
+      const int avail = lineMaxW - lineW - spW - hyphenW;  // room for a prefix after a space + hyphen
       int bestOff = 0;
       bool bestNeedsHyphen = true;
       if (avail > 0) {
@@ -871,17 +903,21 @@ void PageTranslationOverlay::render(GfxRenderer& renderer, const Page& page, int
 
   renderer.fillRect(xOffset, yOffset, viewportWidth, viewportHeight, false);
 
-  const int lh = renderer.getLineHeight(pageTranslationFontId);
+  // Line pitch honors the reader's Line Spacing setting (Tight/Normal/Wide), the same compression the
+  // page layout measures every line with (ChapterHtmlSlimParser::addLineToPage). Reading it here is
+  // what keeps a paragraph's line rhythm — and the half-line paragraph gap derived from it below —
+  // the same in the overlay as on the page under it.
+  const int lh = renderer.getLineHeight(pageTranslationFontId, SETTINGS.getReaderLineCompression());
   const int spW = renderer.getSpaceWidth(pageTranslationFontId);
   constexpr int PAD = 10;
   const int maxTextW = viewportWidth - 2 * PAD;
-  // Mirror the reader's "Extra Paragraph Spacing" setting: a blank-line gap between paragraphs
-  // when on, otherwise paragraphs run flush (the first-line indent applied in preparePage marks
-  // the boundary instead). Kept a multiple of lh so screen-by-screen scrolling stays aligned.
-  const int paraSpacing = SETTINGS.extraParagraphSpacing ? lh : 0;
-
-  cachedViewportHeight = static_cast<int16_t>(viewportHeight);
-  cachedLineHeight = static_cast<int16_t>(lh);
+  // Mirror the reader's "Extra Paragraph Spacing" setting: a gap between paragraphs when on,
+  // otherwise paragraphs run flush (the layout's first-line indent, reproduced per paragraph, marks
+  // the boundary instead). HALF a line height, which is exactly what the page layout adds after a
+  // paragraph (ChapterHtmlSlimParser::makePages: `currentPageNextY += lineHeight / 2`) — a full lh
+  // showed a gap twice the page's. Content therefore no longer advances in whole-lh steps, which is
+  // why the draw pass below scrolls to real line tops instead of fixed pixel multiples.
+  const int paraSpacing = SETTINGS.extraParagraphSpacing ? lh / 2 : 0;
 
   // Honor the reader's hyphenation toggle + paragraph alignment. The overlay shows the *translated*
   // text, so route hyphenation through the translation's target-language slot (falls back to
@@ -893,13 +929,19 @@ void PageTranslationOverlay::render(GfxRenderer& renderer, const Page& page, int
   }
   const uint8_t align = SETTINGS.paragraphAlignment;
 
-  // Break every paragraph into lines ONCE; reuse for both height and drawing so they can't diverge.
+  // Break every paragraph into lines ONCE; reuse for both the scroll metrics and drawing so they
+  // can't diverge.
   std::vector<std::vector<PageTranslationLine>> paras;
   paras.reserve(pageParagraphs.size());
   const char* const marker = tr(STR_NO_TRANSLATION);
-  int contentH = 0;
   for (const auto& para : pageParagraphs) {
-    auto lines = breakParagraph(renderer, pageTranslationFontId, para.text, maxTextW, spW, hyphenate);
+    // Keep the layout's indent inside the panel: a hanging (negative) CSS indent may reach at most
+    // into the panel's own padding, and a pathological positive one may never eat more than half the
+    // text column (which would leave the first line unusable). Ordinary indents pass untouched.
+    int indent = para.indent;
+    if (indent < -PAD) indent = -PAD;
+    if (indent > maxTextW / 2) indent = maxTextW / 2;
+    auto lines = breakParagraph(renderer, pageTranslationFontId, para.text, maxTextW, indent, spW, hyphenate);
     if (!para.translated) {
       // Option C: the body already holds the SOURCE text; append one short dim
       // marker line so the untranslated gap is visible but unobtrusive.
@@ -909,29 +951,44 @@ void PageTranslationOverlay::render(GfxRenderer& renderer, const Page& page, int
       mk.dim = true;
       lines.push_back(std::move(mk));
     }
-    contentH += static_cast<int>(lines.size()) * lh + paraSpacing;
     paras.push_back(std::move(lines));
   }
-  if (!paras.empty()) contentH -= paraSpacing;
-
-  // totalContentHeight = full content height (NOT minus viewport).
-  // scrollOffset steps through it in viewport-sized chunks.
-  totalContentHeight = static_cast<int16_t>(contentH);
 
   if (scrollOffset < 0) scrollOffset = 0;
 
+  // One pass: draw the lines that fit entirely in the viewport and, at the same time, publish the
+  // two line-top scroll targets handleInput() steps to.
+  //   • nextScrollOffset: the first line NOT fully visible in this window. It becomes the next
+  //     window's first line, so the line skipped at the bottom edge below is never lost. -1 => the
+  //     rest of the content fits, and the next press closes the overlay.
+  //   • prevScrollOffset: the FIRST line whose own screenful would reach the current window's top —
+  //     i.e. the furthest-back window that leaves no hole between it and where we are now.
+  // scrollOffset is always one of these (or 0), hence always a line top, hence a drawn line can only
+  // ever be cut off at the BOTTOM edge — never at the top, and never spilling out of the panel over
+  // the status bar.
   const int clipTop = yOffset;
   const int clipBottom = yOffset + viewportHeight;
-  int curY = yOffset - scrollOffset;
+  int nextOff = -1;
+  int prevOff = -1;
+  int contentY = 0;
   for (const auto& lines : paras) {
     for (const auto& ln : lines) {
-      if (curY + lh > clipTop && curY + lh <= clipBottom) {
-        drawPageTranslationLine(renderer, pageTranslationFontId, ln, xOffset + PAD, curY, maxTextW, spW, align);
+      const int y = yOffset + contentY - scrollOffset;
+      if (y >= clipTop && y + lh <= clipBottom) {
+        drawPageTranslationLine(renderer, pageTranslationFontId, ln, xOffset + PAD + ln.indent, y, maxTextW - ln.indent,
+                                spW, align);
       }
-      curY += lh;
+      if (prevOff < 0 && contentY + viewportHeight >= scrollOffset) prevOff = contentY;
+      // `contentY > scrollOffset` only matters in the degenerate case of a line taller than the whole
+      // viewport: without it the target could be the window's own first line and a press would move
+      // nothing. Forward progress is then always at least one line.
+      if (nextOff < 0 && contentY > scrollOffset && contentY + lh > scrollOffset + viewportHeight) nextOff = contentY;
+      contentY += lh;
     }
-    curY += paraSpacing;
+    contentY += paraSpacing;
   }
+  nextScrollOffset = static_cast<int16_t>(nextOff);
+  prevScrollOffset = static_cast<int16_t>(prevOff);
 }
 
 // ── Font helper ──────────────────────────────────────────────────────────────
