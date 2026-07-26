@@ -3,6 +3,53 @@
 CrossPoint supports loading additional fonts from the SD card, including fonts
 with extended Unicode coverage (CJK, Cyrillic, Greek, etc.).
 
+## EdsLab (ships with this build)
+
+This firmware build ships one font family of its own: **EdsLab**, a slab
+serif with genuine Ukrainian Cyrillic (і, ї, є, ґ) and the numero sign (№).
+It is an SD-card font rather than a built-in one — the four point sizes come
+to 3.3 MB, far more than the app partition has free — so it costs nothing in
+firmware flash but has to be copied to the card by hand once.
+
+1. Download `EdsLab-sdcard-font.zip` from the same release you flashed
+   (it is published alongside `firmware.bin`).
+2. Extract it at the **root of your SD card**. The zip already contains the
+   right folder layout, so you should end up with:
+
+       SD Card Root/
+       └── fonts/
+           └── EdsLab/
+               ├── EdsLab_12.cpfont
+               ├── EdsLab_14.cpfont
+               ├── EdsLab_16.cpfont
+               ├── EdsLab_18.cpfont
+               └── LICENSE.txt
+
+   If you would rather keep the SD root tidy, rename `fonts` to `.fonts` —
+   both roots are scanned at boot (see [Option 3](#option-3-manual-sd-card-copy)).
+3. Insert the card and power on the reader.
+4. Select it under **Settings > Reader > Font Family > EdsLab**. Sizes 12–18
+   are then available under **Settings > Reader > Font Size**.
+
+EdsLab is *not* listed under **Manage Fonts** — that browser downloads from
+the shared [crosspoint-fonts repository](https://github.com/crosspoint-reader/crosspoint-fonts),
+which carries the upstream catalogue only.
+
+Because the same SD font renders both an original text and its Ukrainian
+translation, EdsLab is built with the `reading` interval preset plus the
+Letterlike Symbols block, i.e. `--intervals reading,(0x2100-0x214F)`. That
+covers Latin, Greek, Cyrillic, the usual symbol and punctuation blocks, and
+№ ™ ℃ ℉. The exact interval string lives in
+`lib/EpdFont/scripts/sd-fonts.yaml` so the family can be regenerated
+reproducibly:
+
+    python3 lib/EpdFont/scripts/build-sd-fonts.py --only EdsLab
+
+**Licence.** EdsLab is © 2026 Eds Lab, released by its author as "free for
+personal and commercial use" (the terms are embedded in the font's own name
+table; see `lib/EpdFont/builtinFonts/source/EdsLab/LICENSE.txt`). Unlike the
+other families in this repository it is not under the SIL Open Font Licence.
+
 ## Installing Fonts
 
 There are three ways to install fonts:
