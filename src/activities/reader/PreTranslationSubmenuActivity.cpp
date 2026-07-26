@@ -401,13 +401,17 @@ const char* PreTranslationSubmenuActivity::pageTranslationButtonsLabel() const {
                       : StrId::STR_FRONT_BUTTONS);
 }
 
-// STR_PT_DARK / STR_PT_LIGHT ("Dimmed" / "Dimmed Light") are deliberately REUSED here: they are the
-// exact strings the two retired display modes showed before they collapsed into Interleaved + this
-// sub-setting, so a migrated user sees the shade they had under the name they knew, in all 31
-// languages, with no new keys.
+// Dedicated value keys, NOT the retired modes' STR_PT_DARK / STR_PT_LIGHT. Those two were written as
+// MODE NAMES ("Dimmed" / "Dimmed Light"), and a mode name does not survive being moved into a value
+// column: in inflected languages the adjective has to agree with that language's word for "colour"
+// (Slovak "Farba" is feminine, so the masculine "Sivý" it inherited was simply wrong), and several
+// languages had rendered the pair as an adverb phrase that is ungrammatical read as a colour
+// ("Gedimmt hell", "Atténué clair"). The shade IS the renderer's gray level, so each language now
+// names the colour outright — grey / light grey in its own standalone form. STR_PT_DARK /
+// STR_PT_LIGHT stay: ptModeLabel() still maps the two retired PT_LEGACY_DIMMED* modes to them.
 const char* PreTranslationSubmenuActivity::translationColourLabel() const {
-  return I18N.get(SETTINGS.translationShade == CrossPointSettings::SHADE_DIMMED_LIGHT ? StrId::STR_PT_LIGHT
-                                                                                      : StrId::STR_PT_DARK);
+  return I18N.get(SETTINGS.translationShade == CrossPointSettings::SHADE_DIMMED_LIGHT ? StrId::STR_SHADE_DIMMED_LIGHT
+                                                                                      : StrId::STR_SHADE_DIMMED);
 }
 
 const char* PreTranslationSubmenuActivity::translationSizeLabel() const {
