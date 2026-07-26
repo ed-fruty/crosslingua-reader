@@ -130,6 +130,17 @@ The bump exists because the version number *is* the cache key, and under
   are superseded. That scheme produced several row-sets stacked over one line while
   neighbouring lines carried none, and parked a shard of translation against the right
   margin whenever a sentence started late.
+- **The pairing reads WORDS, not tokens.** `ParsedText` does not always store one token
+  per word: with Focus Reading on, every word is a bold prefix plus a regular tail
+  ("Ok" is `"O"` + `"k"`), and `extractLine` concatenates the tail back before a line
+  leaves the layout engine. Version 40 paired over post-layout lines and so saw whole
+  words for free; version 41 pairs *before* layout and must merge them itself
+  (`buildMergedWordStream`). Without that, `"Ok."` keys as `"O k"` (3 bytes) instead of
+  `"Ok"` (2), clears the junk-sentence test, and takes an annotation row and a forced
+  line break that the Tooltip overlay — which reads laid-out page words — does not give
+  it. The two consumers `src/translator/SentencePairing.h` promises a single answer to
+  would then disagree, and only when the setting is on. Annotation indices come back in
+  merged-word space and are mapped to token indices before anything else uses them.
 - **The last line of every sentence is not justified.** It is now usually short, since
   the following sentence no longer fills it; stretching it to the full measure would
   open gaping word gaps. This reuses the rule the paragraph's own last line already had

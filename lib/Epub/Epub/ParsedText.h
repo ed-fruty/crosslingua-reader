@@ -106,6 +106,15 @@ class ParsedText {
   // extractLine ("Bo njour ," instead of "Bonjour,"). Pass this straight into addWord's
   // attachToPrevious, as flushPartWordBuffer does for the parser's own re-emit.
   bool wordAttachesToPrevious(const size_t index) const { return index < wordContinues.size() && wordContinues[index]; }
+  // True when this token is the REGULAR TAIL of a focus-reading bold-prefix split ("k" of "Ok"), and
+  // therefore NOT a word in its own right: extractLine concatenates it back into the preceding entry
+  // before any line leaves this class, so the page words every other consumer reads never contain
+  // one. A caller that walks the PRE-layout token stream as if it were words must merge on this flag
+  // or it counts "O" "k" where the rest of the system counts "Ok" — which is a different sentence,
+  // a different match key and a different junk verdict (PtLayout::Interlinear's sentence pairing).
+  bool wordIsFocusSuffixAt(const size_t index) const {
+    return index < wordIsFocusSuffix.size() && wordIsFocusSuffix[index];
+  }
   // The first-line indent line 0 of this block was laid out with — literally the value
   // resolveFirstLineIndent handed extractLine, so a caller that has to line something up with that
   // line cannot re-derive a subtly different one from the textIndentDefined / extraParagraphSpacing /

@@ -417,6 +417,46 @@ void test_mergeJunkSentences_folds_stray_dot(void) {
   TEST_ASSERT_EQUAL(4, splits.spans[0].endWord);
 }
 
+// FOCUS READING must not change where a sentence begins.
+//
+// ParsedText::addWord splits every word into a BOLD PREFIX plus a regular tail when the setting is
+// on ("Ok" is stored as "O" + "k"), and peels punctuation into a token of its own. extractLine
+// concatenates the tail back before a line leaves the layout engine, so the page words the Tooltip
+// overlay splits are "Ok" ".". PtLayout::Interlinear reads the block PRE-layout, so it is the one
+// caller that can see the raw tokens — and it must merge them first, which is what
+// buildMergedWordStream (ChapterHtmlSlimParser.cpp) exists for.
+//
+// This pins WHY: the same sentence gets a different junk verdict in the two streams, so the two
+// consumers SentencePairing.h promises one answer to would disagree about whether the short sentence
+// is a unit at all. The parser-side merge itself is not host-testable — ParsedText is not in
+// `[env:native]`'s build_src_filter and could not link there (GfxRenderer) — so what is pinned here
+// is the requirement it satisfies.
+void test_focus_reading_tokens_need_merging_before_pairing(void) {
+  // "He ran. Ok. Then he stopped." — plain words, i.e. Focus Reading OFF.
+  const WordArray plain({"He", "ran.", "Ok.", "Then", "he", "stopped."});
+  SentenceSplitResult plainSplits = splitSentences(plain.data(), plain.count());
+  TEST_ASSERT_EQUAL(3, plainSplits.count);
+  mergeJunkSentences(plainSplits, plain.data());
+  TEST_ASSERT_EQUAL(2, plainSplits.count);  // "Ok." is junk: folded into "He ran."
+
+  // The same paragraph as ParsedText stores it with Focus Reading ON, then merged back the way
+  // extractLine does — i.e. what the tooltip sees, and what the pairing must be given.
+  const WordArray merged({"He", "ran", ".", "Ok", ".", "Then", "he", "stopped", "."});
+  SentenceSplitResult mergedSplits = splitSentences(merged.data(), merged.count());
+  TEST_ASSERT_EQUAL(3, mergedSplits.count);
+  mergeJunkSentences(mergedSplits, merged.data());
+  TEST_ASSERT_EQUAL(2, mergedSplits.count);  // same verdict as the plain stream
+
+  // The RAW tokens, unmerged. "Ok" arrives as "O" "k", whose key is "O k" (3 bytes) instead of "Ok"
+  // (2), so it clears the <= 2-byte junk test and keeps a sentence — and therefore an annotation row
+  // and a forced line break — the tooltip never gives it.
+  const WordArray tokens({"H", "e", "r", "an", ".", "O", "k", ".", "T", "hen", "h", "e", "sto", "pped", "."});
+  SentenceSplitResult tokenSplits = splitSentences(tokens.data(), tokens.count());
+  TEST_ASSERT_EQUAL(3, tokenSplits.count);
+  mergeJunkSentences(tokenSplits, tokens.data());
+  TEST_ASSERT_EQUAL(3, tokenSplits.count);  // NOT folded — the divergence
+}
+
 // Nothing to align: an empty side is reported by splitSentencePair, never by a bogus mapping.
 void test_splitSentencePair_empty_side_rejected(void) {
   const WordArray src({"Hello", "world."});
@@ -469,6 +509,7 @@ int main(int /*argc*/, char** /*argv*/) {
   RUN_TEST(test_mapPair_more_source_than_translation_no_unmapped);
   RUN_TEST(test_groupSpanSteps_empty_span_emits_nothing);
   RUN_TEST(test_mergeJunkSentences_folds_stray_dot);
+  RUN_TEST(test_focus_reading_tokens_need_merging_before_pairing);
   RUN_TEST(test_splitSentencePair_empty_side_rejected);
 
   RUN_TEST(test_trimToSentences_first2);

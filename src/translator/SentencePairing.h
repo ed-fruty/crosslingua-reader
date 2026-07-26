@@ -11,6 +11,10 @@
 // sentence?", so the rule lives here once instead of in each of them:
 //   * TooltipOverlay  — builds a key -> translation index at view time and shows one unit per press;
 //   * PtLayout::Interlinear — forces each sentence to start a line and emits its annotation row above it.
+// Both must feed it the same WORDS, which is not automatic: the tooltip reads laid-out page words,
+// while Interlinear reads a ParsedText before layout, and with Focus Reading on that block stores a
+// bold prefix and a regular tail as two tokens ("O" + "k"). Interlinear merges them back
+// (buildMergedWordStream) precisely so the answers below cannot depend on a display setting.
 // It used to live only in TooltipOverlay.cpp, whose TU pulls GfxRenderer / Page / HalStorage and
 // therefore cannot link on the native host; the host test kept a hand-copied MIRROR of the grouping
 // rule in sync by comment. This TU is pure text logic (SentenceSplitter + std::string), is listed in

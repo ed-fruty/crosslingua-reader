@@ -10,6 +10,7 @@
 #include <expat.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <iterator>
 #include <new>
 
@@ -2225,6 +2226,85 @@ void ChapterHtmlSlimParser::makePagesInterlinearMode() {
   }
 }
 
+namespace {
+
+// The WORD stream of a block whose token stream may not be one token per word.
+//
+// Focus Reading (ParsedText::addWord) splits every word into a BOLD PREFIX plus a regular tail
+// marked wordIsFocusSuffix, so "Ok" is stored as "O" + "k". extractLine concatenates the tail back
+// before a line leaves ParsedText, which is why the tooltip — which reads laid-out page words — and
+// every earlier version of the Interlinear pairing saw whole words. Feeding the raw token array to
+// the sentence pairing instead gives it a DIFFERENT text: "Ok." becomes "O" "k" ".", whose match key
+// is "O k" (3 bytes) rather than "Ok" (2), so mergeJunkSentences stops folding it and the sentence
+// gets an annotation row and a forced line break the tooltip does not give it. The two consumers
+// SentencePairing.h promises one answer to then disagree, and only when Focus Reading is on.
+//
+// So: merge exactly what extractLine merges, and keep the token index of each merged word so the
+// annotations coming back in merged-word space can be turned into the token indices layout needs.
+struct MergedWordStream {
+  std::string arena;              // NUL-separated merged words; EMPTY on the no-split fast path
+  std::vector<const char*> ptrs;  // one entry per merged WORD, pointing at arena or at the block
+  std::vector<uint16_t> toToken;  // merged index -> first token index; EMPTY means the two coincide
+
+  // Token index for merged index `merged`. Also correct for an EXCLUSIVE end index: merged word
+  // `merged` starts at the token one past the end of merged word `merged - 1`, and a past-the-end
+  // index maps to the token count.
+  size_t tokenAt(const size_t merged, const size_t tokenCount) const {
+    if (toToken.empty()) return std::min(merged, tokenCount);
+    return merged < toToken.size() ? toToken[merged] : tokenCount;
+  }
+};
+
+void buildMergedWordStream(const ParsedText& block, MergedWordStream& out) {
+  const size_t tokenCount = block.size();
+  out.arena.clear();
+  out.ptrs.clear();
+  out.toToken.clear();
+
+  size_t suffixTokens = 0;
+  size_t textBytes = 0;
+  for (size_t w = 0; w < tokenCount; w++) {
+    textBytes += block.wordAt(w).size();
+    if (block.wordIsFocusSuffixAt(w)) suffixTokens++;
+  }
+
+  // FAST PATH — Focus Reading off, or a block it did not split (already-bold or CJK text). Nothing
+  // to merge, so point straight at the block's own word strings and copy no bytes at all. This is
+  // every reader who has not turned the setting on, i.e. the default.
+  if (suffixTokens == 0) {
+    out.ptrs.reserve(tokenCount);
+    for (size_t w = 0; w < tokenCount; w++) out.ptrs.push_back(block.wordAt(w).c_str());
+    return;
+  }
+
+  // SLOW PATH — one flat NUL-separated arena rather than a vector<std::string>: the paragraph's own
+  // text is a few KB, whereas one std::string header per word is 24 B before any heap the long words
+  // would need. Sized EXACTLY (every byte of text, one NUL per merged word) and reserved up front, so
+  // no append can reallocate; the pointers are still built from offsets afterwards rather than as we
+  // go, which keeps that a performance property and not a correctness one.
+  const size_t mergedCount = tokenCount - suffixTokens;
+  out.arena.reserve(textBytes + mergedCount);
+  out.toToken.reserve(mergedCount);
+  out.ptrs.reserve(mergedCount);
+  std::vector<uint32_t> offsets;
+  offsets.reserve(mergedCount);
+  for (size_t w = 0; w < tokenCount; w++) {
+    if (block.wordIsFocusSuffixAt(w) && !offsets.empty()) {
+      out.arena.pop_back();  // drop the terminator: this token continues the word before it
+      out.arena += block.wordAt(w);
+      out.arena.push_back('\0');
+      continue;
+    }
+    offsets.push_back(static_cast<uint32_t>(out.arena.size()));
+    out.toToken.push_back(static_cast<uint16_t>(w));
+    out.arena += block.wordAt(w);
+    out.arena.push_back('\0');
+  }
+  for (const uint32_t offset : offsets) out.ptrs.push_back(out.arena.data() + offset);
+}
+
+}  // namespace
+
 void ChapterHtmlSlimParser::buildAnnotationRows(const InterlinearAnnotation& annotation, const ParsedText& transBlock,
                                                 const CssTextAlign sourceAlignment, const int16_t firstRowIndent,
                                                 const uint16_t measureWidth, const int annotationFont,
@@ -2420,32 +2500,52 @@ void ChapterHtmlSlimParser::renderInterlinear(std::unique_ptr<ParsedText> origBl
   // layoutAndExtractLines only ever auto-resolves isRtl inside `!directionDefined && hasRtlWord`, so
   // when hasRtlWord is false isRtl cannot change, and when it is true the conjunction is already
   // false either way. containsRtlWord() is final as soon as the words are in.
-  const bool annotate =
-      interlinearPairFn != nullptr && !blockStyle.isRtl && !origBlock->containsRtlWord() && !transBlock->isEmpty();
+  //
+  // The token-count bound is the other half of a uint16_t contract: every index that leaves the
+  // pairing (InterlinearAnnotation's three fields, and therefore the forced-break list) is a
+  // uint16_t, and a token index past 65535 would wrap into a valid-looking small one. A paragraph
+  // that large cannot occur — the parser soft-flushes at TEXT_BLOCK_SOFT_FLUSH_WORDS — so this is a
+  // guard, not a code path.
+  const bool annotate = interlinearPairFn != nullptr && !blockStyle.isRtl && !origBlock->containsRtlWord() &&
+                        !transBlock->isEmpty() && origBlock->size() <= UINT16_MAX && transBlock->size() <= UINT16_MAX;
 
   // STEP 0 — pair sentences, then hand their start indices to line breaking as forced breaks.
   //
   // The word arrays are read PRE-layout, straight out of both blocks in logical order. For the
   // source that is a change of input (it used to be the laid-out lines) and a strictly cleaner one:
   // no "dun-" hyphen fragments exist yet, which is the caveat the post-layout comment used to
-  // explain away. Both c_str() runs point into the blocks' own word strings and die with this scope,
-  // well before layoutAndExtractLines mutates or erases them.
+  // explain away. What it must NOT change is the tokenization, so both sides go through
+  // buildMergedWordStream: with Focus Reading on the raw token array is not words (see there), and
+  // the pairing has to be given the same words the tooltip splits or the two disagree about where a
+  // sentence begins. Both blocks, and the arenas, outlive this scope's use of the pointers and die
+  // well before layoutAndExtractLines mutates or erases the words.
   int annotationCount = 0;
   std::vector<uint16_t> annotationLine;  // filled by layout: annotation k sits above source line k
   if (annotate) {
-    std::vector<const char*> srcWordPtrs;
-    srcWordPtrs.reserve(origBlock->size());
-    for (size_t w = 0; w < origBlock->size(); w++) srcWordPtrs.push_back(origBlock->wordAt(w).c_str());
-
-    std::vector<const char*> transWordPtrs;
-    transWordPtrs.reserve(transBlock->size());
-    for (size_t w = 0; w < transBlock->size(); w++) transWordPtrs.push_back(transBlock->wordAt(w).c_str());
+    MergedWordStream srcWords;
+    buildMergedWordStream(*origBlock, srcWords);
+    MergedWordStream transWords;
+    buildMergedWordStream(*transBlock, transWords);
 
     if (interlinearAnnotations.empty()) interlinearAnnotations.resize(INTERLINEAR_MAX_ANNOTATIONS);
-    if (!srcWordPtrs.empty() && !transWordPtrs.empty()) {
-      annotationCount = interlinearPairFn(srcWordPtrs.data(), static_cast<int>(srcWordPtrs.size()),
-                                          transWordPtrs.data(), static_cast<int>(transWordPtrs.size()),
+    if (!srcWords.ptrs.empty() && !transWords.ptrs.empty()) {
+      annotationCount = interlinearPairFn(srcWords.ptrs.data(), static_cast<int>(srcWords.ptrs.size()),
+                                          transWords.ptrs.data(), static_cast<int>(transWords.ptrs.size()),
                                           interlinearAnnotations.data(), INTERLINEAR_MAX_ANNOTATIONS);
+    }
+
+    // Back from merged-word space into TOKEN space, which is the only space the rest of this
+    // function speaks: forced breaks index the block's tokens, and buildAnnotationRows re-emits
+    // transBlock tokens. A no-op when nothing was merged (toToken empty => identity). The mapping is
+    // strictly increasing, so the ascending contract checked below is neither created nor destroyed
+    // by it, and an empty translation span (start == end) stays empty.
+    const size_t srcTokenCount = origBlock->size();
+    const size_t transTokenCount = transBlock->size();
+    for (int k = 0; k < annotationCount; k++) {
+      InterlinearAnnotation& annotation = interlinearAnnotations[k];
+      annotation.sourceStartWord = static_cast<uint16_t>(srcWords.tokenAt(annotation.sourceStartWord, srcTokenCount));
+      annotation.transStartWord = static_cast<uint16_t>(transWords.tokenAt(annotation.transStartWord, transTokenCount));
+      annotation.transEndWord = static_cast<uint16_t>(transWords.tokenAt(annotation.transEndWord, transTokenCount));
     }
 
     // ONE forced break per annotation, in the same order, including a leading 0 (a no-op break that
