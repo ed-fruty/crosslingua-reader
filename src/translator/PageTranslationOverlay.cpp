@@ -938,8 +938,9 @@ void PageTranslationOverlay::render(GfxRenderer& renderer, const Page& page, int
 // ── Font helper ──────────────────────────────────────────────────────────────
 //
 // Fork parity: the Page Translation overlay renders in the SAME reader-derived font as the tooltip
-// (getTooltipFontId — the reader's family, one size smaller than the body text), so it honors
-// the reader's Font Family and Font Size settings. It previously returned a fixed UI_12_FONT_ID,
-// which ignored both (that predated the Tooltip port that brought getTooltipFontId in).
+// (getTooltipFontId — the reader's family, at the size the Lingua submenu's Translation Size row
+// selects), so it honors the reader's Font Family and Font Size settings as well as that row. It
+// previously returned a fixed UI_12_FONT_ID, which ignored all three (that predated the Tooltip port
+// that brought getTooltipFontId in).
 
 int getPageTranslationFontId() { return getTooltipFontId(); }

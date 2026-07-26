@@ -1106,30 +1106,27 @@ void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId,
 
 // ── Font helper ───────────────────────────────────────────────────────────────
 //
-// Tooltip text renders one size SMALLER than the reader body (upstream-fork parity) in the reader's
-// own family, so the popup translation reads as a secondary annotation below the source. At the
-// smallest reader size there is nothing smaller, so fall back to the reader font itself. Adapted to
-// v2's font set (NOTOSERIF / NOTOSANS + SD card fonts); the fork's family switch used a different
-// built-in font lineup (Bookerly/EdsLab/Caecilia/GPro).
+// Tooltip text renders in the reader's own family, at the size the Lingua submenu's Translation Size
+// row selects: Same = the body font, Smaller = one step down the family's point-size ladder, so the
+// popup translation reads as a secondary annotation below the source. Adapted to v2's font set
+// (NOTOSERIF / NOTOSANS + SD card fonts); the fork's family switch used a different built-in font
+// lineup (Bookerly/EdsLab/Caecilia/GPro).
 //
 // Reader size is a point size since 91900484 (CrossPointSettings::fontPointSize), not a
 // SMALL/MEDIUM/LARGE slot, so "one smaller" means the previous entry in the active family's
-// selectable point sizes rather than an enum decrement. Whenever there is no smaller size this
-// returns getReaderFontId() unchanged, which also keeps renderOverlayFrame's
-// overlayFontId == fontId fast path (one shared prewarm for page + overlay) intact.
+// selectable point sizes rather than an enum decrement.
 //
-// The step-down itself lives in CrossPointSettings::smallerReaderFontId(), the ONE resolver for
-// "one size smaller than the body text" (the Lingua submenu's Translation Size row reads the same
-// helper to decide whether Smaller is even offered). It returns 0 when the active family — every SD
-// family, or a built-in already at its smallest point size — has nothing smaller; that is the case
-// this function turns back into the body font.
+// The setting is read through CrossPointSettings::getTranslationFontId(), the ONE resolver for "the
+// font translated text is shown in": it returns 0 both for SIZE_SAME and for a SIZE_SMALLER that
+// cannot be honoured (every SD family, and a built-in already at its smallest point size, ship no
+// smaller face — which is also why the Lingua row reads Same and refuses to cycle there). Reading it
+// here rather than smallerReaderFontId() directly is what makes the row mean something in Tooltip
+// and Page Translation; before, both ignored it and always stepped down.
 //
-// NOT gated on SETTINGS.translationSize (yet), deliberately: the tooltip has always rendered one
-// size smaller, and honouring the setting's SIZE_SAME default here would silently enlarge every
-// existing user's tooltips. Whether Tooltip should follow the setting — or default to SIZE_SMALLER
-// so it keeps today's look — belongs with the layout work that makes the setting visible, not here.
+// 0 becomes getReaderFontId() — the body font — which also keeps renderOverlayFrame's
+// overlayFontId == fontId fast path (one shared prewarm for page + overlay) intact for SIZE_SAME.
 
 int getTooltipFontId() {
-  const int smaller = SETTINGS.smallerReaderFontId();
-  return smaller != 0 ? smaller : SETTINGS.getReaderFontId();
+  const int translationFontId = SETTINGS.getTranslationFontId();
+  return translationFontId != 0 ? translationFontId : SETTINGS.getReaderFontId();
 }
