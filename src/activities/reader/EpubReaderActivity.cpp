@@ -1006,15 +1006,16 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       break;
     }
     case EpubReaderMenuActivity::MenuAction::PRE_TRANSLATION: {
-      // Remember the display mode as it was before opening the submenu. The submenu can change
-      // SETTINGS.translationDisplayMode live (cycle mode / delete translations), and the mode's
-      // PtLayout is part of the ReaderRenderSpec cache key, so a change means the in-RAM Section
-      // may hold a stale layout and must be re-resolved (a cache HIT when the new mode shares the
-      // old mode's layout).
+      // Remember the two Lingua settings that are part of the ReaderRenderSpec cache key, as they
+      // were before opening the submenu. The submenu can change either live — the display mode
+      // (cycle mode / delete translations), whose PtLayout is keyed, and Translation Size, whose
+      // resolved font id is keyed — so a change means the in-RAM Section may hold a stale layout and
+      // must be re-resolved (a cache HIT when the new mode shares the old mode's layout).
       const uint8_t modeBeforeSubmenu = SETTINGS.translationDisplayMode;
+      const int translationFontIdBeforeSubmenu = SETTINGS.getTranslationFontId();
       startActivityForResult(
           std::make_unique<PreTranslationSubmenuActivity>(renderer, mappedInput, epub, currentSpineIndex),
-          [this, modeBeforeSubmenu](const ActivityResult& result) {
+          [this, modeBeforeSubmenu, translationFontIdBeforeSubmenu](const ActivityResult& result) {
             // The submenu hands back a typed request (encoded in MenuResult::action).
             // TRANSLATE_* means "tear down the reader and run the translator"; anything
             // else (a plain Back, or an in-submenu setting change) is just a re-render:
@@ -1029,15 +1030,16 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
             if (kind != PreTranslationResult::NONE) {
               launchTranslation(kind);
             } else {
-              // Display mode changed inside the submenu: force a section re-layout the same
-              // way applyOrientation() does after an orientation change. Preserve the reading
+              // A keyed Lingua setting changed inside the submenu: force a section re-layout the
+              // same way applyOrientation() does after an orientation change. Preserve the reading
               // position, drop the Section, and let render() rebuild against the new spec --
-              // the PtLayout cache key makes the rebuild reuse the right cached layout
-              // (or build it), and applyDeferredReposition() remaps the page once the new page
-              // count is known. The renderer's translation gray level tracks
-              // SETTINGS.translationDisplayMode in main.cpp's loop() every tick, so it stays
-              // consistent without extra wiring here.
-              if (SETTINGS.translationDisplayMode != modeBeforeSubmenu) {
+              // the PtLayout / translationFontId cache key makes the rebuild reuse the right cached
+              // layout (or build it), and applyDeferredReposition() remaps the page once the new page
+              // count is known. Translation Colour is deliberately NOT in this gate: it only moves
+              // the renderer's translation gray level, which main.cpp's loop() re-reads from
+              // SETTINGS every tick, so it needs no re-layout and no extra wiring here.
+              if (SETTINGS.translationDisplayMode != modeBeforeSubmenu ||
+                  SETTINGS.getTranslationFontId() != translationFontIdBeforeSubmenu) {
                 RenderLock lock(*this);
                 if (section) {
                   cachedSpineIndex = currentSpineIndex;

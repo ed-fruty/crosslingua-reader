@@ -206,6 +206,16 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // VALUE STABILITY: persisted as an integer; 0/1 are fixed — append only, never renumber.
   enum TRANSLATION_SHADE : uint8_t { SHADE_DIMMED = 0, SHADE_DIMMED_LIGHT = 1, TRANSLATION_SHADE_COUNT };
 
+  // Pre-Translation: type size of the TRANSLATED text relative to the book's own text.
+  // SIZE_SMALLER means one step DOWN the active family's point-size ladder, resolved by
+  // smallerReaderFontId(). It is a LAYOUT difference (narrower glyphs re-break lines), so unlike
+  // the shade it DOES enter the section cache key, via getTranslationFontId().
+  // AVAILABILITY: SIZE_SMALLER is only offered when the active family actually ships a smaller
+  // face; where it does not, smallerReaderFontId() returns 0 and everything behaves as SIZE_SAME
+  // without the stored value being rewritten (see smallerReaderFontId()).
+  // VALUE STABILITY: persisted as an integer; 0/1 are fixed — append only, never renumber.
+  enum TRANSLATION_SIZE : uint8_t { SIZE_SAME = 0, SIZE_SMALLER = 1, TRANSLATION_SIZE_COUNT };
+
   // Pre-Translation feature: translation backend selection
   // Values match upstream fork (crosspoint-reader) to keep JSON-stored indices stable.
   enum TRANSLATION_ENGINE : uint8_t {
@@ -357,6 +367,9 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t translationDisplayMode = PT_NORMAL;
   // Interleaved-mode (PT_INTERLEAVED) translated-text colour. Drawing-only; see TRANSLATION_SHADE.
   uint8_t translationShade = SHADE_DIMMED;
+  // Translated-text type size, shared by every mode that shows translated text (Interleaved inline,
+  // Tooltip and Page Translation in their overlays). Layout-affecting; see TRANSLATION_SIZE.
+  uint8_t translationSize = SIZE_SAME;
   // Tooltip display mode (PT_TOOLTIP) controls. Ported from the upstream fork.
   // tooltipButtons: which button pair steps through per-sentence tooltips (OVERLAY_BUTTONS).
   //   Default SIDE — the page-turn pair reads as the natural "next sentence" control.
@@ -387,6 +400,15 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     return (shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP) ? 10 : 400;
   }
   int getReaderFontId() const;
+
+  // THE "one size smaller than the body text" resolver: the reader font id one step DOWN the active
+  // family's point-size ladder, or 0 when the family has no smaller face. 0 is the single signal
+  // that a smaller size is unavailable — callers either fall back to the body font (tooltip text) or
+  // withhold the Smaller option from the UI (the Lingua submenu's Translation Size row).
+  //
+  // Runs from the page render loop and from the cache-key path, so it must not allocate: it walks
+  // BUILTIN_READER_POINT_SIZES directly rather than building the readerFontPointSizes() vector.
+  int smallerReaderFontId() const;
 
   // Drop the SD font selection and fall back to the built-in family. The reader
   // point size comes back into BUILTIN_READER_POINT_SIZES with it, since that is

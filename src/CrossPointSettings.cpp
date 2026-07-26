@@ -26,6 +26,22 @@ void copyToField(char* dest, const char* src, const size_t maxLen) {
   dest[maxLen - 1] = '\0';
 }
 
+// The built-in reader face at `pt` in the requested family. `pt` MUST already be one of
+// BUILTIN_READER_POINT_SIZES (snap first); anything else lands on the 14pt default.
+int builtinReaderFontId(const uint8_t pt, const bool sans) {
+  switch (pt) {
+    case 12:
+      return sans ? NOTOSANS_12_FONT_ID : NOTOSERIF_12_FONT_ID;
+    case 16:
+      return sans ? NOTOSANS_16_FONT_ID : NOTOSERIF_16_FONT_ID;
+    case 18:
+      return sans ? NOTOSANS_18_FONT_ID : NOTOSERIF_18_FONT_ID;
+    case 14:
+    default:
+      return sans ? NOTOSANS_14_FONT_ID : NOTOSERIF_14_FONT_ID;
+  }
+}
+
 }  // namespace
 
 void CrossPointSettings::validateFrontButtonMapping(CrossPointSettings& settings) {
@@ -112,6 +128,7 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   doc["translateApiKey"] = translateApiKey;
   doc["translationDisplayMode"] = translationDisplayMode;
   doc["translationShade"] = translationShade;
+  doc["translationSize"] = translationSize;
   doc["tooltipButtons"] = tooltipButtons;
   doc["tooltipBehavior"] = tooltipBehavior;
   doc["pageTranslationButtons"] = pageTranslationButtons;
@@ -236,6 +253,8 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   copyToField(translateApiKey, doc["translateApiKey"] | "", sizeof(translateApiKey));
   translationShade =
       clamp(doc["translationShade"] | (uint8_t)SHADE_DIMMED, (uint8_t)TRANSLATION_SHADE_COUNT, (uint8_t)SHADE_DIMMED);
+  translationSize =
+      clamp(doc["translationSize"] | (uint8_t)SIZE_SAME, (uint8_t)TRANSLATION_SIZE_COUNT, (uint8_t)SIZE_SAME);
   // Display mode, with the retired-hole migration. Values 1 and 2 were the separate "Dimmed" and
   // "Dimmed Light" modes; they are now ONE mode (PT_INTERLEAVED) plus the translationShade colour
   // sub-setting, so a stored 1/2 folds into that pair and requests a resave — same needsResave
@@ -325,10 +344,16 @@ PtLayout CrossPointSettings::ptLayoutForDisplayMode(const uint8_t mode) {
 }
 
 int CrossPointSettings::getTranslationFontId() const {
-  // 0 == "same as the body font". Translated text is laid out and drawn in the reader font today;
-  // the smaller-translation-font work fills this in, and because both the cache key and the render
-  // font set read it from here, a change automatically invalidates the affected sections.
-  return 0;
+  // 0 == "same as the body font", which is both the SIZE_SAME answer and the graceful answer when
+  // the active family ships no smaller face: smallerReaderFontId() returns 0 there, so a stored
+  // SIZE_SMALLER degrades to Same WITHOUT rewriting the setting (switch back to a family that has a
+  // smaller face and the choice is still there — and no SPIFFS write happened to preserve it).
+  //
+  // Both the cache key (ReaderRenderSpec::translationFontId) and the render-time font set
+  // (readerPageFontSet) read the size through here, so changing it invalidates exactly the sections
+  // whose line breaking it can move, and a page is always drawn in the fonts it was measured with.
+  if (translationSize != SIZE_SMALLER) return 0;
+  return smallerReaderFontId();
 }
 
 PageFontSet CrossPointSettings::readerPageFontSet() const {
@@ -443,16 +468,26 @@ int CrossPointSettings::getReaderFontId() const {
   // in the page render loop) so rendering is correct even before it has run.
   const uint8_t pt =
       snapToNearestPointSize(BUILTIN_READER_POINT_SIZES, std::size(BUILTIN_READER_POINT_SIZES), fontPointSize);
-  const bool sans = (fontFamily == NOTOSANS);
-  switch (pt) {
-    case 12:
-      return sans ? NOTOSANS_12_FONT_ID : NOTOSERIF_12_FONT_ID;
-    case 16:
-      return sans ? NOTOSANS_16_FONT_ID : NOTOSERIF_16_FONT_ID;
-    case 18:
-      return sans ? NOTOSANS_18_FONT_ID : NOTOSERIF_18_FONT_ID;
-    case 14:
-    default:
-      return sans ? NOTOSANS_14_FONT_ID : NOTOSERIF_14_FONT_ID;
+  return builtinReaderFontId(pt, fontFamily == NOTOSANS);
+}
+
+int CrossPointSettings::smallerReaderFontId() const {
+  // SD card family: the manager keeps exactly ONE reader-size face loaded and
+  // SdCardFontSystem::resolveFontId() ignores its pointSize argument by design
+  // (src/SdCardFontSystem.cpp:173-178), so there is no smaller SD face to drop to — SD families
+  // simply have no Smaller option.
+  if (sdFontFamilyName[0] != '\0' && sdFontIdResolver) {
+    if (sdFontIdResolver(sdFontResolverCtx, sdFontFamilyName, fontPointSize) != 0) return 0;
+    // The named family has no loaded face; fall through to the built-in ladder, exactly as
+    // getReaderFontId() does, so both agree on which family is actually rendering.
   }
+
+  // Built-in families ship exactly BUILTIN_READER_POINT_SIZES. Snap first (fontPointSize may still
+  // carry a size only an SD family had), then step one entry down.
+  constexpr size_t kCount = std::size(BUILTIN_READER_POINT_SIZES);
+  const uint8_t body = snapToNearestPointSize(BUILTIN_READER_POINT_SIZES, kCount, fontPointSize);
+  size_t idx = 0;
+  while (idx < kCount && BUILTIN_READER_POINT_SIZES[idx] != body) idx++;
+  if (idx == 0 || idx >= kCount) return 0;  // already the smallest size this family ships
+  return builtinReaderFontId(BUILTIN_READER_POINT_SIZES[idx - 1], fontFamily == NOTOSANS);
 }
