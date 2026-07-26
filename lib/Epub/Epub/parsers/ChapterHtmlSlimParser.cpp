@@ -2125,8 +2125,18 @@ void ChapterHtmlSlimParser::buildAnnotationRows(const InterlinearAnnotation& ann
   // Never justify a row this small over a short measure; and Left is what makes ParsedText treat the
   // block as "naturally aligned", which is the precondition for honouring textIndent at all
   // (ParsedText::resolveFirstLineIndent).
+  //
+  // textAlignDefined is deliberately left FALSE. It is read in exactly one place — extractLine's
+  // "resolved RTL + no explicit text-align + Left" rule, which flips the row to Right — and that is
+  // exactly the degradation an RTL TARGET language needs. When the span's words make the row resolve
+  // RTL (a Hebrew / Arabic / Persian translation), isNaturalAlign goes false, resolveFirstLineIndent
+  // returns 0 and the anchor is lost either way; with the flag set the row was then stranded flush
+  // LEFT, i.e. un-anchored AND on the wrong margin. Left false it lands on its own natural margin
+  // (flush right) and reads as a whole-line translation. Genuinely anchoring an RTL row over an LTR
+  // sentence needs an END-side first-line inset, which BlockStyle cannot express (CSS text-indent
+  // insets from the start edge, i.e. the right, under RTL), so v1 does not attempt it. LTR rows are
+  // unaffected: the flag only ever gated the isRtl branch.
   annStyle.alignment = CssTextAlign::Left;
-  annStyle.textAlignDefined = true;
   // HANGING INDENT: row 1 starts exactly at the sentence, continuation rows at the margin.
   //
   // A limit is unavoidable — computeLineBreaks force-hyphenates any word wider than the width left to
@@ -2229,9 +2239,16 @@ void ChapterHtmlSlimParser::renderInterlinear(std::unique_ptr<ParsedText> origBl
 
   // v1 guards. RTL source: extractLine permutes words into VISUAL order for BiDi, so the flat
   // post-layout indices the anchoring depends on are not the logical sentence order — the paragraph
-  // renders as plain source instead of being annotated in the wrong places. (blockStyle.isRtl is
-  // resolved DURING the layout above, which is why it is read here and not before.)
-  const bool annotate = interlinearPairFn != nullptr && !blockStyle.isRtl && !transBlock->isEmpty();
+  // renders as plain source instead of being annotated in the wrong places.
+  //
+  // BOTH RTL flags are needed, because extractLine reorders on `isRtl || hasRtlWord`. blockStyle.isRtl
+  // covers a wholly RTL paragraph; containsRtlWord() covers an LTR paragraph with an inline
+  // Hebrew/Arabic span, which the paragraph probe (first RTL_PARAGRAPH_PROBE_WORDS words only) misses
+  // and which would otherwise both mis-cut the sentence spans (terminators land in the wrong places in
+  // a visually reordered word array) and anchor the row under the wrong word (wordXpos of a permuted
+  // index). Both are final here: this runs after the layout above, which is what resolves isRtl.
+  const bool annotate = interlinearPairFn != nullptr && !blockStyle.isRtl && !origBlock->containsRtlWord() &&
+                        !transBlock->isEmpty();
 
   int annotationCount = 0;
   if (annotate) {

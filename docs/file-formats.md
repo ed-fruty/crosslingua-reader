@@ -134,6 +134,16 @@ is exactly the failure mode the version 39 note below was written about.
     parked at the 3/4 limit would sit above words belonging to the *previous*
     sentence and read as their translation, whereas a row at the margin reads as
     "this whole line". Everything up to 3/4 is anchored exactly.
+  - **An RTL source paragraph is not annotated at all, and an RTL target is not
+    anchored.** `extractLine` permutes a line into visual order whenever the block
+    resolves RTL *or* contains any RTL word, and the anchoring reads flat post-layout
+    word indices — so a source paragraph that is RTL, or that merely carries an inline
+    Hebrew/Arabic run, lays out as plain unannotated source. In the other direction, a
+    *target* language written right-to-left produces rows that resolve RTL themselves;
+    those get no `text-indent` (the engine only honours one on a naturally aligned
+    block) and are laid out at the full measure on their own natural margin, i.e.
+    flush right. Anchoring them would need an end-side first-line inset, which
+    `BlockStyle` cannot express, so v1 does not attempt it.
 
 The per-chapter auto-fallback applies to `Interlinear` too: a chapter with no
 committed translation is laid out and stamped as `Both`

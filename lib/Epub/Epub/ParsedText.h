@@ -85,6 +85,15 @@ class ParsedText {
   bool wordAttachesToPrevious(const size_t index) const {
     return index < wordContinues.size() && wordContinues[index];
   }
+  // True when at least one word added to this block starts with an RTL codepoint. Set as words arrive,
+  // so it is final once the block is complete and readable before or after layout.
+  //
+  // A caller whose geometry depends on the laid-out words staying in LOGICAL order must test THIS and
+  // not only blockStyle.isRtl: extractLine reorders a line whenever `isRtl || hasRtlWord`, while
+  // layoutAndExtractLines only auto-resolves isRtl from the first RTL_PARAGRAPH_PROBE_WORDS words --
+  // so an LTR paragraph carrying an inline Hebrew/Arabic run leaves isRtl false and still gets that
+  // line BiDi-permuted into visual order.
+  bool containsRtlWord() const { return hasRtlWord; }
   std::string getRubyTextAt(size_t index) const { return index < rubyTexts.size() ? rubyTexts[index] : std::string(); }
   void ensureRubyCapacity();
   void setBlockStyle(const BlockStyle& blockStyle) { this->blockStyle = blockStyle; }

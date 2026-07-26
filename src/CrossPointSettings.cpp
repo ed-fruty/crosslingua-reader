@@ -422,8 +422,16 @@ bool CrossPointSettings::interlinearAnnotationScriptSupported() const {
   //
   // Returning false makes getInterlinearAnnotationFontId() hand back 0, i.e. the BODY font: the rows
   // still sit above their sentences and the layout is still correct, they are simply not small. That
-  // is the intended v1 degradation. Hebrew/Arabic/Persian are excluded for a second reason as well --
-  // an RTL target needs the row right-aligned to the sentence END, which v1 does not do.
+  // is the intended v1 degradation, and it is the ONLY thing this predicate does -- it is a face
+  // decision, not a suppression.
+  //
+  // Hebrew/Arabic/Persian are listed for a second reason, but note what that does and does not buy:
+  // the rows are still emitted for an RTL target, they are simply not ANCHORED. Anchoring an RTL row
+  // over an LTR source sentence needs an end-side first-line inset, which BlockStyle cannot express
+  // (CSS text-indent insets from the start edge, i.e. the right, under RTL), so v1 lays those rows out
+  // un-anchored at the full measure on their own natural margin (flush right). See buildAnnotationRows
+  // in lib/Epub/Epub/parsers/ChapterHtmlSlimParser.cpp and the Version 40 section of
+  // docs/file-formats.md.
   //
   // Listed by BCP-47 code rather than by table index so the list survives LANGUAGES[] being extended;
   // a language added there is treated as supported, which is right for the Latin/Cyrillic ones that
