@@ -63,8 +63,10 @@ class DictionaryWordSelectActivity final : public Activity {
   const int marginTop;
   // Per-word measurement and highlight drawing go through the word's own role (wordFontId); this
   // body id is only for the one genuinely page-wide job left, priming the SD-card font's advance
-  // table. SD families ship a single loaded face, so they never have a smaller translation font and
-  // body IS every role there (CrossPointSettings::smallerReaderFontId).
+  // table. That is a conservative approximation for a page carrying a second size: Annotation rows are
+  // filtered out of the word list entirely (extractWords), and an SD family's smaller-translation slot
+  // resolves back to body (CrossPointSettings::smallerReaderFontId), so the only face this misses is
+  // the Interlinear annotation one — whose words are never boxed here.
   int fontId = 0;
   PageFontSet pageFonts;
 

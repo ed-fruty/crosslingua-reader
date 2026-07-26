@@ -248,8 +248,10 @@ void ChapterHtmlSlimParser::flushPendingAnchor() {
 }
 
 // Pre-Translation: layout-based block filtering, shared by flushPartWordBuffer and the ruby
-// handlers. Both and SideBySide emit everything (SideBySide pairs the two languages into columns
-// instead of dropping either); OriginalOnly drops translated text -- which is also what the Page
+// handlers. Both, SideBySide and Interlinear emit everything (SideBySide pairs the two languages into
+// columns instead of dropping either; Interlinear needs the translated block to become a ParsedText
+// so renderInterlinear can read its words for the annotation rows -- it is never laid out as a
+// paragraph of its own); OriginalOnly drops translated text -- which is also what the Page
 // Translation and Tooltip display modes need, since they surface translations through a popup at view time and
 // emitting them inline would double the text and break the tooltip's underline/sentence-index math.
 // The top of the inline style stack carries whether the current text belongs to a translated block
@@ -264,6 +266,7 @@ bool ChapterHtmlSlimParser::wordIsFiltered() const {
       return !inTranslatedBlock;
     case PtLayout::Both:
     case PtLayout::SideBySide:
+    case PtLayout::Interlinear:
       return false;
   }
   return false;  // unreachable: every enumerator returns above
@@ -284,6 +287,11 @@ bool ChapterHtmlSlimParser::wordIsFiltered() const {
 //                  whole chapter, so it stays Body.
 //   SideBySide     both columns are the same face by design (a shrunken column would defeat the
 //                  pairing), so neither is tagged; renderSideBySide leaves both at Body.
+//   Interlinear    the translated text does NOT flow inline at all: renderInterlinear re-emits it
+//                  into its own small rows tagged LineFontRole::Annotation, which resolve through the
+//                  annotation slot instead. Source lines therefore stay Body, and this function is
+//                  never even reached for the translated block (it is consumed by the pairing, not
+//                  flushed through makePages).
 //
 // Reads the block-level translated flag, not the per-word inline-stack one wordIsFiltered() uses: a
 // role applies to a whole laid-out line, and currentBlockIsTranslated is exactly the granularity of
@@ -299,6 +307,7 @@ LineFontRole ChapterHtmlSlimParser::currentLineRole() const {
     case PtLayout::OriginalOnly:
     case PtLayout::TranslationOnly:
     case PtLayout::SideBySide:
+    case PtLayout::Interlinear:
       break;
   }
   return LineFontRole::Body;
@@ -392,12 +401,14 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
       return;
     }
 
-    // Pre-Translation (PtLayout::SideBySide): route through the two-column table builder, which
-    // buffers originals and pairs them with their translations. currentBlockIsTranslated and
+    // Pre-Translation: the two PAIRING layouts route through their own builder, which buffers
+    // originals and pairs them with their translations. currentBlockIsTranslated and
     // currentBlockParagraphIdx are stamped AFTER this flush by the caller, so here they still
-    // describe the block being flushed — exactly what makePagesTableMode inspects.
+    // describe the block being flushed — exactly what those builders inspect.
     if (ptLayout == PtLayout::SideBySide) {
       makePagesTableMode();
+    } else if (ptLayout == PtLayout::Interlinear) {
+      makePagesInterlinearMode();
     } else {
       makePages();
     }
@@ -1743,12 +1754,16 @@ bool ChapterHtmlSlimParser::finishParse() {
 
   // Process last page if there is still text
   if (currentTextBlock) {
-    // Pre-Translation (PtLayout::SideBySide): flush the trailing outermost block through the
-    // two-column builder. A trailing original is buffered (not laid out) by makePagesTableMode,
-    // so drain any block still buffered — the last original of the chapter — full-width with the
-    // dim "not translated" marker via flushBufferedOriginal.
-    if (ptLayout == PtLayout::SideBySide) {
-      makePagesTableMode();
+    // Pre-Translation: flush the trailing outermost block through the pairing builder that owns this
+    // layout. A trailing original is buffered (not laid out) there, so drain any block still buffered
+    // — the last original of the chapter — full-width via flushBufferedOriginal (which appends the
+    // dim "not translated" marker under SideBySide only; Interlinear just shows the source).
+    if (ptLayout == PtLayout::SideBySide || ptLayout == PtLayout::Interlinear) {
+      if (ptLayout == PtLayout::SideBySide) {
+        makePagesTableMode();
+      } else {
+        makePagesInterlinearMode();
+      }
       if (bufferedOriginalBlock) {
         flushBufferedOriginal();
       }
@@ -2068,5 +2083,227 @@ void ChapterHtmlSlimParser::appendSideBySideNoTranslationMarkerIfUnpaired() {
     } else {
       markerWord.push_back(*p);
     }
+  }
+}
+
+// ── Pre-Translation (PtLayout::Interlinear) ───────────────────────────────────
+//
+// Route one flushed outermost block to the interlinear builder. Identical buffering shape to
+// makePagesTableMode (see there for why currentBlockIsTranslated / currentBlockParagraphIdx are
+// still the FLUSHED block's state at this point).
+void ChapterHtmlSlimParser::makePagesInterlinearMode() {
+  if (!currentTextBlock || currentTextBlock->isEmpty()) return;
+
+  if (currentBlockIsTranslated) {
+    // Translation paragraph: pair it with the buffered original if one is waiting, otherwise fall
+    // back to a full-width layout (a translation with no preceding original — unusual).
+    if (bufferedOriginalBlock) {
+      renderInterlinear(std::move(bufferedOriginalBlock), std::move(currentTextBlock));
+    } else {
+      makePages();
+    }
+  } else {
+    // Original paragraph: a previous original still buffered never got a translation, so lay it out
+    // full-width (flushBufferedOriginal; the "not translated" marker is SideBySide-only, so an
+    // unpaired original here simply appears with no annotation row) before buffering this one.
+    if (bufferedOriginalBlock) {
+      flushBufferedOriginal();
+    }
+    bufferedOriginalParagraphIdx = currentBlockParagraphIdx;
+    bufferedOriginalBlock = std::move(currentTextBlock);
+  }
+}
+
+void ChapterHtmlSlimParser::buildAnnotationRows(const InterlinearAnnotation& annotation, const ParsedText& transBlock,
+                                                const int16_t anchorOffset, const uint16_t measureWidth,
+                                                const int annotationFont,
+                                                std::vector<std::shared_ptr<TextBlock>>& rows) {
+  // A sentence whose translation is empty emits no row at all (never a blank line).
+  if (annotation.transEndWord <= annotation.transStartWord) return;
+
+  BlockStyle annStyle;
+  // Never justify a row this small over a short measure; and Left is what makes ParsedText treat the
+  // block as "naturally aligned", which is the precondition for honouring textIndent at all
+  // (ParsedText::resolveFirstLineIndent).
+  annStyle.alignment = CssTextAlign::Left;
+  annStyle.textAlignDefined = true;
+  // HANGING INDENT: row 1 starts exactly at the sentence, continuation rows at the margin. Clamped
+  // so the first row always keeps a usable measure — computeLineBreaks force-hyphenates any word
+  // wider than the width available to it, so a near-zero first-row width would shred every word.
+  const int16_t maxIndent = static_cast<int16_t>(measureWidth * 3 / 4);
+  annStyle.textIndent = anchorOffset > 0 ? std::min<int16_t>(anchorOffset, maxIndent) : 0;
+  annStyle.textIndentDefined = true;
+
+  // extraParagraphSpacing=false is not cosmetic here: resolveFirstLineIndent only returns a POSITIVE
+  // textIndent when it is false (with it true, indents are suppressed in favour of the paragraph
+  // gap). hyphenationEnabled=false keeps a long compound wrapping early instead of being broken at
+  // 8pt, and focusReading is a body-text affordance that has no business in an annotation.
+  ParsedText annotationText(/*extraParagraphSpacing=*/false, /*hyphenationEnabled=*/false,
+                            /*focusReadingEnabled=*/false, annStyle);
+  for (uint16_t w = annotation.transStartWord; w < annotation.transEndWord && w < transBlock.size(); w++) {
+    // REGULAR explicitly: the 8pt family ships a single face, so bold/italic would resolve back to
+    // regular anyway, and dropping the inherited EpdFontFamily::TRANSLATED bit keeps the row plain
+    // black rather than the Interleaved gray.
+    annotationText.addWord(transBlock.wordAt(w), EpdFontFamily::REGULAR);
+  }
+  if (annotationText.isEmpty()) return;
+
+  annotationText.layoutAndExtractLines(renderer, annotationFont, measureWidth,
+                                       [&rows](const std::shared_ptr<TextBlock>& row) { rows.push_back(row); });
+}
+
+void ChapterHtmlSlimParser::emitInterlinearRow(const std::shared_ptr<TextBlock>& row, const int16_t xPos,
+                                               const int rowHeight, const LineFontRole role, const bool breakIfNeeded) {
+  // Only the degenerate path breaks here (see renderInterlinear). currentPageNextY > 0 guards against
+  // emitting empty pages forever when a single row is taller than the whole viewport.
+  if (breakIfNeeded && currentPageNextY > 0 && currentPageNextY + rowHeight > viewportHeight) {
+    completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex);
+    completedPageCount++;
+    currentPage.reset(new Page());
+    currentPageNextY = 0;
+  }
+
+  auto pageLine = std::make_shared<PageLine>(row, xPos, currentPageNextY);
+  // Both the source lines and the annotation rows carry the ORIGINAL paragraph's index, so the
+  // line->paragraph mapping the overlays and the reader rely on still resolves (same as
+  // renderSideBySide: currentBlockParagraphIdx has already advanced past the pair by now).
+  pageLine->paragraphIdx = bufferedOriginalParagraphIdx;
+  pageLine->fontRole = role;
+  if (bufferedOriginalParagraphIdx >= 0) {
+    if (currentPage->firstParagraphIdx < 0) {
+      currentPage->firstParagraphIdx = bufferedOriginalParagraphIdx;
+    }
+    currentPage->lastParagraphIdx = bufferedOriginalParagraphIdx;
+  }
+  currentPage->elements.push_back(std::move(pageLine));
+  currentPageNextY += rowHeight;
+}
+
+// Lay an original paragraph and its paired translation out as ONE full-width flow: the source breaks
+// exactly as it would under Original Only, and each sentence's translation is emitted as small
+// LineFontRole::Annotation rows immediately ABOVE the source line that sentence starts on,
+// left-aligned to the sentence.
+//
+// GEOMETRY: every row is placed at the pre-advance currentPageNextY and advances by exactly its own
+// box height — the same invariant addLineToPage documents — so the two type sizes tile edge to edge
+// with no overlap and no gap, whatever each row's face is.
+void ChapterHtmlSlimParser::renderInterlinear(std::unique_ptr<ParsedText> origBlock,
+                                              std::unique_ptr<ParsedText> transBlock) {
+  if (!origBlock || !transBlock) return;
+
+  if (!currentPage) {
+    currentPage.reset(new Page());
+    currentPageNextY = 0;
+  }
+
+  const int annotationFont = fontIdForRole(LineFontRole::Annotation);
+  const BlockStyle& blockStyle = origBlock->getBlockStyle();
+  const int horizontalInset = blockStyle.totalHorizontalInset();
+  const uint16_t effectiveWidth =
+      (horizontalInset < viewportWidth) ? static_cast<uint16_t>(viewportWidth - horizontalInset) : viewportWidth;
+  const int16_t leftInset = blockStyle.leftInset();
+
+  // STEP 1 — lay the SOURCE out first, unchanged. The annotation is computed AFTER breaking and
+  // rendered on its own rows, so interlinear source line breaking is byte-identical to Original Only.
+  std::vector<std::shared_ptr<TextBlock>> srcLines;
+  srcLines.reserve(8);
+  origBlock->layoutAndExtractLines(renderer, fontId, effectiveWidth,
+                                   [&srcLines](const std::shared_ptr<TextBlock>& line) { srcLines.push_back(line); });
+  if (srcLines.empty()) return;
+
+  // v1 guards. RTL source: extractLine permutes words into VISUAL order for BiDi, so the flat
+  // post-layout indices the anchoring depends on are not the logical sentence order — the paragraph
+  // renders as plain source instead of being annotated in the wrong places. (blockStyle.isRtl is
+  // resolved DURING the layout above, which is why it is read here and not before.)
+  const bool annotate = interlinearPairFn != nullptr && !blockStyle.isRtl && !transBlock->isEmpty();
+
+  int annotationCount = 0;
+  if (annotate) {
+    // Sentence boundaries are found over the POST-layout words, not the pre-layout ones: hyphenation
+    // INSERTS the remainder word into the block, so every pre-layout index would shift by one per
+    // split. wordText() returns a NUL-terminated pointer into the line's arena, and srcLines holds
+    // those lines alive for the whole call. This is the identical input shape the Tooltip overlay
+    // already splits (a trailing "dun-" is not a terminator, so a hyphen fragment adds no boundary).
+    size_t totalSrcWords = 0;
+    for (const auto& line : srcLines) totalSrcWords += line->wordCount();
+    std::vector<const char*> srcWordPtrs;
+    srcWordPtrs.reserve(totalSrcWords);
+    for (const auto& line : srcLines) {
+      for (uint16_t w = 0; w < line->wordCount(); w++) srcWordPtrs.push_back(line->wordText(w));
+    }
+
+    // The translation comes straight out of the buffered block in LOGICAL order — it is never laid
+    // out, so no hyphenation or BiDi reordering touched it and the mapping is purely textual.
+    std::vector<const char*> transWordPtrs;
+    transWordPtrs.reserve(transBlock->size());
+    for (size_t w = 0; w < transBlock->size(); w++) transWordPtrs.push_back(transBlock->wordAt(w).c_str());
+
+    if (interlinearAnnotations.empty()) interlinearAnnotations.resize(INTERLINEAR_MAX_ANNOTATIONS);
+    if (!srcWordPtrs.empty() && !transWordPtrs.empty()) {
+      annotationCount = interlinearPairFn(srcWordPtrs.data(), static_cast<int>(srcWordPtrs.size()),
+                                          transWordPtrs.data(), static_cast<int>(transWordPtrs.size()),
+                                          interlinearAnnotations.data(), INTERLINEAR_MAX_ANNOTATIONS);
+    }
+  }
+
+  // Top spacing comes from the original block, before the paragraph's first annotation row, so that
+  // row sits below the margin rather than inside it.
+  if (blockStyle.marginTop > 0) currentPageNextY += blockStyle.marginTop;
+  if (blockStyle.paddingTop > 0) currentPageNextY += blockStyle.paddingTop;
+
+  const int annotationRowHeight = renderer.getLineHeight(annotationFont, lineCompression);
+  const int bodyLineHeight = renderer.getLineHeight(fontId, lineCompression);
+  const int bodyAscender = renderer.getFontAscenderSize(fontId);
+
+  int nextAnnotation = 0;  // annotations arrive in ascending sourceStartWord order
+  uint16_t lineFirstWord = 0;
+  std::vector<std::shared_ptr<TextBlock>> annotationRows;
+  annotationRows.reserve(4);
+
+  for (const auto& srcLine : srcLines) {
+    const uint16_t lineWordCount = srcLine->wordCount();
+    // Unchanged source pitch, ruby shift included, so furigana headroom survives on annotated lines.
+    const int srcRowHeight = bodyLineHeight + srcLine->getRubyShift(bodyAscender);
+
+    // Every group whose FIRST sentence starts on this line. Annotation blocks carry no ruby, so their
+    // own shift is zero and their pitch is just the 8pt line height.
+    annotationRows.clear();
+    while (nextAnnotation < annotationCount &&
+           interlinearAnnotations[nextAnnotation].sourceStartWord < lineFirstWord + lineWordCount) {
+      const InterlinearAnnotation& annotation = interlinearAnnotations[nextAnnotation];
+      if (annotation.sourceStartWord >= lineFirstWord) {
+        const uint16_t wordOnLine = static_cast<uint16_t>(annotation.sourceStartWord - lineFirstWord);
+        buildAnnotationRows(annotation, *transBlock, srcLine->wordXpos(wordOnLine), effectiveWidth, annotationFont,
+                            annotationRows);
+      }
+      nextAnnotation++;
+    }
+
+    const int groupHeight = static_cast<int>(annotationRows.size()) * annotationRowHeight + srcRowHeight;
+    // ATOMIC FIT: test the WHOLE group ONCE, before its first row. If the group fits at the tested y
+    // then every row inside it fits by construction, so no row re-tests and an annotation can never
+    // be split from the source line it belongs to.
+    const bool degenerate = groupHeight > viewportHeight;
+    if (!degenerate && currentPageNextY + groupHeight > viewportHeight) {
+      completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex);
+      completedPageCount++;
+      currentPage.reset(new Page());
+      currentPageNextY = 0;
+    }
+    // A monster sentence whose annotation wraps past a whole page can never satisfy the atomic test,
+    // so it falls back to per-row break checks. Without this the fit test would never succeed.
+    for (const auto& row : annotationRows) {
+      emitInterlinearRow(row, leftInset, annotationRowHeight, LineFontRole::Annotation, degenerate);
+    }
+    emitInterlinearRow(srcLine, leftInset, srcRowHeight, LineFontRole::Body, degenerate);
+
+    lineFirstWord = static_cast<uint16_t>(lineFirstWord + lineWordCount);
+  }
+
+  // Bottom spacing + the usual half-line paragraph gap after the pair.
+  if (blockStyle.marginBottom > 0) currentPageNextY += blockStyle.marginBottom;
+  if (blockStyle.paddingBottom > 0) currentPageNextY += blockStyle.paddingBottom;
+  if (extraParagraphSpacing) {
+    currentPageNextY += bodyLineHeight / 2;
   }
 }

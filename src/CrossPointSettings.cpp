@@ -12,7 +12,9 @@
 #include "I18nKeys.h"
 #include "ReaderFontSizes.h"
 #include "SettingsList.h"
+#include "activities/translator/LanguagePickerActivity.h"
 #include "fontIds.h"
+#include "translator/InterlinearPairing.h"
 
 namespace {
 
@@ -347,13 +349,17 @@ PtLayout CrossPointSettings::ptLayoutForDisplayMode(const uint8_t mode) {
       return PtLayout::TranslationOnly;
     case PT_SIDE_BY_SIDE:
       return PtLayout::SideBySide;
+    // Its own layout: the translation is emitted as a small annotation row ABOVE the source line each
+    // sentence starts on, so the pages genuinely differ from every other mode's and cannot share a
+    // cache entry with them.
+    case PT_INTERLINEAR:
+      return PtLayout::Interlinear;
     // Everything inline-bilingual. Interleaved differs from Normal only in the gray level translated
     // words are DRAWN at (translationShade), which never moves a glyph, so the pages are identical.
-    // Interlinear is listed here until it grows its own layout. The retired holes can never reach
-    // this function (fromJson migrates them), but are mapped so the switch stays exhaustive.
+    // The retired holes can never reach this function (fromJson migrates them), but are mapped so the
+    // switch stays exhaustive.
     case PT_NORMAL:
     case PT_INTERLEAVED:
-    case PT_INTERLINEAR:
     case PT_LEGACY_DIMMED:
     case PT_LEGACY_DIMMED_LIGHT:
       return PtLayout::Both;
@@ -380,12 +386,56 @@ int CrossPointSettings::getInterleavedTranslationFontId() const {
   // Interleaved collapse onto the same PtLayout::Both (their pages differ only in how translated
   // words are drawn), so the layout engine cannot tell them apart -- yet Normal must keep the
   // translation at body size, because presenting the two languages as one undifferentiated flow is
-  // the entire point of that mode. Interlinear is here too: it has no layout of its own yet and is
-  // not selectable, so it must not inherit a size row it does not show. A stored Smaller therefore
-  // sits dormant while the mode is anything but Interleaved and returns the instant it is selected
-  // again, with no SPIFFS write either way.
+  // the entire point of that mode. A stored Smaller therefore sits dormant while the mode is anything
+  // but Interleaved and returns the instant it is selected again, with no SPIFFS write either way.
+  // (Interlinear has its OWN layout and its own font slot -- see getInterlinearAnnotationFontId --
+  // so it neither reads nor is affected by this size.)
   if (translationDisplayMode != PT_INTERLEAVED) return 0;
   return translationFontIdForSize(interleavedTranslationSize);
+}
+
+int CrossPointSettings::getInterlinearAnnotationFontId() const {
+  // Same shape as getInterleavedTranslationFontId: mode-gated here, because the layout engine only
+  // ever sees a PtLayout and must not carry mode semantics. Feeds BOTH the section cache key
+  // (ReaderRenderSpec::annotationFontId) and the render-time font set (readerPageFontSet), so an
+  // annotation row is always drawn in the face it was measured and advanced with.
+  //
+  // THE single place the annotation face is chosen. A future user-facing Annotation Size row, and the
+  // EdsLab 8pt face merging on another branch, plug in here and are picked up by the layout engine,
+  // the renderer and the cache key at once -- nothing downstream names a font id.
+  if (translationDisplayMode != PT_INTERLINEAR) return 0;
+  if (!interlinearAnnotationScriptSupported()) return 0;
+  // v1: the 8pt UI face. Registered unconditionally at startup (src/main.cpp), so no new font
+  // loading and the slim build has it; SD-card font families register their own 8pt face under the
+  // same id (SdCardFontSystem), so this follows the active family there too.
+  return SMALL_FONT_ID;
+}
+
+bool CrossPointSettings::interlinearAnnotationScriptSupported() const {
+  // notosans_8_regular covers Latin + Latin Extended (Vietnamese included), combining marks,
+  // Cyrillic U+0400-04FF and Hebrew, but its interval table jumps straight from U+036F to U+0400 --
+  // no Greek -- and it has no Devanagari, Thai, kana, Hangul, CJK or Arabic letters (only a handful
+  // of Arabic punctuation marks and digits). For an uncovered target every glyph would render as
+  // U+FFFD, and a CJK target is worse than missing: drawText reroutes any CJK-bearing string to a
+  // fallback face whose advanceY differs from the height the row was measured and advanced with, so
+  // the row would overflow its box and collide with the source line.
+  //
+  // Returning false makes getInterlinearAnnotationFontId() hand back 0, i.e. the BODY font: the rows
+  // still sit above their sentences and the layout is still correct, they are simply not small. That
+  // is the intended v1 degradation. Hebrew/Arabic/Persian are excluded for a second reason as well --
+  // an RTL target needs the row right-aligned to the sentence END, which v1 does not do.
+  //
+  // Listed by BCP-47 code rather than by table index so the list survives LANGUAGES[] being extended;
+  // a language added there is treated as supported, which is right for the Latin/Cyrillic ones that
+  // dominate the list and shows replacement glyphs (not a crash) for a new unsupported script.
+  static constexpr const char* UNSUPPORTED_TARGETS[] = {"ar", "el", "fa", "he",    "hi",
+                                                        "ja", "ko", "th", "zh-CN", "zh-TW"};
+  if (translationLanguage >= LanguagePickerActivity::NUM_LANGUAGES) return false;  // unset target
+  const char* code = LanguagePickerActivity::LANGUAGES[translationLanguage].code;
+  for (const char* unsupported : UNSUPPORTED_TARGETS) {
+    if (std::strcmp(code, unsupported) == 0) return false;
+  }
+  return true;
 }
 
 int CrossPointSettings::getTooltipTranslationFontId() const { return translationFontIdForSize(tooltipTranslationSize); }
@@ -395,12 +445,11 @@ int CrossPointSettings::getPageTranslationOverlayFontId() const {
 }
 
 PageFontSet CrossPointSettings::readerPageFontSet() const {
-  // Same two ids readerRenderSpec() keys the cache on, read from the same accessor: a page is
-  // always drawn in the fonts it was measured with. Only the Interleaved size belongs here — the
-  // overlays draw outside the Page. The Annotation role has no setting of its own yet, so it follows
-  // the translated text (0 -> body font, via the PageFontSet constructor).
-  const int translationFontId = getInterleavedTranslationFontId();
-  return PageFontSet(getReaderFontId(), translationFontId, translationFontId);
+  // The same three ids readerRenderSpec() keys the cache on, read from the same accessors: a page is
+  // always drawn in the fonts it was measured with. Only the two LAYOUT sizes belong here — the
+  // overlays draw outside the Page. Each accessor is mode-gated and returns 0 (-> body font, via the
+  // PageFontSet constructor) for every mode but its own.
+  return PageFontSet(getReaderFontId(), getInterleavedTranslationFontId(), getInterlinearAnnotationFontId());
 }
 
 ReaderRenderSpec CrossPointSettings::readerRenderSpec(const uint16_t viewportWidth,
@@ -424,6 +473,13 @@ ReaderRenderSpec CrossPointSettings::readerRenderSpec(const uint16_t viewportWid
   // over a finished page and must never reach a spec.
   spec.ptLayout = ptLayoutForDisplayMode(translationDisplayMode);
   spec.translationFontId = getInterleavedTranslationFontId();
+  // The Interlinear annotation face is the second layout-affecting size, keyed for the same reason
+  // (it decides both the annotation row's wrap and its pitch) and normalized to 0 by Section for
+  // every layout but Interlinear.
+  spec.annotationFontId = getInterlinearAnnotationFontId();
+  // Not a cache key: the app's sentence aligner, injected so lib/Epub owns the geometry and the app
+  // owns the alignment heuristic it shares with the Tooltip mode.
+  spec.interlinearPairFn = &interlinearPairSentences;
   return spec;
 }
 

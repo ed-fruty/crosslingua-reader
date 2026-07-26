@@ -66,6 +66,15 @@ class ParsedText {
   EpdFontFamily::Style getWordStyleAt(size_t index) const {
     return index < wordStyles.size() ? wordStyles[index] : EpdFontFamily::REGULAR;
   }
+  // Read-only access to a word still in LOGICAL order, i.e. before layoutAndExtractLines consumes
+  // the block (which also hyphenates and BiDi-reorders). PtLayout::Interlinear reads the buffered
+  // TRANSLATION block this way: it is never laid out as a paragraph of its own, only re-emitted word
+  // by word into the small annotation rows, so its words must be readable without laying it out.
+  // Out-of-range yields the empty string rather than undefined behaviour.
+  const std::string& wordAt(const size_t index) const {
+    static const std::string kEmpty;
+    return index < words.size() ? words[index] : kEmpty;
+  }
   std::string getRubyTextAt(size_t index) const { return index < rubyTexts.size() ? rubyTexts[index] : std::string(); }
   void ensureRubyCapacity();
   void setBlockStyle(const BlockStyle& blockStyle) { this->blockStyle = blockStyle; }

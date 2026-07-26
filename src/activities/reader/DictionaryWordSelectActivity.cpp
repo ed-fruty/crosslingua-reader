@@ -74,6 +74,11 @@ void DictionaryWordSelectActivity::extractWords() {
   for (const auto& element : page->elements) {
     if (element->getTag() != TAG_PageLine) continue;
     const auto* line = static_cast<const PageLine*>(element.get());
+    // Editorial rows the reader inserted are not the book's words: under PtLayout::Interlinear an
+    // Annotation row is a translated sentence, and offering its 8pt words for dictionary lookup would
+    // look up the wrong language. Scoped to Annotation only — Translation rows are real chapter text
+    // under the Both layout (Interleaved) and stay selectable.
+    if (line->fontRole == LineFontRole::Annotation) continue;
     const auto& block = line->getBlock();
     if (!block || !block->valid()) continue;
 

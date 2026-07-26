@@ -1,11 +1,13 @@
 #pragma once
 #include <cstdint>
 
+#include "InterlinearAnnotation.h"
 #include "PtLayout.h"
 
 // The resolved text-rendering configuration a reader hands to the layout
-// engine. Section-cache validation keys on every field: a section file built
-// with a different spec is discarded and rebuilt.
+// engine. Section-cache validation keys on every VALUE field: a section file built
+// with a different spec is discarded and rebuilt. (interlinearPairFn is the one
+// exception and is documented as such below.)
 //
 // Build one via CrossPointSettings::readerRenderSpec(width, height), which
 // fills every field: the settings-derived ones from the store, the viewport
@@ -37,4 +39,20 @@ struct ReaderRenderSpec {
   // them out in the body font by design). Section normalizes it to 0 for every other layout, for the
   // key and for the layout engine alike; callers may set the real id unconditionally.
   int translationFontId = 0;
+  // Pre-Translation (PtLayout::Interlinear): font the small ANNOTATION rows are laid out in. 0 --
+  // and only 0 -- means "same as fontId" (see the sentinel note above); that is also the graceful
+  // answer when the annotation face cannot cover the target script, in which case the rows still
+  // appear above their sentences, just at body size.
+  //
+  // A genuine layout input, keyed exactly like translationFontId and for the same reason: it decides
+  // both how an annotation row wraps and how tall it is. Section normalizes it to 0 for every layout
+  // but Interlinear (keyedAnnotationFontId), for the key and the layout engine alike, so a future
+  // annotation-size row cannot invalidate the cache of a mode that draws no annotations.
+  int annotationFontId = 0;
+  // Pre-Translation (PtLayout::Interlinear): the app's sentence aligner. NOT a cache key -- it is a
+  // pure function of the two texts, identical in every build, so it cannot change what a cached page
+  // contains; it is carried here only because this struct is already the one channel from the app to
+  // the layout engine. nullptr disables annotation emission (the source paragraph then lays out
+  // exactly as under Original Only). See lib/Epub/Epub/InterlinearAnnotation.h.
+  InterlinearPairFn interlinearPairFn = nullptr;
 };

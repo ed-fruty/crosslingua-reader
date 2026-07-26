@@ -189,8 +189,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     PT_PAGE_TRANSLATION = 6,
     PT_TOOLTIP = 7,
     PT_INTERLEAVED = 8,
-    // Reserved, NOT yet selectable: the layout is not implemented, so it is deliberately absent
-    // from PT_SELECTABLE_MODES (see PreTranslationModes.h for how to re-add it).
+    // Each sentence's translation on its own small line ABOVE the source line it starts on. The one
+    // mode with a layout that is not shared with any other (PtLayout::Interlinear).
     PT_INTERLINEAR = 9,
   };
   // LOAD-TIME VALIDITY BOUND ONLY: fromJson() clamps a stored translationDisplayMode >= this to
@@ -479,15 +479,22 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   static PtLayout ptLayoutForDisplayMode(uint8_t mode);
 
   // Pre-Translation: font id the TRANSLATED text is drawn in, or 0 for "same as the body font".
-  // THREE resolvers, one per owning mode — deliberately not one shared accessor, so that the
-  // layout-affecting choice and the two view-time ones cannot be confused at a call site.
+  // FOUR resolvers, one per owning mode — deliberately not one shared accessor, so that the two
+  // layout-affecting choices and the two view-time ones cannot be confused at a call site.
   //
-  // LAYOUT (Interleaved): the ONLY one that reaches the cache. It feeds BOTH the section cache key
+  // LAYOUT (Interleaved): one of the two that reach the cache. It feeds BOTH the section cache key
   // (ReaderRenderSpec::translationFontId) and the render-time font set (readerPageFontSet), so the
   // two can never disagree about what a cached page was measured with. Returns 0 whenever the active
   // mode is not Interleaved — the mode gate has to live here rather than in the layout engine,
   // which only ever sees the PtLayout that Normal and Interleaved share.
   int getInterleavedTranslationFontId() const;
+  // LAYOUT (Interlinear): the other one that reaches the cache, and THE single place the small
+  // annotation face is chosen — a future user-facing Annotation Size row, or a smaller face merging
+  // from another branch, plugs in here and is picked up by the layout engine, the renderer and the
+  // cache key at once. Returns 0 (= the body font) when the mode is not Interlinear, and also when the
+  // annotation face cannot cover the selected target script, which degrades the rows to body size
+  // instead of a page of replacement glyphs.
+  int getInterlinearAnnotationFontId() const;
   // VIEW TIME (Tooltip / Page Translation): composited over an already-laid-out page, so neither may
   // appear in a ReaderRenderSpec — changing one must not invalidate a single cached chapter. Read
   // only by getTooltipFontId() / getPageTranslationFontId(), which turn 0 into the body font.
@@ -511,9 +518,13 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   int getRefreshFrequency() const;
 
  private:
-  // THE single TRANSLATION_SIZE -> font id rule behind all three accessors above: SIZE_SAME (and a
-  // SIZE_SMALLER the active family cannot honour) resolve to 0, the "same as the body font" signal.
+  // THE single TRANSLATION_SIZE -> font id rule behind the three size accessors above: SIZE_SAME (and
+  // a SIZE_SMALLER the active family cannot honour) resolve to 0, the "same as the body font" signal.
   int translationFontIdForSize(uint8_t sizeSetting) const;
+  // True when the small annotation face can render the selected Pre-Translation target language's
+  // script. See the definition for the exact coverage of the 8pt face and why an uncovered target
+  // falls back to the body font rather than being blocked.
+  bool interlinearAnnotationScriptSupported() const;
 };
 
 // Helper macro to access settings

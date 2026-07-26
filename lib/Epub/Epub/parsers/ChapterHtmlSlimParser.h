@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "Epub/FootnoteEntry.h"
+#include "Epub/InterlinearAnnotation.h"
 #include "Epub/PageFontSet.h"
 #include "Epub/ParsedText.h"
 #include "Epub/PtLayout.h"
@@ -72,6 +73,19 @@ class ChapterHtmlSlimParser {
   // stamped LineFontRole::Translation so the renderer resolves the same id back out of the page's
   // PageFontSet. 0 keeps every line Body, which is byte-for-byte the pre-existing layout.
   int translationFontId = 0;
+  // Pre-Translation (PtLayout::Interlinear): font the small ANNOTATION rows are laid out in, or 0
+  // for "same as fontId" (the same single sentinel as translationFontId). Rows are measured, broken
+  // and advanced with it and stamped LineFontRole::Annotation, so the renderer resolves the same id
+  // back out of the page's PageFontSet.
+  int annotationFontId = 0;
+  // Pre-Translation (PtLayout::Interlinear): the app's sentence aligner (see
+  // Epub/InterlinearAnnotation.h). nullptr means "no annotations": the source paragraph still lays
+  // out, it just carries no rows.
+  InterlinearPairFn interlinearPairFn = nullptr;
+  // Reusable annotation buffer for the interlinear pass, sized once on the first annotated paragraph
+  // (INTERLINEAR_MAX_ANNOTATIONS entries, 300 bytes) and reused for every paragraph after it -- no
+  // per-paragraph allocation, and nothing allocated at all under any other layout.
+  std::vector<InterlinearAnnotation> interlinearAnnotations;
   // Monotonic index over ORIGINAL content paragraphs. Advances once per content-bearing original
   // block regardless of nesting depth, matching the per-content-paragraph granularity of the
   // PageTranslationOverlay/TooltipOverlay reparsers (ParagraphBoundary.h SSOT). Empty/whitespace-only blocks
@@ -90,10 +104,11 @@ class ChapterHtmlSlimParser {
   std::string bookPrimaryLang;            // Book's content.opf language; a differing lang= marks a translated block
   std::string translatedHyphenLang;       // Last lang= applied to the Hyphenator's translated slot; avoids re-resolving
 
-  // Pre-Translation (SideBySide, mode 5): the current ORIGINAL outermost block is buffered here
-  // until its paired translation arrives, so both lay out together into two half-width columns
-  // (see renderSideBySide). bufferedOriginalParagraphIdx carries the original's paragraph index
-  // across the buffering window — the block-level currentBlockParagraphIdx has already advanced to
+  // Pre-Translation (SideBySide and Interlinear): the current ORIGINAL outermost block is buffered
+  // here until its paired translation arrives, because the parser flushes the original long before
+  // the <p lang="..."> translation block is read and both layouts need the two texts in hand at once
+  // (see renderSideBySide / renderInterlinear). bufferedOriginalParagraphIdx carries the original's
+  // paragraph index across the buffering window — the block-level currentBlockParagraphIdx has advanced to
   // the next block by the time the pair is emitted, so the emitted PageLines would otherwise stamp
   // the wrong index for the Page Translation overlay's line->paragraph mapping.
   std::unique_ptr<ParsedText> bufferedOriginalBlock = nullptr;
@@ -172,7 +187,7 @@ class ChapterHtmlSlimParser {
   // is laid out with precisely the id it will later be drawn with — the role byte is all that
   // crosses the section cache.
   int fontIdForRole(const LineFontRole role) const {
-    return PageFontSet(fontId, translationFontId, translationFontId).forRole(role);
+    return PageFontSet(fontId, translationFontId, annotationFontId).forRole(role);
   }
   void makePages();
   // Pre-Translation (PtLayout::SideBySide): two-column table layout. makePagesTableMode routes an
@@ -189,6 +204,25 @@ class ChapterHtmlSlimParser {
   // short dim "not translated" marker inline after its source text before it lays out, so
   // the missing translation is visible but unobtrusive. No-op outside SideBySide mode.
   void appendSideBySideNoTranslationMarkerIfUnpaired();
+  // Pre-Translation (PtLayout::Interlinear). Same buffering shape as SideBySide --
+  // makePagesInterlinearMode holds an original until its translation arrives -- but the pair is
+  // emitted as one full-width flow with small annotation rows interleaved above the source lines
+  // whose sentences they translate. An unpaired original falls back to plain makePages() (via
+  // flushBufferedOriginal), i.e. no annotation and no marker.
+  void makePagesInterlinearMode();
+  void renderInterlinear(std::unique_ptr<ParsedText> origBlock, std::unique_ptr<ParsedText> transBlock);
+  // Lay ONE annotation (a group of source sentences sharing a translation) out at the full measure
+  // with a hanging indent, appending its rows to `rows`. anchorOffset is the block-relative x of the
+  // sentence start; it becomes the first row's text-indent, so row 1 begins exactly at the sentence
+  // and continuation rows fall back to the margin. Emits nothing for an empty translation.
+  void buildAnnotationRows(const InterlinearAnnotation& annotation, const ParsedText& transBlock, int16_t anchorOffset,
+                           uint16_t measureWidth, int annotationFont, std::vector<std::shared_ptr<TextBlock>>& rows);
+  // Place one already-laid-out row at currentPageNextY and advance by exactly its own height, which
+  // is what lets two type sizes tile edge to edge (see addLineToPage). `breakIfNeeded` is the
+  // degenerate path only: renderInterlinear normally page-breaks ONCE per source line, before the
+  // group's first row, so an annotation can never be orphaned from its source line.
+  void emitInterlinearRow(const std::shared_ptr<TextBlock>& row, int16_t xPos, int rowHeight, LineFontRole role,
+                          bool breakIfNeeded);
   static EpdFontFamily::Style fontStyleForTextDecoration(CssTextDecoration decoration);
   static void applyDirectionToEntry(StyleStackEntry& entry, const CssStyle& css);
   static void applyTextDecorationToEntry(StyleStackEntry& entry, const CssStyle& css);
@@ -212,7 +246,8 @@ class ChapterHtmlSlimParser {
                                  std::vector<std::string> tocAnchors = {},
                                  const std::function<void()>& popupFn = nullptr, const CssParser* cssParser = nullptr,
                                  const PtLayout ptLayout = PtLayout::Both, const std::string& bookPrimaryLang = "",
-                                 const int translationFontId = 0)
+                                 const int translationFontId = 0, const int annotationFontId = 0,
+                                 const InterlinearPairFn interlinearPairFn = nullptr)
 
       : epub(epub),
         filepath(filepath),
@@ -234,6 +269,8 @@ class ChapterHtmlSlimParser {
         imageBasePath(imageBasePath),
         ptLayout(ptLayout),
         translationFontId(translationFontId),
+        annotationFontId(annotationFontId),
+        interlinearPairFn(interlinearPairFn),
         bookPrimaryLang(bookPrimaryLang),
         tocAnchors(std::move(tocAnchors)) {}
 

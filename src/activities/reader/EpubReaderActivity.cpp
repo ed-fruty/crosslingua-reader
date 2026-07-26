@@ -1015,9 +1015,16 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       // overlays composite at view time, so they invalidate nothing and need no re-layout.
       const uint8_t modeBeforeSubmenu = SETTINGS.translationDisplayMode;
       const int translationFontIdBeforeSubmenu = SETTINGS.getInterleavedTranslationFontId();
+      // The Interlinear annotation font is the second keyed size. It is mode-derived, so a mode change
+      // already covers it — but it ALSO depends on the target language, which the submenu can change
+      // without changing the mode (picking a target whose script the small face cannot cover falls the
+      // rows back to the body font). Without this the in-RAM Section would keep serving pages measured
+      // at the old size until the next section load invalidated them.
+      const int annotationFontIdBeforeSubmenu = SETTINGS.getInterlinearAnnotationFontId();
       startActivityForResult(
           std::make_unique<PreTranslationSubmenuActivity>(renderer, mappedInput, epub, currentSpineIndex),
-          [this, modeBeforeSubmenu, translationFontIdBeforeSubmenu](const ActivityResult& result) {
+          [this, modeBeforeSubmenu, translationFontIdBeforeSubmenu,
+           annotationFontIdBeforeSubmenu](const ActivityResult& result) {
             // The submenu hands back a typed request (encoded in MenuResult::action).
             // TRANSLATE_* means "tear down the reader and run the translator"; anything
             // else (a plain Back, or an in-submenu setting change) is just a re-render:
@@ -1043,7 +1050,8 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
               // overlay sizes are out for the same reason: renderOverlayFrame() re-reads them per
               // frame, and no cached page was measured with either.
               if (SETTINGS.translationDisplayMode != modeBeforeSubmenu ||
-                  SETTINGS.getInterleavedTranslationFontId() != translationFontIdBeforeSubmenu) {
+                  SETTINGS.getInterleavedTranslationFontId() != translationFontIdBeforeSubmenu ||
+                  SETTINGS.getInterlinearAnnotationFontId() != annotationFontIdBeforeSubmenu) {
                 RenderLock lock(*this);
                 if (section) {
                   cachedSpineIndex = currentSpineIndex;
@@ -1377,10 +1385,12 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     // the existing section). Gated so there is no toast when the mode is already Normal and none for
     // chapters that do have a translation.
     //
-    // Gated on the DISPLAY MODE, not renderSpec.ptLayout: modes that share the Normal layout
-    // (Paragraph, Interlinear) still promise the user bilingual output, so an untranslated chapter
-    // must downgrade and toast for them too. Read here rather than captured because the enclosing
-    // block runs once and the only writer is the branch below it.
+    // Gated on the DISPLAY MODE, not renderSpec.ptLayout: a mode that shares the Normal layout
+    // (Interleaved) still promises the user bilingual output, and a mode with its own layout
+    // (Interlinear, Side by Side) is degraded to Both by Section::effectiveLayout on an untranslated
+    // chapter, so the layout byte alone cannot tell "the user asked for bilingual" from "the user asked
+    // for plain". Read here rather than captured because the enclosing block runs once and the only
+    // writer is the branch below it.
     const uint8_t requestedDisplayMode = SETTINGS.translationDisplayMode;
     if (requestedDisplayMode != CrossPointSettings::PT_NORMAL) {
       const bool chapterHasTranslation = section->hasTranslatedHtml();
@@ -1395,8 +1405,9 @@ void EpubReaderActivity::render(RenderLock&& lock) {
         SETTINGS.translationDisplayMode = CrossPointSettings::PT_NORMAL;
         SETTINGS.saveToFile();
         // Re-resolve renderSpec against the just-persisted mode BEFORE any build call below reads it
-        // (loadSectionFile / createSectionFile / startBuild): translationFontId is mode-derived, so the
-        // spec captured under the old mode is now stale. See the "Same-pass safety" note above.
+        // (loadSectionFile / createSectionFile / startBuild): ptLayout and both keyed font ids
+        // (translationFontId, annotationFontId) are mode-derived, so the spec captured under the old
+        // mode is now stale. See the "Same-pass safety" note above.
         renderSpec = SETTINGS.readerRenderSpec(viewportWidth, viewportHeight);
         armFallbackDialog();
       }

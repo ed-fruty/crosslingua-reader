@@ -7,19 +7,20 @@
 #include <string>
 #include <vector>
 
+#include "SentencePairing.h"
 #include "SentenceSplitter.h"
 
 // One TOOLTIP STEP == one translation unit. When the translation engine merges K
 // consecutive source sentences into a SINGLE translated sentence, those K source
 // sentences all resolve to the SAME translation string; grouping them into one step
-// (see groupTranslationSteps in the .cpp) makes stepping advance per translation —
+// (groupTranslationSteps, SentencePairing.h) makes stepping advance per translation —
 // never showing the identical tooltip K times — and lets the underline span all K
 // source sentences at once. [firstSentence..lastSentence] are inclusive indices into
 // the page's sentence spans (SentenceSplitResult::spans).
-struct TooltipStep {
-  int16_t firstSentence;
-  int16_t lastSentence;
-};
+//
+// The step type itself is shared: PtLayout::Interlinear groups sentences by the same rule to decide
+// how many annotation rows a paragraph gets, so both consumers name one type (SentencePairing.h).
+using TooltipStep = SentenceStep;
 
 // Pre-Translation "Tooltip" display mode (PT_TOOLTIP). The reader lays the page out as
 // original-only text (the ChapterHtmlSlimParser drops translated words in this mode, exactly like
