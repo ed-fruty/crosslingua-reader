@@ -2155,6 +2155,12 @@ void ChapterHtmlSlimParser::buildAnnotationRows(const InterlinearAnnotation& ann
   // 8pt, and focusReading is a body-text affordance that has no business in an annotation.
   ParsedText annotationText(/*extraParagraphSpacing=*/false, /*hyphenationEnabled=*/false,
                             /*focusReadingEnabled=*/false, annStyle);
+  // One growth step for the whole span. This block is constructed per SENTENCE, so without it five
+  // parallel vectors double from zero for every sentence of every paragraph on the background build
+  // path — the variable-size DRAM churn the reserve-before-push_back rule exists to prevent. The span
+  // length is the exact token count for every target but CJK, where per-character splitting can add
+  // more and the vectors simply fall back to doubling.
+  annotationText.reserveAdditionalWords(annotation.transEndWord - annotation.transStartWord);
   for (uint16_t w = annotation.transStartWord; w < annotation.transEndWord && w < transBlock.size(); w++) {
     // REGULAR explicitly: the 8pt family ships a single face, so bold/italic would resolve back to
     // regular anyway, and dropping the inherited EpdFontFamily::TRANSLATED bit keeps the row plain
@@ -2274,8 +2280,8 @@ void ChapterHtmlSlimParser::renderInterlinear(std::unique_ptr<ParsedText> origBl
   // and which would otherwise both mis-cut the sentence spans (terminators land in the wrong places in
   // a visually reordered word array) and anchor the row under the wrong word (wordXpos of a permuted
   // index). Both are final here: this runs after the layout above, which is what resolves isRtl.
-  const bool annotate = interlinearPairFn != nullptr && !blockStyle.isRtl && !origBlock->containsRtlWord() &&
-                        !transBlock->isEmpty();
+  const bool annotate =
+      interlinearPairFn != nullptr && !blockStyle.isRtl && !origBlock->containsRtlWord() && !transBlock->isEmpty();
 
   int annotationCount = 0;
   if (annotate) {
@@ -2328,7 +2334,8 @@ void ChapterHtmlSlimParser::renderInterlinear(std::unique_ptr<ParsedText> origBl
   std::vector<std::shared_ptr<TextBlock>> annotationRows;
   annotationRows.reserve(4);
 
-  for (const auto& srcLine : srcLines) {
+  for (size_t i = 0; i < srcLines.size(); i++) {
+    const std::shared_ptr<TextBlock>& srcLine = srcLines[i];
     const uint16_t lineWordCount = srcLine->wordCount();
     // Unchanged source pitch, ruby shift included, so furigana headroom survives on annotated lines.
     const int srcRowHeight = bodyLineHeight + srcLine->getRubyShift(bodyAscender);
@@ -2348,14 +2355,15 @@ void ChapterHtmlSlimParser::renderInterlinear(std::unique_ptr<ParsedText> origBl
     }
 
     const int groupHeight = static_cast<int>(annotationRows.size()) * annotationRowHeight + srcRowHeight;
+    const bool degenerate = groupHeight > viewportHeight;
     // ATOMIC FIT: test the WHOLE group ONCE, before its first row. If the group fits at the tested y
     // then every row inside it fits by construction, so no row re-tests and an annotation can never
     // be split from the source line it belongs to.
+    //
     // The !elements.empty() guard is the one emitHorizontalRule already uses: an EMPTY page must never
     // be completed or it reaches section.bin as a blank page the reader then displays. With the top
     // spacing collapsed above, an empty page here always has currentPageNextY == 0, so a non-degenerate
     // group fits by definition and the guard costs nothing in the normal case.
-    const bool degenerate = groupHeight > viewportHeight;
     if (!degenerate && !currentPage->elements.empty() && currentPageNextY + groupHeight > viewportHeight) {
       completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex);
       completedPageCount++;
@@ -2368,6 +2376,14 @@ void ChapterHtmlSlimParser::renderInterlinear(std::unique_ptr<ParsedText> origBl
       emitInterlinearRow(row, leftInset, annotationRowHeight, LineFontRole::Annotation, degenerate);
     }
     emitInterlinearRow(srcLine, leftInset, srcRowHeight, LineFontRole::Body, degenerate);
+    // The page owns this line now, so release our reference instead of pinning every line of the
+    // paragraph until the call returns. Nothing below reads an earlier line: the flat srcWordPtrs
+    // array died with the annotate block above, the annotations hold indices rather than pointers, and
+    // this loop only ever touches the CURRENT line's wordXpos / wordCount. That restores the makePages
+    // peak -- one page's worth of TextBlocks, freed as onPageComplete serializes each page -- for a
+    // paragraph long enough to span several pages, which is exactly the shape this layout produces
+    // most of (see the +40% pages estimate in PtLayout.h).
+    srcLines[i].reset();
 
     lineFirstWord = static_cast<uint16_t>(lineFirstWord + lineWordCount);
   }

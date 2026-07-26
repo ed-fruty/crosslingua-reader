@@ -61,6 +61,12 @@ class ParsedText {
   ~ParsedText() = default;
 
   void addWord(std::string word, EpdFontFamily::Style fontStyle, bool underline = false, bool attachToPrevious = false);
+  // Grow all five parallel token vectors (and rubyTexts, when it is in use) to hold `additionalTokens`
+  // more entries in ONE step, instead of letting each double independently from zero. addWord uses it
+  // on its multi-token paths; call it directly before any external push loop whose length is known
+  // (PtLayout::Interlinear re-emitting one sentence span into an annotation row). A caller that
+  // under-estimates is still correct — the vectors simply fall back to doubling.
+  void reserveAdditionalWords(size_t additionalTokens);
   void setRubyForWordAt(size_t index, const std::string& ruby);
   void setRubyGroupAt(size_t startIndex, size_t count, const std::string& ruby);
   EpdFontFamily::Style getWordStyleAt(size_t index) const {
@@ -82,9 +88,7 @@ class ParsedText {
   // is marked here, and dropping it turns the boundary into a full getSpaceAdvance gap in
   // extractLine ("Bo njour ," instead of "Bonjour,"). Pass this straight into addWord's
   // attachToPrevious, as flushPartWordBuffer does for the parser's own re-emit.
-  bool wordAttachesToPrevious(const size_t index) const {
-    return index < wordContinues.size() && wordContinues[index];
-  }
+  bool wordAttachesToPrevious(const size_t index) const { return index < wordContinues.size() && wordContinues[index]; }
   // True when at least one word added to this block starts with an RTL codepoint. Set as words arrive,
   // so it is final once the block is complete and readable before or after layout.
   //
