@@ -2020,15 +2020,48 @@ void ChapterHtmlSlimParser::renderSideBySide(std::unique_ptr<ParsedText> leftBlo
       currentPageNextY = 0;
     }
 
+    // FOOTNOTES, attributed to the page carrying the anchor exactly as addLineToPage (:1828-1834) does
+    // it. SideBySide needs its own copy because a PAIRED paragraph never reaches addLineToPage, and
+    // under this layout every translated paragraph pairs: without this, pendingFootnotes accumulated
+    // for the whole chapter and was either dumped wholesale onto whatever page happened to be current at
+    // the next unpaired paragraph (the makePages fallback at :1897) or never delivered at all, since
+    // finishParse does not drain it.
+    //
+    // LEFT (original) column only. The right column is the translation, which the sidecar writes as a
+    // fresh block element holding nothing but the ESCAPED plain text of the translation
+    // (TranslatingHtmlRewriter's write-out loop, via appendEscaped), so it carries no
+    // <a epub:type="noteref"> and can never push a pending footnote — which is why one counter over the
+    // left column's lines is the whole story here. startNewTextBlock zeroed wordsExtractedInBlock when
+    // the translation block opened and nothing else advances it under this layout, so the pending
+    // indices and this counter share the original block's base. The pre-layout anchor index vs
+    // post-layout wordCount() mismatch is addLineToPage's own approximation, kept identical here.
     if (i < leftLines.size()) {
+      wordsExtractedInBlock += leftLines[i]->wordCount();
+      auto footnoteIt = pendingFootnotes.begin();
+      while (footnoteIt != pendingFootnotes.end() && footnoteIt->first <= wordsExtractedInBlock) {
+        currentPage->addFootnote(footnoteIt->second.number, footnoteIt->second.href);
+        ++footnoteIt;
+      }
+      pendingFootnotes.erase(pendingFootnotes.begin(), footnoteIt);
+
       auto leftLine = std::make_shared<PageLine>(leftLines[i], 0, currentPageNextY);
       leftLine->paragraphIdx = bufferedOriginalParagraphIdx;
       currentPage->elements.push_back(std::move(leftLine));
+      // The page owns this line now (PageLine's ctor takes the shared_ptr BY VALUE and moves it into
+      // its member, so the copy made above is the page's own reference), so release ours instead of
+      // pinning every line of BOTH columns until the call returns. Nothing below reads an earlier
+      // line: this loop only ever touches the CURRENT index of each column, and the sizes it compares
+      // against are unaffected by a reset. That restores the makePages peak -- one page's worth of
+      // TextBlocks, freed as onPageComplete serializes each page -- for a pair long enough to span
+      // several pages, instead of holding object + arena + control block for every line of both
+      // columns at once on top of the page being built.
+      leftLines[i].reset();
     }
     if (i < rightLines.size()) {
       auto rightLine = std::make_shared<PageLine>(rightLines[i], rightColX, currentPageNextY);
       rightLine->paragraphIdx = bufferedOriginalParagraphIdx;
       currentPage->elements.push_back(std::move(rightLine));
+      rightLines[i].reset();  // same handoff as the left column above
     }
 
     // Both columns belong to the same original paragraph; keep the page's paragraph range current
@@ -2041,6 +2074,18 @@ void ChapterHtmlSlimParser::renderSideBySide(std::unique_ptr<ParsedText> leftBlo
     }
 
     currentPageNextY += lineHeight;
+  }
+
+  // Same safety net makePages keeps (:1897): every remaining entry belongs to the paragraph just
+  // emitted, so flushing it to the current page keeps it off the NEXT paragraph's ledger. The per-line
+  // drain above already covers the normal case — an anchor index can never exceed the block's
+  // pre-layout word count, and hyphenation only ADDS post-layout words — so this fires only when the
+  // left column produced fewer lines than the anchors need (a line dropped to a TextBlock arena OOM).
+  if (!pendingFootnotes.empty() && currentPage) {
+    for (const auto& [idx, fn] : pendingFootnotes) {
+      currentPage->addFootnote(fn.number, fn.href);
+    }
+    pendingFootnotes.clear();
   }
 
   // Bottom spacing + the usual half-line paragraph gap after the pair.
