@@ -113,6 +113,17 @@ class ChapterHtmlSlimParser {
   // the wrong index for the Page Translation overlay's line->paragraph mapping.
   std::unique_ptr<ParsedText> bufferedOriginalBlock = nullptr;
   int16_t bufferedOriginalParagraphIdx = -1;
+  // ...and so does the buffered original's FOOTNOTE LEDGER, for the same reason its paragraph index
+  // does: a pending footnote's wordIndex is relative to the words of the block it was parsed in, and
+  // startNewTextBlock zeroes that base the moment the buffered block is replaced by the next one. Left
+  // in the shared pendingFootnotes, two consecutive unpaired originals both index from base 0, so
+  // laying the FIRST one out drained the SECOND one's low-index entries onto the first one's pages and
+  // the end-of-block net then cleared whatever was left — footnote markers on the wrong page, or gone.
+  // Moving the ledger into the buffer with the block makes an entry unambiguous about which block it
+  // belongs to by construction: a drain can only ever see the ledger that is installed
+  // (adoptBufferedFootnoteLedger), so it can only ever match its own block.
+  std::vector<std::pair<int, FootnoteEntry>> bufferedOriginalFootnotes;
+  int bufferedOriginalWordsExtracted = 0;
 
   // Style tracking (replaces depth-based approach)
   struct StyleStackEntry {
@@ -157,6 +168,12 @@ class ChapterHtmlSlimParser {
   int footnoteLinkDepth = -1;
   FootnoteEntry currentFootnote = {};
   int currentFootnoteLinkTextLen = 0;
+  // The FOOTNOTE LEDGER of the block currently open / being laid out: the anchors it has pushed but
+  // not yet delivered, and the running count of its words that have already been laid out. A
+  // wordIndex is meaningful ONLY against the base of its own block (the push site adds
+  // wordsExtractedInBlock to currentTextBlock->size(), and startNewTextBlock zeroes the base for
+  // every fresh block), so a drain must never see two blocks' entries at once — that is exactly what
+  // bufferedOriginalFootnotes below exists to prevent.
   std::vector<std::pair<int, FootnoteEntry>> pendingFootnotes;  // <wordIndex, entry>
   int wordsExtractedInBlock = 0;
 
@@ -189,6 +206,28 @@ class ChapterHtmlSlimParser {
   int fontIdForRole(const LineFontRole role) const {
     return PageFontSet(fontId, translationFontId, annotationFontId).forRole(role);
   }
+  // Deliver every anchor still pending for the block just laid out to the page currently being built.
+  // The per-line drains attribute an anchor to the page carrying it; this is the end-of-block net for
+  // the entries they could not reach (a block that produced fewer lines than its anchors need), shared
+  // by makePages and both custom emitters so all three behave identically.
+  void flushPendingFootnotesToCurrentPage();
+  // Pre-Translation: one block's footnote ledger — the anchors pending for it and the word base those
+  // indices are relative to. Both drains compare an index against wordsExtractedInBlock, so installing
+  // a ledger is what makes a drain match its own block and nothing else.
+  struct FootnoteLedger {
+    std::vector<std::pair<int, FootnoteEntry>> pending;
+    int wordBase = 0;
+  };
+  // Install the BUFFERED original's ledger for the duration of laying that block out, returning the
+  // in-flight block's ledger for the caller to park. Required by every path that lays the buffered
+  // block out (flushBufferedOriginal, renderSideBySide, renderInterlinear): by then the in-flight block
+  // has usually pushed anchors of its own, indexed from a base of its own, and draining those against
+  // the buffered block's lines is what put one paragraph's footnotes on another's page.
+  [[nodiscard]] FootnoteLedger adoptBufferedFootnoteLedger();
+  // Undo adoptBufferedFootnoteLedger: net anything the buffered block's layout could not place, then
+  // restore the parked in-flight ledger. Leaves bufferedOriginalFootnotes empty (and its capacity
+  // recycled), which is the precondition the next buffered block relies on.
+  void releaseFootnoteLedger(FootnoteLedger& parked);
   void makePages();
   // Pre-Translation (PtLayout::SideBySide): two-column table layout. makePagesTableMode routes an
   // outermost block to either buffering (an original, held in bufferedOriginalBlock) or pairing

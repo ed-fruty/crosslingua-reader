@@ -1855,6 +1855,45 @@ void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line, const
   currentPageNextY += lineHeight;
 }
 
+void ChapterHtmlSlimParser::flushPendingFootnotesToCurrentPage() {
+  if (pendingFootnotes.empty()) return;
+  if (currentPage) {
+    for (const auto& [idx, fn] : pendingFootnotes) {
+      currentPage->addFootnote(fn.number, fn.href);
+    }
+  }
+  // Cleared either way. An entry left behind here would be drained against the NEXT block's word base,
+  // which is precisely the misattribution this net exists to prevent. Every caller has a live
+  // currentPage by construction — makePages and both custom emitters create one before laying a single
+  // line — so the undelivered case is unreachable in practice.
+  pendingFootnotes.clear();
+}
+
+ChapterHtmlSlimParser::FootnoteLedger ChapterHtmlSlimParser::adoptBufferedFootnoteLedger() {
+  FootnoteLedger parked;
+  parked.wordBase = wordsExtractedInBlock;
+  // Swaps, never copies: an entry lives in exactly one ledger at every instant, so nothing can be
+  // delivered twice or lost in transit. Both swaps are O(1) and recycle the two buffers between the
+  // ledgers instead of allocating, so a chapter of footnoted paragraphs allocates once.
+  parked.pending.swap(pendingFootnotes);
+  pendingFootnotes.swap(bufferedOriginalFootnotes);
+  wordsExtractedInBlock = bufferedOriginalWordsExtracted;
+  return parked;
+}
+
+void ChapterHtmlSlimParser::releaseFootnoteLedger(FootnoteLedger& parked) {
+  // Anything still pending belongs to the buffered block and had no line of its own to land on (its
+  // layout produced fewer lines than its anchors need, or bailed out before emitting any), so give it
+  // the same best-effort page the end-of-block net gives every such entry rather than letting it cross
+  // into the in-flight block's ledger. Normally a no-op: makePages and both custom emitters run that
+  // net themselves before returning.
+  flushPendingFootnotesToCurrentPage();
+  bufferedOriginalFootnotes.swap(pendingFootnotes);
+  bufferedOriginalWordsExtracted = 0;
+  pendingFootnotes.swap(parked.pending);
+  wordsExtractedInBlock = parked.wordBase;
+}
+
 void ChapterHtmlSlimParser::makePages() {
   if (!currentTextBlock) {
     LOG_ERR("EHP", "!! No text block to make pages for !!");
@@ -1894,12 +1933,7 @@ void ChapterHtmlSlimParser::makePages() {
   // Fallback: transfer any remaining pending footnotes to current page.
   // Normally addLineToPage handles this via word-index tracking, but this catches
   // edge cases where a footnote's word index equals the exact block size.
-  if (!pendingFootnotes.empty() && currentPage) {
-    for (const auto& [idx, fn] : pendingFootnotes) {
-      currentPage->addFootnote(fn.number, fn.href);
-    }
-    pendingFootnotes.clear();
-  }
+  flushPendingFootnotesToCurrentPage();
 
   // Apply bottom spacing after the paragraph (stored in pixels)
   if (blockStyle.marginBottom > 0) {
@@ -1929,7 +1963,15 @@ void ChapterHtmlSlimParser::makePagesTableMode() {
     // Translation paragraph: pair it beside the buffered original if one is waiting, otherwise
     // fall back to a full-width layout (a translation with no preceding original — unusual).
     if (bufferedOriginalBlock) {
+      // renderSideBySide drains against the LEFT column, i.e. the buffered original, so that block's
+      // ledger is the one that must be installed while it runs. A sidecar translation cannot itself
+      // carry an anchor (see the drain comment there), but a book whose OWN markup marks a paragraph
+      // with a differing lang= can, and its indices restart from a base of their own — parking them
+      // keeps them out of the left column's drain, and the ledger swap also pins the word BASE, which
+      // is otherwise whatever the translation block left behind if it was large enough to soft-flush.
+      FootnoteLedger parkedFootnotes = adoptBufferedFootnoteLedger();
       renderSideBySide(std::move(bufferedOriginalBlock), std::move(currentTextBlock));
+      releaseFootnoteLedger(parkedFootnotes);
     } else {
       makePages();
     }
@@ -1940,6 +1982,13 @@ void ChapterHtmlSlimParser::makePagesTableMode() {
       flushBufferedOriginal();
     }
     bufferedOriginalParagraphIdx = currentBlockParagraphIdx;
+    // The block's footnote ledger goes into the buffer WITH it: its anchor indices are relative to its
+    // own words, and startNewTextBlock is about to zero that base for the next block. The buffered
+    // ledger is empty here by construction — flushBufferedOriginal above, and every other consumer of
+    // the buffer, leaves it so — hence a swap: it hands this block's ledger over AND leaves the
+    // in-flight one clean for the next block, with the two buffers recycled rather than reallocated.
+    bufferedOriginalFootnotes.swap(pendingFootnotes);
+    bufferedOriginalWordsExtracted = wordsExtractedInBlock;
     bufferedOriginalBlock = std::move(currentTextBlock);
   }
 }
@@ -1955,6 +2004,14 @@ void ChapterHtmlSlimParser::flushBufferedOriginal() {
   auto savedBlock = std::move(currentTextBlock);
   const int16_t savedParagraphIdx = currentBlockParagraphIdx;
   const bool savedIsTranslated = currentBlockIsTranslated;
+  // The footnote ledger travels with the block for the same reason the paragraph index does, and it is
+  // load-bearing HERE above all: the in-flight block that TRIGGERED this flush (the next original) has
+  // usually already pushed anchors of its own, and its indices restart from base 0 exactly as the
+  // buffered block's did. Left in the same ledger, the low-index entries of the block that has not been
+  // laid out yet satisfy addLineToPage's `first <= wordsExtractedInBlock` test on one of the buffered
+  // block's first lines and were delivered to ITS page, then erased — so the next paragraph's marker
+  // appeared one paragraph early, or (once the net below cleared the remainder) not at all.
+  FootnoteLedger parkedFootnotes = adoptBufferedFootnoteLedger();
 
   currentTextBlock = std::move(bufferedOriginalBlock);
   currentBlockParagraphIdx = bufferedOriginalParagraphIdx;
@@ -1963,6 +2020,7 @@ void ChapterHtmlSlimParser::flushBufferedOriginal() {
   appendSideBySideNoTranslationMarkerIfUnpaired();
   makePages();
 
+  releaseFootnoteLedger(parkedFootnotes);
   currentTextBlock = std::move(savedBlock);
   currentBlockParagraphIdx = savedParagraphIdx;
   currentBlockIsTranslated = savedIsTranslated;
@@ -2024,17 +2082,22 @@ void ChapterHtmlSlimParser::renderSideBySide(std::unique_ptr<ParsedText> leftBlo
     // it. SideBySide needs its own copy because a PAIRED paragraph never reaches addLineToPage, and
     // under this layout every translated paragraph pairs: without this, pendingFootnotes accumulated
     // for the whole chapter and was either dumped wholesale onto whatever page happened to be current at
-    // the next unpaired paragraph (the makePages fallback at :1897) or never delivered at all, since
-    // finishParse does not drain it.
+    // the next unpaired paragraph (the end-of-block net, flushPendingFootnotesToCurrentPage) or never
+    // delivered at all, since finishParse does not drain it.
     //
     // LEFT (original) column only. The right column is the translation, which the sidecar writes as a
     // fresh block element holding nothing but the ESCAPED plain text of the translation
-    // (TranslatingHtmlRewriter's write-out loop, via appendEscaped), so it carries no
-    // <a epub:type="noteref"> and can never push a pending footnote — which is why one counter over the
-    // left column's lines is the whole story here. startNewTextBlock zeroed wordsExtractedInBlock when
-    // the translation block opened and nothing else advances it under this layout, so the pending
-    // indices and this counter share the original block's base. The pre-layout anchor index vs
-    // post-layout wordCount() mismatch is addLineToPage's own approximation, kept identical here.
+    // (TranslatingHtmlRewriter's write-out loop, via appendEscaped — '<' becomes "&lt;"), so it carries
+    // no <a epub:type="noteref"> and can never push a pending footnote, which is why one counter over
+    // the left column's lines is the whole story here.
+    //
+    // The pending indices and this counter share the LEFT block's base because the caller installed
+    // that block's ledger (adoptBufferedFootnoteLedger) before calling: both the entries and the base
+    // below are the buffered original's own, and the in-flight block's are parked out of reach. Relying
+    // instead on "startNewTextBlock zeroed the counter and nothing advances it" was not sound — the soft
+    // flush (:1452) advances it for any block over 750 words (320 with embedded CSS), and the entries of
+    // an as-yet-unlaid block sat in the same list. The pre-layout anchor index vs post-layout
+    // wordCount() mismatch is addLineToPage's own approximation, kept identical here.
     if (i < leftLines.size()) {
       wordsExtractedInBlock += leftLines[i]->wordCount();
       auto footnoteIt = pendingFootnotes.begin();
@@ -2076,17 +2139,13 @@ void ChapterHtmlSlimParser::renderSideBySide(std::unique_ptr<ParsedText> leftBlo
     currentPageNextY += lineHeight;
   }
 
-  // Same safety net makePages keeps (:1897): every remaining entry belongs to the paragraph just
-  // emitted, so flushing it to the current page keeps it off the NEXT paragraph's ledger. The per-line
-  // drain above already covers the normal case — an anchor index can never exceed the block's
-  // pre-layout word count, and hyphenation only ADDS post-layout words — so this fires only when the
-  // left column produced fewer lines than the anchors need (a line dropped to a TextBlock arena OOM).
-  if (!pendingFootnotes.empty() && currentPage) {
-    for (const auto& [idx, fn] : pendingFootnotes) {
-      currentPage->addFootnote(fn.number, fn.href);
-    }
-    pendingFootnotes.clear();
-  }
+  // Same end-of-block net makePages keeps: every entry in the installed ledger belongs to the LEFT
+  // column just emitted (the caller parked the in-flight block's ledger before this call), so flushing
+  // it to the current page can never touch another paragraph's entry. The per-line drain above already
+  // covers the normal case — an anchor index can never exceed the block's pre-layout word count, and
+  // hyphenation only ADDS post-layout words — so this fires only when the left column produced fewer
+  // lines than the anchors need (a line dropped to a TextBlock arena OOM).
+  flushPendingFootnotesToCurrentPage();
 
   // Bottom spacing + the usual half-line paragraph gap after the pair.
   if (bs.marginBottom > 0) currentPageNextY += bs.marginBottom;
@@ -2143,7 +2202,11 @@ void ChapterHtmlSlimParser::makePagesInterlinearMode() {
     // Translation paragraph: pair it with the buffered original if one is waiting, otherwise fall
     // back to a full-width layout (a translation with no preceding original — unusual).
     if (bufferedOriginalBlock) {
+      // Same ledger handover as makePagesTableMode: emitInterlinearRow drains against the SOURCE rows,
+      // i.e. the buffered original, so that block's ledger is the one installed while it runs.
+      FootnoteLedger parkedFootnotes = adoptBufferedFootnoteLedger();
       renderInterlinear(std::move(bufferedOriginalBlock), std::move(currentTextBlock));
+      releaseFootnoteLedger(parkedFootnotes);
     } else {
       makePages();
     }
@@ -2155,6 +2218,9 @@ void ChapterHtmlSlimParser::makePagesInterlinearMode() {
       flushBufferedOriginal();
     }
     bufferedOriginalParagraphIdx = currentBlockParagraphIdx;
+    // The block's footnote ledger goes into the buffer WITH it — see makePagesTableMode.
+    bufferedOriginalFootnotes.swap(pendingFootnotes);
+    bufferedOriginalWordsExtracted = wordsExtractedInBlock;
     bufferedOriginalBlock = std::move(currentTextBlock);
   }
 }
@@ -2244,19 +2310,23 @@ void ChapterHtmlSlimParser::emitInterlinearRow(const std::shared_ptr<TextBlock>&
   // it. Interlinear needs its own copy because a PAIRED paragraph never reaches addLineToPage, and
   // under this layout essentially every paragraph pairs: without this, pendingFootnotes accumulated
   // for the whole chapter and was either dumped wholesale onto whatever page happened to be current at
-  // the next unpaired paragraph (the makePages fallback at :1897) or never delivered at all, since
-  // finishParse does not drain it.
+  // the next unpaired paragraph (the end-of-block net, flushPendingFootnotesToCurrentPage) or never
+  // delivered at all, since finishParse does not drain it.
   //
   // BODY rows only: an annotation row is synthetic and must not consume source word indices.
   //
   // Every entry here comes from an ORIGINAL block. A translated paragraph is written into the sidecar
   // as a fresh <p> holding nothing but the ESCAPED plain text of the translation
-  // (TranslatingHtmlRewriter's write-out loop), so it carries no <a epub:type="noteref"> and can never
-  // push a pending footnote — which is why one counter over the source lines is the whole story here.
-  // startNewTextBlock zeroed wordsExtractedInBlock when the translation block opened and nothing else
-  // advances it under this layout, so the indices and this counter share the original block's base.
-  // The pre-layout anchor index vs post-layout wordCount() mismatch is addLineToPage's own
-  // approximation, kept identical here.
+  // (TranslatingHtmlRewriter's write-out loop, via appendEscaped), so it carries no
+  // <a epub:type="noteref"> and can never push a pending footnote — which is why one counter over the
+  // source lines is the whole story here.
+  //
+  // The indices and this counter share the SOURCE block's base because makePagesInterlinearMode
+  // installed that block's ledger (adoptBufferedFootnoteLedger) before calling renderInterlinear: both
+  // the entries and the base below are the buffered original's own, and the in-flight block's are parked
+  // out of reach. See the matching drain in renderSideBySide for why the old "startNewTextBlock zeroed
+  // it" reasoning was not sound. The pre-layout anchor index vs post-layout wordCount() mismatch is
+  // addLineToPage's own approximation, kept identical here.
   if (role == LineFontRole::Body) {
     wordsExtractedInBlock += row->wordCount();
     auto footnoteIt = pendingFootnotes.begin();
@@ -2433,17 +2503,13 @@ void ChapterHtmlSlimParser::renderInterlinear(std::unique_ptr<ParsedText> origBl
     lineFirstWord = static_cast<uint16_t>(lineFirstWord + lineWordCount);
   }
 
-  // Same safety net makePages keeps (:1897): every remaining entry belongs to the paragraph just
-  // emitted, so flushing it to the current page keeps it off the NEXT paragraph's ledger. The
-  // per-line drain above already covers the normal case — an anchor index can never exceed the
-  // block's pre-layout word count, and hyphenation only ADDS post-layout words — so this fires only
-  // when a line was dropped (a TextBlock arena OOM).
-  if (!pendingFootnotes.empty() && currentPage) {
-    for (const auto& [idx, fn] : pendingFootnotes) {
-      currentPage->addFootnote(fn.number, fn.href);
-    }
-    pendingFootnotes.clear();
-  }
+  // Same end-of-block net makePages keeps: every entry in the installed ledger belongs to the SOURCE
+  // paragraph just emitted (the caller parked the in-flight block's ledger before this call), so
+  // flushing it to the current page can never touch another paragraph's entry. The per-row drain
+  // already covers the normal case — an anchor index can never exceed the block's pre-layout word
+  // count, and hyphenation only ADDS post-layout words — so this fires only when a line was dropped (a
+  // TextBlock arena OOM).
+  flushPendingFootnotesToCurrentPage();
 
   // Bottom spacing + the usual half-line paragraph gap after the pair.
   if (blockStyle.marginBottom > 0) currentPageNextY += blockStyle.marginBottom;
