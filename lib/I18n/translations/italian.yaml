@@ -483,6 +483,7 @@ STR_ENGINE_DEEPSEEK: "DeepSeek"
 STR_ENGINE_GEMINI: "Gemini"
 STR_ENGINE_GOOGLE_V2: "Google v2"
 STR_ENGINE_GOOGLE_HTML: "Google v1"
+STR_ENGINE_AZURE: "Azure"
 
 STR_NO_TRANSLATIONS_FOR_PAGE: "Nessuna traduzione per questa pagina"
 STR_NO_TRANSLATION_SWITCH_NORMAL: "Nessuna traduzione per questo capitolo — attivata la modalità Normale"
