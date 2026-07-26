@@ -176,12 +176,21 @@ void EpubReaderActivity::onEnter() {
   HalFile f;
   if (Storage.openFileForRead("ERS", epub->getCachePath() + "/progress.bin", f)) {
     uint8_t data[ReaderPosition::RECORD_SIZE_MAX];
+    // The record's LENGTH is its format tag (ReaderPosition.h), so the length handed to decode() has
+    // to be the length of the FILE, not of this read. They differ in exactly one case and it is the
+    // dangerous one: a record longer than any format this firmware knows fills the buffer, read()
+    // returns RECORD_SIZE_MAX, and the leading bytes decode as a perfectly plausible newest-format
+    // record whose fields have since been rearranged. Comparing against the file size makes that
+    // read as "no saved progress" instead, which is what the header comment promises. ProgressFile
+    // writes the whole record and renames it into place atomically, so file length == record length.
+    const size_t fileLen = f.size();
     const int dataSize = f.read(data, sizeof(data));
     ReaderPosition::Record saved;
     // Records written by older firmware are shorter and simply leave the newer fields absent: no
     // paragraph anchor means the reposition falls back to the page-ratio remap that shipped with
     // that length. It never degrades to page 1 -- the spine and page number are in every version.
-    if (dataSize > 0 && ReaderPosition::decode(data, static_cast<size_t>(dataSize), saved)) {
+    if (dataSize > 0 && static_cast<size_t>(dataSize) == fileLen &&
+        ReaderPosition::decode(data, static_cast<size_t>(dataSize), saved)) {
       currentSpineIndex = saved.spineIndex;
       nextPageNumber = saved.pageNumber;
       if (nextPageNumber == UINT16_MAX) {
