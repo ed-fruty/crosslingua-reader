@@ -502,15 +502,7 @@ void PreTranslationSubmenuActivity::render(RenderLock&&) {
 
   GUI.drawList(
       renderer, Rect{screen.x, contentTop, screen.width, contentHeight}, static_cast<int>(menuItems.size()),
-      selectedIndex,
-      [this](int index) -> std::string {
-        // Child rows are indented by prefixing spaces to the title, the same mechanism the chapter
-        // list uses for TOC depth (EpubReaderChapterSelectionActivity.cpp:122). Two indent units,
-        // because one is barely readable at UI_10 against a right-aligned value column.
-        static constexpr char CHILD_INDENT[] = "    ";
-        const auto& item = menuItems[index];
-        return item.isChild ? CHILD_INDENT + std::string(I18N.get(item.labelId)) : I18N.get(item.labelId);
-      },
+      selectedIndex, [this](int index) -> std::string { return I18N.get(menuItems[index].labelId); },
       /*rowSubtitle=*/nullptr,
       /*rowIcon=*/nullptr,
       [this](int index) -> std::string {
@@ -550,7 +542,12 @@ void PreTranslationSubmenuActivity::render(RenderLock&&) {
         }
         return "";  // unreachable: every enumerator returns above
       },
-      /*highlightValue=*/true);
+      /*highlightValue=*/true, /*rowDimmed=*/nullptr,
+      // Sub-setting rows are indented by a DRAWING offset, not by leading spaces in the title: a
+      // title goes through bidi before it is drawn, so for an Arabic or Hebrew label drawText
+      // resolves an RTL paragraph and moves the leading run to the visual right -- the indent would
+      // land on the wrong side, wedged against the right-aligned value column. See kListChildIndent.
+      [this](int index) { return menuItems[index].isChild; });
 
   // Button hints follow EpubReaderMenuActivity's pattern (Back / Select / Up / Down).
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
