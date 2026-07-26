@@ -63,7 +63,14 @@ class EpubReaderActivity final : public Activity {
   // which recovers a transiently corrupt cache; capped so a persistently bad page can't spin forever.
   uint8_t pageLoadRetryCount = 0;
   static constexpr uint8_t MAX_PAGE_LOAD_RETRIES = 3;
-  bool skipNextButtonCheck = false;  // Skip button processing for one frame after subactivity exit
+  // Swallows the Back RELEASE that follows a sub-activity which closed on the Back PRESS.
+  // The two halves of the codebase disagree on purpose: the reader and its own submenus act on
+  // the release, while the Settings screens (and OptionPopup) act on the press. That was fine
+  // while those screens were only reachable from Settings, but the reader menu now opens
+  // TextSettingsActivity directly -- it finishes on the press, and the release then landed on the
+  // reader, which read it as its own Back and left the book. Set when returning from such a
+  // sub-activity; consumed by the first Back release loop() sees.
+  bool ignoreNextBackRelease = false;
   bool automaticPageTurnActive = false;
   bool showBookmarkMessage = false;
   // "No dictionary set" popup, shown when a lookup is triggered without a configured dictionary.

@@ -345,6 +345,22 @@ void EpubReaderActivity::loop() {
     return;
   }
 
+  // Consume the Back release left over by a press-closing sub-activity (see ignoreNextBackRelease).
+  // Done before every handler below, including the modal dialog gate, so no reader action can be
+  // triggered by a press the reader never saw.
+  if (ignoreNextBackRelease) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+      ignoreNextBackRelease = false;
+      return;
+    }
+    // The release may already have been consumed by the sub-activity's own frame; don't hold the
+    // latch past the first loop that sees any other input, or a later legitimate Back is eaten.
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
+        mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+      ignoreNextBackRelease = false;
+    }
+  }
+
   // Idle glyph prewarm for the likely next page (currentPage + 1). The scan
   // pass draws nothing (FCM scan mode suppresses pixels), so the displayed
   // framebuffer is untouched; endScanAndPrewarm loads only glyphs not already
@@ -1102,6 +1118,11 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
           std::make_unique<TextSettingsActivity>(renderer, mappedInput, &sdFontSystem.registry(),
                                                  TextSettingsActivity::Tab::Family),
           [this, specBefore, marginBefore, antiAliasingBefore, vpWidth, vpHeight](const ActivityResult&) {
+            // TextSettingsActivity closes on the Back PRESS; the reader acts on the RELEASE. Without
+            // this the same keypress that left the screen would immediately fire the reader's own
+            // Back and drop the user out of the book.
+            ignoreNextBackRelease = true;
+
             const bool layoutChanged = !SETTINGS.readerRenderSpec(vpWidth, vpHeight).layoutEquals(specBefore) ||
                                        SETTINGS.screenMargin != marginBefore;
 
