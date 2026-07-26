@@ -32,6 +32,8 @@ struct ReaderRenderSpec {
   // fontId": font ids are signed hashes, so a negative id is a perfectly normal font (see the
   // UNSET SENTINEL note in PageFontSet.h, which uses the same single-sentinel rule).
   // A distinct font changes word measurement and therefore line breaking, so unlike the drawing-
-  // only shade this IS part of the cache key.
+  // only shade this IS part of the cache key -- but only under a layout that actually lays translated
+  // words out. Section normalizes it to 0 for PtLayout::OriginalOnly, which drops them all; callers
+  // may set the real id unconditionally.
   int translationFontId = 0;
 };

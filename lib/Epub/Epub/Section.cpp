@@ -110,6 +110,20 @@ constexpr uint32_t HEADER_SIZE =
     sizeof(uint16_t) + sizeof(uint16_t) + sizeof(bool) + sizeof(bool) + sizeof(uint8_t) + sizeof(bool) +
     sizeof(uint8_t) + sizeof(bool) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t);
 
+// The translation font belongs in the cache key only where translated words are actually laid out.
+// Under the OriginalOnly layout they are all dropped, so not one line in the resulting pages was
+// measured in that font and no value of it can move a line break. Stamping the real id there would
+// make a Translation Size change invalidate every cached chapter of the book -- and Size is a
+// per-mode sub-setting of exactly the two modes that map to OriginalOnly (Tooltip and Page
+// Translation), whose translation is composited on top at view time and never enters the page at all.
+//
+// Keyed off the EFFECTIVE (post-fallback) layout, not the requested one, and applied to both the
+// header write and the lookup, so build and lookup can never disagree: a chapter with no committed
+// translation is laid out as Both even in Tooltip mode, keeps the real id, and so stays a cache hit
+// for the inline modes that share that layout.
+constexpr int keyedTranslationFontId(const int translationFontId, const PtLayout effectiveLayout) {
+  return effectiveLayout == PtLayout::OriginalOnly ? 0 : translationFontId;
+}
 }  // namespace
 
 // Out-of-line so the unique_ptr<ChapterHtmlSlimParser> in BuildContext can be
@@ -242,13 +256,14 @@ bool Section::loadSectionFile(const ReaderRenderSpec& spec) {
     // untranslated pages in a bilingual mode (and, symmetrically, a translated cache would survive
     // the translation being deleted). One SD stat, shared with the layout resolution below.
     const bool translatedSource = hasTranslatedHtml();
-    if (spec.fontId != fileFontId || spec.translationFontId != fileTranslationFontId ||
+    const PtLayout layout = effectiveLayout(spec.ptLayout, translatedSource);
+    if (spec.fontId != fileFontId || keyedTranslationFontId(spec.translationFontId, layout) != fileTranslationFontId ||
         spec.lineCompression != fileLineCompression || spec.extraParagraphSpacing != fileExtraParagraphSpacing ||
         spec.paragraphAlignment != fileParagraphAlignment || spec.viewportWidth != fileViewportWidth ||
         spec.viewportHeight != fileViewportHeight || spec.hyphenationEnabled != fileHyphenationEnabled ||
         spec.embeddedStyle != fileEmbeddedStyle || translatedSource != fileTranslatedSource ||
-        static_cast<uint8_t>(effectiveLayout(spec.ptLayout, translatedSource)) != filePtLayout ||
-        spec.imageRendering != fileImageRendering || spec.focusReadingEnabled != fileFocusReadingEnabled) {
+        static_cast<uint8_t>(layout) != filePtLayout || spec.imageRendering != fileImageRendering ||
+        spec.focusReadingEnabled != fileFocusReadingEnabled) {
       file.close();
       LOG_ERR("SCT", "Deserialization failed: Parameters do not match");
       clearCache();
@@ -404,6 +419,9 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   // The header cache-key and the parser both key on the effective (post-fallback) layout.
   ReaderRenderSpec effectiveSpec = spec;
   effectiveSpec.ptLayout = effectivePtLayout;
+  // ... and the translation font is only keyed where translated words reach the page; see
+  // keyedTranslationFontId(). loadSectionFile() normalizes the lookup the same way.
+  effectiveSpec.translationFontId = keyedTranslationFontId(spec.translationFontId, effectivePtLayout);
 
   // Reuse the previously unzipped HTML if we already have it. The unzipped HTML is keyed only on the
   // book (it lives in the per-book cache dir), not on render settings, so it survives the invalidation

@@ -140,7 +140,11 @@ one field:
 - **`translationFontId`** is added as an `s32` immediately after `fontId`. It is
   the font translated text is laid out in (`0` = same as the body font). Unlike
   the drawing-only shade, a distinct font changes word measurement and hence
-  line breaking, so it belongs in the cache key.
+  line breaking, so it belongs in the cache key. It is stamped as `0` whenever
+  the (effective) layout is `OriginalOnly`: that layout drops every translated
+  word, so no line in the resulting pages was measured in the translation font
+  and no value of it could move a line break. The lookup normalizes the same
+  way, so the two can never disagree.
 - **Per-line font role.** `PageLine` serializes a `LineFontRole` byte
   (`0 = Body`, `1 = Translation`, `2 = Annotation`) immediately after
   `paragraphIdx`, so one page can mix the body font with smaller translated or
