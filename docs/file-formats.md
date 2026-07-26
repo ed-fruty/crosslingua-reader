@@ -90,6 +90,49 @@ if (parsedSize != fileSize) {
 
 ## `section.bin`
 
+### Version 40
+
+Version 40 adds a fifth `PtLayout` value and one header field. Either change alone
+would force the bump; together they also shift every field after the new one, which
+is exactly the failure mode the version 39 note below was written about.
+
+- **`PtLayout` gains `4 = Interlinear`.** The Interlinear display mode no longer maps
+  to `Both`: it now has a layout of its own, so its pages genuinely differ and cannot
+  share a cache entry with Normal or Interleaved. The source flows full-width and
+  breaks exactly as it does under Original Only, and each sentence's translation is
+  emitted as its own `LineFontRole::Annotation` row directly *above* the source line
+  that sentence starts on. Because the byte is part of the cache key, adding a value
+  to it requires a version bump on its own (`lib/Epub/Epub/PtLayout.h`).
+- **`annotationFontId`** is added as an `s32` immediately after `translationFontId`.
+  It is the font the small annotation rows are laid out in (`0` = same as the body
+  font), resolved from `CrossPointSettings::getInterlinearAnnotationFontId()`. It is a
+  genuine layout input — it decides both how an annotation row wraps and how tall the
+  row is — so it belongs in the cache key for the same reason `translationFontId`
+  does, and it is normalized the same way: stamped as `0` whenever the (effective)
+  layout is anything other than `Interlinear`, since no other layout emits an
+  annotation row and therefore no line under `Both` / `OriginalOnly` /
+  `TranslationOnly` / `SideBySide` is ever measured in it. Without that
+  normalization, a future annotation-size setting would invalidate every cached
+  chapter of every mode. The lookup normalizes identically
+  (`Section::keyedAnnotationFontId`, applied at the header write, the lookup compare
+  and the id handed to the parser), so key and layout can never disagree. `0` is also
+  the graceful answer when the annotation face cannot cover the selected target
+  script: the rows still appear above their sentences, at body size.
+- **`LineFontRole::Annotation` is now actually emitted.** An annotation row is an
+  ordinary `PageLine` — nothing new is serialized per line or per page. It is
+  left-aligned, laid out at the *full* text measure with a hanging indent (the first
+  row's text-indent is the x of the sentence start, so continuation rows fall back to
+  the margin), placed at `xPos` = the block's left inset, and stamped with the
+  original paragraph's index just as its source line is. Its height is
+  `getLineHeight(annotationFontId)`, which is what lets two type sizes tile edge to
+  edge on one page (see the per-line font role bullet under version 38). No sentence
+  metadata reaches disk: alignment is fully resolved before the page is written.
+
+The per-chapter auto-fallback applies to `Interlinear` too: a chapter with no
+committed translation is laid out and stamped as `Both`
+(`Section::effectiveLayout`), so an Interlinear cache entry only exists for a
+chapter that actually has a translation.
+
 ### Version 39
 
 Version 39 adds one field to the version 38 header:
@@ -127,9 +170,10 @@ one field:
 - **The header stores a layout, not a display mode.** The byte that held the raw
   `translationDisplayMode` now holds the `PtLayout` that mode implies:
   `0 = Both`, `1 = OriginalOnly`, `2 = TranslationOnly`, `3 = SideBySide` (see
-  `lib/Epub/Epub/PtLayout.h`). Several display modes produce byte-identical
-  pages and now share one cache entry: Normal / Interleaved / Interlinear all map
-  to `Both`, and Original Only / Page Translation / Tooltip all map to
+  `lib/Epub/Epub/PtLayout.h`; version 40 adds `4 = Interlinear`). Several display
+  modes produce byte-identical pages and now share one cache entry: Normal and
+  Interleaved both map to `Both` (Interlinear did too until version 40 gave it its
+  own value), and Original Only / Page Translation / Tooltip all map to
   `OriginalOnly` (the overlay modes composite their translation at view time, so
   their main flow is original-only). Switching between two modes that share a
   layout is a cache hit only when `translationFontId` (below) also matches:
@@ -165,8 +209,9 @@ one field:
   enclosing block is translated (a `lang=` mismatch against the book's primary
   language — the same block-level flag per-block hyphenation already uses) and
   `translationFontId` is non-zero (every mode but Interleaved stamps `0`, so
-  their pages are all-`Body`, unaffected by this bullet). `Annotation` is
-  defined but not yet emitted by the layout engine.
+  their pages are all-`Body`, unaffected by this bullet). `Annotation` was
+  reserved here and is emitted from version 40 on, under the `Interlinear`
+  layout only.
 
 The per-chapter auto-fallback keys on the layout too: a chapter with no
 committed translation is laid out and stamped as `Both`, which for an
@@ -284,7 +329,7 @@ import std.mem;
 import std.string;
 import std.core;
 
-#define EXPECTED_VERSION 39
+#define EXPECTED_VERSION 40
 #define MAX_STRING_LENGTH 65535
 #define FOOTNOTE_NUMBER_LEN 32
 #define FOOTNOTE_HREF_LEN 96
@@ -305,7 +350,8 @@ enum PtLayout : u8 {
     Both = 0,
     OriginalOnly = 1,
     TranslationOnly = 2,
-    SideBySide = 3
+    SideBySide = 3,
+    Interlinear = 4
 };
 
 enum PageElementTag : u8 {
@@ -460,6 +506,7 @@ struct SectionBin {
 
     s32 fontId;
     s32 translationFontId [[comment("v38: font translated text is laid out in; 0 = same as fontId")]];
+    s32 annotationFontId [[comment("v40: font the Interlinear annotation rows are laid out in; 0 = same as fontId; non-zero only under PtLayout::Interlinear")]];
     float lineCompression;
     bool extraParagraphSpacing;
     u8 paragraphAlignment;

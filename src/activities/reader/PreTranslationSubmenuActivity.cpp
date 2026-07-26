@@ -154,8 +154,10 @@ void PreTranslationSubmenuActivity::appendModeChildren() {
     // the source. Presenting the two languages as one undifferentiated flow is the whole point of the
     // mode, so neither a shade nor a size row belongs on it. Side by Side and Translation Only show
     // the translation in the body font and colour by design (a dimmed or shrunken column would defeat
-    // them). Interlinear has no layout yet and is not selectable; the retired holes are migrated away
-    // at load and can never be the current mode.
+    // them). Interlinear fixes its annotation face at the small UI size in v1 — the one place that
+    // choice lives is CrossPointSettings::getInterlinearAnnotationFontId(), so a future Annotation
+    // Size row plugs in there and gets a child() line here. The retired holes are migrated away at
+    // load and can never be the current mode.
     case CrossPointSettings::PT_NORMAL:
     case CrossPointSettings::PT_ORIGINAL_ONLY:
     case CrossPointSettings::PT_TRANSLATION_ONLY:
