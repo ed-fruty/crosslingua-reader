@@ -75,6 +75,16 @@ class ParsedText {
     static const std::string kEmpty;
     return index < words.size() ? words[index] : kEmpty;
   }
+  // Companion to wordAt, and mandatory for any caller that RE-EMITS a span of this block into
+  // another ParsedText: the token stream is not one token per visual word. Focus reading splits every
+  // word into a bold prefix plus a regular suffix, an NBSP / U+202F run splits mid-word, so does the
+  // MAX_WORD_SIZE part-buffer overflow and an inline tag closing mid-word. Each of those boundaries
+  // is marked here, and dropping it turns the boundary into a full getSpaceAdvance gap in
+  // extractLine ("Bo njour ," instead of "Bonjour,"). Pass this straight into addWord's
+  // attachToPrevious, as flushPartWordBuffer does for the parser's own re-emit.
+  bool wordAttachesToPrevious(const size_t index) const {
+    return index < wordContinues.size() && wordContinues[index];
+  }
   std::string getRubyTextAt(size_t index) const { return index < rubyTexts.size() ? rubyTexts[index] : std::string(); }
   void ensureRubyCapacity();
   void setBlockStyle(const BlockStyle& blockStyle) { this->blockStyle = blockStyle; }

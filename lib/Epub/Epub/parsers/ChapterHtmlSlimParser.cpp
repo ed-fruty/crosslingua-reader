@@ -2144,7 +2144,15 @@ void ChapterHtmlSlimParser::buildAnnotationRows(const InterlinearAnnotation& ann
     // REGULAR explicitly: the 8pt family ships a single face, so bold/italic would resolve back to
     // regular anyway, and dropping the inherited EpdFontFamily::TRANSLATED bit keeps the row plain
     // black rather than the Interleaved gray.
-    annotationText.addWord(transBlock.wordAt(w), EpdFontFamily::REGULAR);
+    //
+    // attachToPrevious MUST be carried across the re-emit, exactly as flushPartWordBuffer carries it
+    // for the parser's own re-emit: the buffered translation is not one token per visual word (see
+    // ParsedText::wordAttachesToPrevious), and a dropped flag renders every continuation boundary in
+    // the span as a full space. The span's FIRST word is forced false — there is no previous word in
+    // this row for it to attach to, so a span that happens to start mid-run does not open with a
+    // stray glue.
+    const bool attach = w > annotation.transStartWord && transBlock.wordAttachesToPrevious(w);
+    annotationText.addWord(transBlock.wordAt(w), EpdFontFamily::REGULAR, /*underline=*/false, attach);
   }
   if (annotationText.isEmpty()) return;
 
