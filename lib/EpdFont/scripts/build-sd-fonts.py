@@ -324,6 +324,11 @@ def main():
         "--output-dir", default=str(DEFAULT_OUTPUT), help="Output directory for .cpfont files"
     )
     parser.add_argument("--only", help="Comma-separated family names to build (default: all)")
+    parser.add_argument(
+        "--exclude",
+        help="Comma-separated family names to skip (applied after --only). Used by "
+             "release-fonts.yml to keep non-OFL families out of the shared catalogue.",
+    )
     parser.add_argument("--manifest", action="store_true", help="Also generate fonts.json manifest")
     parser.add_argument("--base-url", default="", help="Base URL for manifest (required with --manifest)")
     parser.add_argument(
@@ -379,6 +384,18 @@ def main():
             print(f"WARNING: families not found in config: {', '.join(missing)}", file=sys.stderr)
         if not families:
             print("ERROR: no matching families after --only filter", file=sys.stderr)
+            sys.exit(1)
+
+    # Filter if --exclude specified
+    if args.exclude:
+        excluded = {n.strip() for n in args.exclude.split(",") if n.strip()}
+        known = {f["name"] for f in families}
+        families = [f for f in families if f["name"] not in excluded]
+        unknown = excluded - known
+        if unknown:
+            print(f"WARNING: --exclude names not in config: {', '.join(sorted(unknown))}", file=sys.stderr)
+        if not families:
+            print("ERROR: no families left after --exclude filter", file=sys.stderr)
             sys.exit(1)
 
     output_base = Path(args.output_dir)
