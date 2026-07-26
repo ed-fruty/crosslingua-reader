@@ -90,6 +90,35 @@ if (parsedSize != fileSize) {
 
 ## `section.bin`
 
+### Version 39
+
+Version 39 adds one field to the version 38 header:
+
+- **`translatedSource`** is added as a 1-byte `bool` immediately after the
+  `PtLayout` byte. It records *which source HTML* the pages were laid out from:
+  `true` = the chapter's `.translated.html` sidecar, `false` = the plain
+  original chapter HTML. The layout byte cannot express this — `Both` is what an
+  untranslated chapter stamps *and* what an inline-bilingual chapter stamps — so
+  without it a chapter laid out before its translation was downloaded would stay
+  a cache **hit** afterwards and silently serve untranslated pages in a
+  bilingual mode (and, symmetrically, a translated cache would survive the
+  translation being deleted). Both halves are compared on load.
+
+The per-chapter auto-fallback keys on the layout too: a chapter with no
+committed translation is laid out and stamped as `Both`, which for an
+untranslated chapter is simply the plain original (see
+`Section::effectiveLayout`) — and its `translatedSource` is `false`, so the
+entry stops matching the moment a translation lands.
+
+**Version 38 was never a stable layout and nothing may claim to read it.** The
+`translatedSource` byte was originally added *within* 38, so two different header
+layouts exist under that number: the earlier one without the byte, the later one
+with it. Because the byte sits in the middle of the header, an early-layout 38
+passes a version-38 gate and then every field after the `PtLayout` byte is read
+shifted by one — including the `pageCount` and LUT offsets, which are consumed
+before the parameter-mismatch check could reject the entry. Version 39 exists so
+that the shorter layout is rejected on its version number alone.
+
 ### Version 38
 
 Version 38 changes what the Pre-Translation byte in the header *means*, and adds
@@ -121,21 +150,11 @@ one field:
   supplied by the app (`lib/Epub` stores roles, never font ids). Every line the
   layout engine emits today is `Body`, so a v38 page is a v37 page plus one
   zero byte per line.
-- **`translatedSource`** is added as a 1-byte `bool` immediately after the
-  `PtLayout` byte. It records *which source HTML* the pages were laid out from:
-  `true` = the chapter's `.translated.html` sidecar, `false` = the plain
-  original chapter HTML. The layout byte cannot express this — `Both` is what an
-  untranslated chapter stamps *and* what an inline-bilingual chapter stamps — so
-  without it a chapter laid out before its translation was downloaded would stay
-  a cache **hit** afterwards and silently serve untranslated pages in a
-  bilingual mode (and, symmetrically, a translated cache would survive the
-  translation being deleted). Both halves are compared on load.
 
 The per-chapter auto-fallback keys on the layout too: a chapter with no
 committed translation is laid out and stamped as `Both`, which for an
 untranslated chapter is simply the plain original (see
-`Section::effectiveLayout`) — and its `translatedSource` is `false`, so the
-entry stops matching the moment a translation lands.
+`Section::effectiveLayout`).
 
 ### Version 37
 
@@ -248,7 +267,7 @@ import std.mem;
 import std.string;
 import std.core;
 
-#define EXPECTED_VERSION 38
+#define EXPECTED_VERSION 39
 #define MAX_STRING_LENGTH 65535
 #define FOOTNOTE_NUMBER_LEN 32
 #define FOOTNOTE_HREF_LEN 96
@@ -432,7 +451,7 @@ struct SectionBin {
     bool hyphenationEnabled;
     bool embeddedStyle;
     PtLayout ptLayout [[comment("v38: Pre-Translation page layout (NOT the display mode); part of the cache key")]];
-    bool translatedSource [[comment("v38: laid out from the .translated.html sidecar (true) or the original chapter HTML (false); part of the cache key")]];
+    bool translatedSource [[comment("v39: laid out from the .translated.html sidecar (true) or the original chapter HTML (false); part of the cache key")]];
     u8 imageRendering;
     bool focusReadingEnabled;
 

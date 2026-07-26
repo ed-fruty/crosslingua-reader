@@ -64,13 +64,22 @@ namespace {
 //      unlike the drawing-only shade it IS part of the cache key. Finally, PageLine serializes a
 //      LineFontRole byte after paragraphIdx so a page can mix body and smaller/annotation text;
 //      every line the layout engine emits today writes Body, so a v38 rebuild is byte-equivalent
-//      to v37 apart from the extra zero byte per line. Lastly, a translatedSource bool follows the
-//      PtLayout byte: it records WHICH source HTML the pages were laid out from (the chapter's
-//      .translated.html, or the plain original). The layout byte alone cannot say -- PtLayout::Both
-//      is what an untranslated chapter AND an inline-bilingual chapter both stamp -- so without it
-//      a chapter laid out before its translation arrived stays a cache HIT afterwards and silently
-//      serves untranslated pages in a bilingual mode (and vice versa).
-constexpr uint8_t SECTION_FILE_VERSION = 38;
+//      to v37 apart from the extra zero byte per line.
+// v39: A translatedSource bool follows the PtLayout byte: it records WHICH source HTML the pages
+//      were laid out from (the chapter's .translated.html, or the plain original). The layout byte
+//      alone cannot say -- PtLayout::Both is what an untranslated chapter AND an inline-bilingual
+//      chapter both stamp -- so without it a chapter laid out before its translation arrived stays
+//      a cache HIT afterwards and silently serves untranslated pages in a bilingual mode (and vice
+//      versa).
+//      WHY THIS IS ITS OWN VERSION AND NOT PART OF v38: two different header layouts were written
+//      under the number 38 during development -- first without the translatedSource byte, then with
+//      it. The byte sits in the MIDDLE of the header, so a 38 written by the earlier layout passes
+//      the version gate and then every field after the PtLayout byte is read shifted by one. The
+//      mismatch check usually catches that as a stale key and rebuilds, but it is not guaranteed to
+//      (the shifted bytes can compare equal), and the pageCount / LUT offsets that follow are read
+//      before any such check can help. v38 was therefore never a stable, released layout: nothing
+//      may claim to read it, and 39 exists so the shorter layout is rejected on its version alone.
+constexpr uint8_t SECTION_FILE_VERSION = 39;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
@@ -86,8 +95,13 @@ constexpr uint8_t SECTION_FILE_INCOMPLETE_VERSION = 0;
 // MUST change in lockstep with SECTION_FILE_VERSION: the sentinel IS the partial's
 // format version, so a stale-format partial otherwise passes the header check and
 // only fails (noisily, via the block-decode error path) when a page is loaded.
-// Derived so the pairing can't be forgotten: 0xFE for v28, 0xFD for v29, ...
+// Derived so the pairing can't be forgotten: 0xFE for v28, 0xFD for v29, ... 0xF3 for v39.
 constexpr uint8_t SECTION_FILE_PARTIAL_VERSION = 0xFE - (SECTION_FILE_VERSION - 28);
+// The derivation only stays a distinct sentinel while the two ranges have not met; assert it rather
+// than trusting a future bump to notice.
+static_assert(SECTION_FILE_PARTIAL_VERSION > SECTION_FILE_VERSION &&
+                  SECTION_FILE_PARTIAL_VERSION != SECTION_FILE_INCOMPLETE_VERSION,
+              "Partial sentinel collides with a real version");
 // The second sizeof(int) is the Pre-Translation translationFontId; the extra sizeof(uint8_t) after
 // the two bools is the Pre-Translation PtLayout byte, and the sizeof(bool) right after it is the
 // translated-source flag.
@@ -95,6 +109,7 @@ constexpr uint32_t HEADER_SIZE =
     sizeof(uint8_t) + sizeof(int) + sizeof(int) + sizeof(float) + sizeof(bool) + sizeof(uint8_t) + sizeof(uint16_t) +
     sizeof(uint16_t) + sizeof(uint16_t) + sizeof(bool) + sizeof(bool) + sizeof(uint8_t) + sizeof(bool) +
     sizeof(uint8_t) + sizeof(bool) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t);
+
 }  // namespace
 
 // Out-of-line so the unique_ptr<ChapterHtmlSlimParser> in BuildContext can be
