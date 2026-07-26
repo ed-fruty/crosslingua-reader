@@ -144,10 +144,15 @@ void PreTranslationSubmenuActivity::appendModeChildren() {
       child(Action::CYCLE_PAGE_TRANSLATION_BUTTONS, StrId::STR_PAGE_TRANSLATION_BUTTONS);
       child(Action::CYCLE_TRANSLATION_SIZE, StrId::STR_TRANSLATION_SIZE);
       return;
-    // No sub-settings. Normal shows no translated text at all; Side by Side and Translation Only
-    // show it in the body font and colour by design (a dimmed or shrunken column would defeat
-    // them). Interlinear has no layout yet and is not selectable; the retired holes are migrated
-    // away at load and can never be the current mode.
+    // No sub-settings. Normal is NOT "no translated text": it maps to PtLayout::Both exactly as
+    // Interleaved does, so its pages are byte-identical and do carry the translation inline. What
+    // makes it Normal is the gray level -- modeToGray() (src/main.cpp) hands the renderer 0 for every
+    // mode except Interleaved, so translated words are drawn in plain black, indistinguishable from
+    // the source. Presenting the two languages as one undifferentiated flow is the whole point of the
+    // mode, so neither a shade nor a size row belongs on it. Side by Side and Translation Only show
+    // the translation in the body font and colour by design (a dimmed or shrunken column would defeat
+    // them). Interlinear has no layout yet and is not selectable; the retired holes are migrated away
+    // at load and can never be the current mode.
     case CrossPointSettings::PT_NORMAL:
     case CrossPointSettings::PT_ORIGINAL_ONLY:
     case CrossPointSettings::PT_TRANSLATION_ONLY:

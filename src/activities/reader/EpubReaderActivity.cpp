@@ -1338,7 +1338,8 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     partialRebuildStartFailed = false;
 
     // Pre-Translation auto-fallback. A non-Normal display mode is active but THIS chapter has no
-    // committed translation, so Section lays it out in Normal (see Section::effectiveTranslationMode).
+    // committed translation, so Section lays it out under the Both layout -- which on a chapter with
+    // no translated words is just the plain original (see Section::effectiveLayout).
     // Rather than silently downgrading just this one chapter, we PERSIST the switch: set the display
     // mode to Normal and save it. The user's mental model then matches reality -- the Lingua menu
     // shows Normal, every chapter renders the same way, and to get bilingual output again the user
