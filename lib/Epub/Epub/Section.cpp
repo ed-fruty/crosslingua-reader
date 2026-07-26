@@ -61,7 +61,10 @@ namespace {
 //      same header slot as the old mode byte but means something different, so v37 files must be
 //      rejected rather than reinterpreted. v38 also adds a translationFontId int to the header:
 //      laying translated text out in its own font changes word measurement and line breaking, so
-//      unlike the drawing-only shade it IS part of the cache key.
+//      unlike the drawing-only shade it IS part of the cache key. Finally, PageLine serializes a
+//      LineFontRole byte after paragraphIdx so a page can mix body and smaller/annotation text;
+//      every line the layout engine emits today writes Body, so a v38 rebuild is byte-equivalent
+//      to v37 apart from the extra zero byte per line.
 constexpr uint8_t SECTION_FILE_VERSION = 38;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /

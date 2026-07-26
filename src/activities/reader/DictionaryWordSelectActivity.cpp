@@ -41,7 +41,8 @@ void indexBuildYield(void*) { vTaskDelay(1); }
 
 void DictionaryWordSelectActivity::onEnter() {
   Activity::onEnter();
-  fontId = SETTINGS.getReaderFontId();
+  pageFonts = SETTINGS.readerPageFontSet();
+  fontId = pageFonts.body;
   lineHeight = renderer.getLineHeight(fontId);
   // No null check: a failed allocation just disables the differential
   // fast path (drawHighlightWithSnapshot skips the read), keeping the
@@ -316,9 +317,9 @@ void DictionaryWordSelectActivity::render(RenderLock&&) {
   // the in-RAM glyph cache during the real draw.
   auto* fcm = renderer.getFontCacheManager();
   auto scope = fcm->createPrewarmScope();
-  page->render(renderer, fontId, marginLeft, marginTop);
+  page->render(renderer, pageFonts, marginLeft, marginTop);
   scope.endScanAndPrewarm();
-  page->render(renderer, fontId, marginLeft, marginTop);
+  page->render(renderer, pageFonts, marginLeft, marginTop);
 
   if (!words.empty()) {
     drawHighlightWithSnapshot();

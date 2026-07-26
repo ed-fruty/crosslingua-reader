@@ -321,6 +321,14 @@ int CrossPointSettings::getTranslationFontId() const {
   return 0;
 }
 
+PageFontSet CrossPointSettings::readerPageFontSet() const {
+  // Same two ids readerRenderSpec() keys the cache on, read from the same accessors: a page is
+  // always drawn in the fonts it was measured with. The Annotation role has no setting of its own
+  // yet, so it follows the translated text (0 -> body font, via the PageFontSet constructor).
+  const int translationFontId = getTranslationFontId();
+  return PageFontSet(getReaderFontId(), translationFontId, translationFontId);
+}
+
 ReaderRenderSpec CrossPointSettings::readerRenderSpec(const uint16_t viewportWidth,
                                                       const uint16_t viewportHeight) const {
   ReaderRenderSpec spec;

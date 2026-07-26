@@ -51,7 +51,10 @@ class DictionaryWordSelectActivity final : public Activity {
   std::unique_ptr<Page> page;
   const int marginLeft;
   const int marginTop;
+  // Word measurement / highlight drawing all happen in the BODY font; the page itself is drawn
+  // through the full role set (a page may mix body and smaller translated text).
   int fontId = 0;
+  PageFontSet pageFonts;
   int lineHeight = 0;
 
   std::vector<WordBox> words;

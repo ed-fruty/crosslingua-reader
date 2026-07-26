@@ -111,6 +111,15 @@ one field:
   the font translated text is laid out in (`0` = same as the body font). Unlike
   the drawing-only shade, a distinct font changes word measurement and hence
   line breaking, so it belongs in the cache key.
+- **Per-line font role.** `PageLine` serializes a `LineFontRole` byte
+  (`0 = Body`, `1 = Translation`, `2 = Annotation`) immediately after
+  `paragraphIdx`, so one page can mix the body font with smaller translated or
+  annotation text. The role is chosen at layout time, which is also when the
+  line was measured, so a cached page always redraws in the font it was
+  measured with. The renderer resolves the role through a `PageFontSet`
+  supplied by the app (`lib/Epub` stores roles, never font ids). Every line the
+  layout engine emits today is `Body`, so a v38 page is a v37 page plus one
+  zero byte per line.
 
 The per-chapter auto-fallback keys on the layout too: a chapter with no
 committed translation is laid out and stamped as `Both`, which for an
@@ -325,11 +334,18 @@ struct ImageBlock {
     s16 height;
 };
 
+enum LineFontRole : u8 {
+    Body = 0,
+    Translation = 1,
+    Annotation = 2
+};
+
 struct PageLine {
     s16 xPos;
     s16 yPos;
     TextBlock block;
     s16 paragraphIdx [[comment("Pre-Translation: source paragraph index; -1 = unset")]];
+    LineFontRole fontRole [[comment("v38: which role's font this line draws in")]];
 };
 
 struct PageImage {

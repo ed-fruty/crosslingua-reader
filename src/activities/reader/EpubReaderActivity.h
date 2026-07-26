@@ -1,6 +1,7 @@
 #pragma once
 #include <Epub.h>
 #include <Epub/FootnoteEntry.h>
+#include <Epub/PageFontSet.h>
 #include <Epub/Section.h>
 #include <FontCacheManager.h>  // for the held FontCacheManager::PrewarmScope member below
 
@@ -161,7 +162,7 @@ class EpubReaderActivity final : public Activity {
   // page + status bar + overlay composited into ONE BW frame, a single refresh, and (when the page
   // is visible, i.e. not under the modal) the grayscale AA pass. Avoids the second slow refresh the
   // old overlay path did on every sentence step / scroll.
-  void renderOverlayFrame(Page& page, int fontId, int orientedMarginTop, int orientedMarginRight,
+  void renderOverlayFrame(Page& page, const PageFontSet& fonts, int orientedMarginTop, int orientedMarginRight,
                           int orientedMarginBottom, int orientedMarginLeft);
   void renderStatusBar() const;
   // Pages laid out per incremental-build pump: on the render path (catching up to the page

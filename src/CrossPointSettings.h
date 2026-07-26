@@ -1,5 +1,6 @@
 #pragma once
 #include <ArduinoJson.h>
+#include <Epub/PageFontSet.h>
 #include <Epub/ReaderRenderSpec.h>
 #include <PersistableStore.h>
 
@@ -439,6 +440,11 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // Feeds BOTH the cache key (ReaderRenderSpec::translationFontId) and the render-time font set,
   // so the two can never disagree about what a cached page was measured with.
   int getTranslationFontId() const;
+
+  // THE construction point for the reader's per-role font ids. Every path that draws a Page must
+  // build its PageFontSet here, so pages are drawn with exactly the ids readerRenderSpec() keyed
+  // the cache on. lib/Epub only stores roles; this is where they become concrete fonts.
+  PageFontSet readerPageFontSet() const;
 
   static const char* getFilePath() { return "/.crosspoint/settings.json"; }
   void toJson(JsonDocument& doc) const;

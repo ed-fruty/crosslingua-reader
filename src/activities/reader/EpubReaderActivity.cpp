@@ -356,7 +356,7 @@ void EpubReaderActivity::loop() {
           if (auto* fcm = renderer.getFontCacheManager()) {
             const auto t0 = millis();
             auto scope = fcm->createPrewarmScope();
-            p->render(renderer, SETTINGS.getReaderFontId(), 0, 0);  // scan only, no pixels
+            p->render(renderer, SETTINGS.readerPageFontSet(), 0, 0);  // scan only, no pixels
             scope.endScanAndPrewarm();
             LOG_DBG("ERS", "Idle prewarm: page %d in %lums", nextPage, millis() - t0);
           }
@@ -1796,9 +1796,12 @@ bool EpubReaderActivity::applyDeferredReposition() {
 bool EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageCount) {
   return EpubReaderUtils::saveProgress(*epub, spineIndex, currentPage, pageCount);
 }
-void EpubReaderActivity::renderOverlayFrame(Page& page, const int fontId, const int orientedMarginTop,
+void EpubReaderActivity::renderOverlayFrame(Page& page, const PageFontSet& fonts, const int orientedMarginTop,
                                             const int orientedMarginRight, const int orientedMarginBottom,
                                             const int orientedMarginLeft) {
+  // The overlays measure and draw against the BODY font (they reparse the page's source text), so
+  // the prewarm bookkeeping and the overlay calls below still key on that single id.
+  const int fontId = fonts.body;
   const int viewportWidth = renderer.getScreenWidth() - orientedMarginLeft - orientedMarginRight;
   const int viewportHeight = renderer.getScreenHeight() - orientedMarginTop - orientedMarginBottom;
 
@@ -1839,7 +1842,7 @@ void EpubReaderActivity::renderOverlayFrame(Page& page, const int fontId, const 
     }
 
     overlayPrewarm_.emplace(*fcm);  // dtor of any prior scope + this ctor both clearCache(); scan ON
-    page.render(renderer, fontId, orientedMarginLeft, orientedMarginTop);  // scan pass: records text, draws nothing
+    page.render(renderer, fonts, orientedMarginLeft, orientedMarginTop);  // scan pass: records text, draws nothing
     // Same font instance as the reader body (SD-card fonts, and built-ins at the smallest size, where
     // getTooltipFontId() == getReaderFontId()): fold the overlay's glyphs into the single prewarm so
     // neither the page nor the overlay misses. recordText() appends to the in-progress scan; the font
@@ -1862,7 +1865,7 @@ void EpubReaderActivity::renderOverlayFrame(Page& page, const int fontId, const 
   // BW frame: the page, the status bar, then the active overlay composited on top. The overlay's
   // fillRect/drawText land in the BW framebuffer, so they ride the SINGLE refresh below — no
   // separate flush. (The modal's viewport ends above the status-bar margin, so it never covers it.)
-  page.render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+  page.render(renderer, fonts, orientedMarginLeft, orientedMarginTop);
   renderStatusBar();
 
   // Mutually exclusive modes, but drawn independently for clarity. The modal may deactivate itself
@@ -1896,13 +1899,16 @@ void EpubReaderActivity::renderOverlayFrame(Page& page, const int fontId, const 
   // would ghost through the modal) and is faster.
   if (SETTINGS.textAntiAliasing && !modalDrew) {
     ReaderUtils::renderAntiAliased(renderer,
-                                   [&]() { page.render(renderer, fontId, orientedMarginLeft, orientedMarginTop); });
+                                   [&]() { page.render(renderer, fonts, orientedMarginLeft, orientedMarginTop); });
   }
 }
 
 void EpubReaderActivity::renderContents(Page& page, const int orientedMarginTop, const int orientedMarginRight,
                                         const int orientedMarginBottom, const int orientedMarginLeft) {
-  const int fontId = SETTINGS.getReaderFontId();
+  // THE per-render font set: the body font plus (later) a distinct translated-text font. Built
+  // from SETTINGS so the ids match the ones readerRenderSpec() keyed the section cache on.
+  const PageFontSet fonts = SETTINGS.readerPageFontSet();
+  const int fontId = fonts.body;
 
   // Manual (power-button) refresh latched by handleForcedRefresh() (upstream d7c98adc). Read and
   // CLEARED here, above the overlay early-return below, so one press is consumed by exactly one
@@ -1927,7 +1933,7 @@ void EpubReaderActivity::renderContents(Page& page, const int orientedMarginTop,
   // every press (the 348cfa90 regression skipped prewarm entirely instead, which was WORSE: the page
   // then rendered fully on demand each press, ~10x slower).
   if (tooltipOverlay.isActive() || modalOverlay.isActive()) {
-    renderOverlayFrame(page, fontId, orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
+    renderOverlayFrame(page, fonts, orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
     return;
   }
 
@@ -1948,7 +1954,7 @@ void EpubReaderActivity::renderContents(Page& page, const int orientedMarginTop,
   // Font prewarm: scan pass accumulates text, then prewarm, then real render
   auto* fcm = renderer.getFontCacheManager();
   auto scope = fcm->createPrewarmScope();
-  page.render(renderer, fontId, orientedMarginLeft, orientedMarginTop);  // scan pass
+  page.render(renderer, fonts, orientedMarginLeft, orientedMarginTop);  // scan pass
   scope.endScanAndPrewarm();
   const auto tPrewarm = millis();
 
@@ -1965,20 +1971,20 @@ void EpubReaderActivity::renderContents(Page& page, const int orientedMarginTop,
   const bool overlapRefresh = tiledGrayscale && renderer.supportsAsyncRefresh() && !pageHasImages;
   auto renderGrayscalePass = [&]() {
     if (needsTextGrayscale) {
-      page.render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+      page.render(renderer, fonts, orientedMarginLeft, orientedMarginTop);
     } else {
-      page.renderImages(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+      page.renderImages(renderer, fonts, orientedMarginLeft, orientedMarginTop);
     }
   };
 
   if (pageHasImagesNeedingDecode) {
-    page.renderWithImagePlaceholders(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+    page.renderWithImagePlaceholders(renderer, fonts, orientedMarginLeft, orientedMarginTop);
     renderStatusBar();
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     renderer.clearScreen();
   }
 
-  page.render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+  page.render(renderer, fonts, orientedMarginLeft, orientedMarginTop);
   renderStatusBar();
   const auto tBwRender = millis();
 
@@ -2004,7 +2010,7 @@ void EpubReaderActivity::renderContents(Page& page, const int orientedMarginTop,
 
       // Re-render page content to restore images into the blanked area
       // Status bar is not re-rendered here to avoid reading stale dynamic values (e.g. battery %)
-      page.render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+      page.render(renderer, fonts, orientedMarginLeft, orientedMarginTop);
       renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     } else {
       renderer.displayBuffer(HalDisplay::HALF_REFRESH);

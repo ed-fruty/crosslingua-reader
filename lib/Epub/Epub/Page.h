@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "FootnoteEntry.h"
+#include "PageFontSet.h"
 #include "blocks/ImageBlock.h"
 #include "blocks/TextBlock.h"
 
@@ -23,7 +24,9 @@ class PageElement {
   int16_t yPos;
   explicit PageElement(const int16_t xPos, const int16_t yPos) : xPos(xPos), yPos(yPos) {}
   virtual ~PageElement() = default;
-  virtual void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) = 0;
+  // The whole page's font set, not a single id: a page can mix roles (body text, smaller
+  // translated text, annotations). Elements that draw no text ignore it.
+  virtual void render(GfxRenderer& renderer, const PageFontSet& fonts, int xOffset, int yOffset) = 0;
   virtual bool serialize(HalFile& file) = 0;
   virtual PageElementTag getTag() const = 0;  // Add type identification
 };
@@ -36,11 +39,15 @@ class PageLine final : public PageElement {
   // Pre-Translation: index of the original paragraph this line belongs to (for the Modal
   // display mode's line->paragraph mapping). -1 = unset.
   int16_t paragraphIdx = -1;
+  // Which font this line draws in, resolved against the page's PageFontSet at render time. Set at
+  // layout time (the measurement used the same role), so a cached page always redraws in the font
+  // it was measured with. Every line the layout engine emits today is Body.
+  LineFontRole fontRole = LineFontRole::Body;
 
   PageLine(std::shared_ptr<TextBlock> block, const int16_t xPos, const int16_t yPos)
       : PageElement(xPos, yPos), block(std::move(block)) {}
   const std::shared_ptr<TextBlock>& getBlock() const { return block; }
-  void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) override;
+  void render(GfxRenderer& renderer, const PageFontSet& fonts, int xOffset, int yOffset) override;
   bool serialize(HalFile& file) override;
   PageElementTag getTag() const override { return TAG_PageLine; }
   static std::unique_ptr<PageLine> deserialize(HalFile& file);
@@ -53,7 +60,7 @@ class PageImage final : public PageElement {
  public:
   PageImage(std::shared_ptr<ImageBlock> block, const int16_t xPos, const int16_t yPos)
       : PageElement(xPos, yPos), imageBlock(std::move(block)) {}
-  void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) override;
+  void render(GfxRenderer& renderer, const PageFontSet& fonts, int xOffset, int yOffset) override;
   void renderPlaceholder(GfxRenderer& renderer, int xOffset, int yOffset) const;
   bool serialize(HalFile& file) override;
   PageElementTag getTag() const override { return TAG_PageImage; }
@@ -69,7 +76,7 @@ class PageHorizontalRule final : public PageElement {
   PageHorizontalRule(uint16_t width, uint8_t thickness, const int16_t xPos, const int16_t yPos)
       : PageElement(xPos, yPos), width(width), thickness(thickness) {}
 
-  void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) override;
+  void render(GfxRenderer& renderer, const PageFontSet& fonts, int xOffset, int yOffset) override;
   bool serialize(HalFile& file) override;
   PageElementTag getTag() const override { return TAG_PageHorizontalRule; }
   static std::unique_ptr<PageHorizontalRule> deserialize(HalFile& file);
@@ -96,9 +103,9 @@ class Page {
     footnotes.push_back(entry);
   }
 
-  void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) const;
-  void renderImages(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) const;
-  void renderWithImagePlaceholders(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) const;
+  void render(GfxRenderer& renderer, const PageFontSet& fonts, int xOffset, int yOffset) const;
+  void renderImages(GfxRenderer& renderer, const PageFontSet& fonts, int xOffset, int yOffset) const;
+  void renderWithImagePlaceholders(GfxRenderer& renderer, const PageFontSet& fonts, int xOffset, int yOffset) const;
   bool serialize(HalFile& file) const;
   static std::unique_ptr<Page> deserialize(HalFile& file);
 
