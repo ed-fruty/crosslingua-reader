@@ -251,10 +251,14 @@ class ChapterHtmlSlimParser {
   void makePagesInterlinearMode();
   void renderInterlinear(std::unique_ptr<ParsedText> origBlock, std::unique_ptr<ParsedText> transBlock);
   // Lay ONE annotation (a group of source sentences sharing a translation) out at the full measure,
-  // flush to the margin, appending its rows to `rows`. There is no x anchoring: the sentence is
-  // guaranteed to start the source line these rows sit above, so the margin IS the sentence.
+  // appending its rows to `rows`. There is no x anchoring WITHIN a line: the sentence is guaranteed
+  // to start the source line these rows sit above, so that line's own start IS the sentence. What
+  // the rows must still reproduce is where that line itself starts, which is two things:
+  // `sourceAlignment` (a centred source line is not at the margin) and `firstRowIndent`, the
+  // source's first-line indent, which applies only to the rows over source LINE 0.
   // Emits nothing for an empty translation.
-  void buildAnnotationRows(const InterlinearAnnotation& annotation, const ParsedText& transBlock, uint16_t measureWidth,
+  void buildAnnotationRows(const InterlinearAnnotation& annotation, const ParsedText& transBlock,
+                           CssTextAlign sourceAlignment, int16_t firstRowIndent, uint16_t measureWidth,
                            int annotationFont, std::vector<std::shared_ptr<TextBlock>>& rows);
   // Place one already-laid-out row at currentPageNextY and advance by exactly its own height, which
   // is what lets two type sizes tile edge to edge (see addLineToPage). `breakIfNeeded` is the

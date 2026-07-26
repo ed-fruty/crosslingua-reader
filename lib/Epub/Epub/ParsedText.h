@@ -106,6 +106,18 @@ class ParsedText {
   // extractLine ("Bo njour ," instead of "Bonjour,"). Pass this straight into addWord's
   // attachToPrevious, as flushPartWordBuffer does for the parser's own re-emit.
   bool wordAttachesToPrevious(const size_t index) const { return index < wordContinues.size() && wordContinues[index]; }
+  // The first-line indent line 0 of this block was laid out with — literally the value
+  // resolveFirstLineIndent handed extractLine, so a caller that has to line something up with that
+  // line cannot re-derive a subtly different one from the textIndentDefined / extraParagraphSpacing /
+  // three-space-fallback ladder.
+  //
+  // MUST be read AFTER layoutAndExtractLines. isNaturalAlign — and, for a paragraph whose direction
+  // is auto-detected, blockStyle.isRtl — are resolved inside it; before that this returns 0 for every
+  // block. PtLayout::Interlinear reads it between layout and emitting its rows, for exactly that
+  // reason.
+  int firstLineIndent(const GfxRenderer& renderer, const int fontId) const {
+    return resolveFirstLineIndent(true, renderer, fontId);
+  }
   // True when at least one word added to this block starts with an RTL codepoint. Set as words arrive,
   // so it is final once the block is complete and readable before or after layout.
   //

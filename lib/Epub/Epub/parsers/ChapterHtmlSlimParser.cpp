@@ -2226,37 +2226,56 @@ void ChapterHtmlSlimParser::makePagesInterlinearMode() {
 }
 
 void ChapterHtmlSlimParser::buildAnnotationRows(const InterlinearAnnotation& annotation, const ParsedText& transBlock,
+                                                const CssTextAlign sourceAlignment, const int16_t firstRowIndent,
                                                 const uint16_t measureWidth, const int annotationFont,
                                                 std::vector<std::shared_ptr<TextBlock>>& rows) {
   // A sentence whose translation is empty emits no row at all (never a blank line).
   if (annotation.transEndWord <= annotation.transStartWord) return;
 
   BlockStyle annStyle;
-  // Never justify a row this small over a short measure.
+  // FOLLOW THE SOURCE BLOCK'S ALIGNMENT, because the row has to sit above where the source line
+  // actually IS. extractLine puts a Center line at (measure - content) / 2 and a Right one flush
+  // right; a row hard-coded to the left margin under a centred epigraph or a right-aligned verse
+  // block is not over its sentence at all, and on a multi-sentence block each row is off by a
+  // different amount. Only Center and Right are inherited: Justify degrades to Left because a row
+  // this small over the full measure would be stretched into gaping word gaps, and a justified line
+  // starts at the same x as a left-aligned one anyway. None behaves as Left in extractLine.
   //
   // textAlignDefined is deliberately left FALSE. It is read in exactly one place — extractLine's
   // "resolved RTL + no explicit text-align + Left" rule, which flips the row to Right — and that is
   // exactly the degradation an RTL TARGET language needs. When the span's words make the row resolve
   // RTL (a Hebrew / Arabic / Persian translation), setting the flag would strand it flush LEFT, i.e.
   // on the wrong margin. Left false it lands on its own natural margin (flush right), directly above
-  // its sentence, and reads as a whole-line translation. LTR rows are unaffected: the flag only ever
-  // gated the isRtl branch.
-  annStyle.alignment = CssTextAlign::Left;
-  // NO INDENT, EVER. The row starts at the same x as the source line below it — that vertical
-  // alignment is the whole point of the layout, and it is only legible because the source sentence
-  // is now guaranteed to start that line too (ParsedText::setForcedLineBreaks, called by
-  // renderInterlinear). Up to v40 this was the sentence's x offset within its line, which put a
-  // fragment of translation out at the right margin whenever a sentence began late; see the
-  // Version 41 section of docs/file-formats.md.
+  // its sentence, and reads as a whole-line translation. That flip only fires on the Left branch, so
+  // an inherited Center or Right survives it unchanged — and both are already the right answer for
+  // an RTL row (Right IS its natural margin, Center is direction-neutral). An RTL SOURCE paragraph
+  // never reaches here at all: renderInterlinear's guard refuses to annotate one.
+  annStyle.alignment = (sourceAlignment == CssTextAlign::Center || sourceAlignment == CssTextAlign::Right)
+                           ? sourceAlignment
+                           : CssTextAlign::Left;
+  // FIRST-LINE INDENT, and only on the rows over source line 0 — the caller passes 0 for every other
+  // line, and the source's own resolved value (ParsedText::firstLineIndent) for that one. A
+  // paragraph's first source line is indented (three spaces when extraParagraphSpacing is off, the
+  // CSS text-indent when one is set, a negative hanging indent verbatim), so a row hard-zeroed to the
+  // margin left the FIRST pair of every paragraph — the one the eye checks the pairing on — visibly
+  // out of line while every later pair matched. Taking the value from the source rather than
+  // re-deriving it also keeps the two on the same rule for free: indent when extraParagraphSpacing is
+  // off, no indent (and a paragraph gap instead) when it is on.
+  //
+  // Nothing else is anchored: within a line the row starts where the source line starts, which is
+  // only legible because the sentence is guaranteed to start that line (setForcedLineBreaks). Up to
+  // v40 the indent was the sentence's x offset INSIDE its line, which put a fragment of translation
+  // out at the right margin whenever a sentence began late; see docs/file-formats.md.
   //
   // textIndentDefined MUST stay true. With it false and extraParagraphSpacing false,
   // resolveFirstLineIndent falls through to its three-space default and every annotation's first row
-  // is inset again.
-  annStyle.textIndent = 0;
+  // is inset — including the continuation-row-only case where firstRowIndent is 0.
+  annStyle.textIndent = firstRowIndent;
   annStyle.textIndentDefined = true;
 
-  // extraParagraphSpacing=false keeps resolveFirstLineIndent on the branch that honours the explicit
-  // zero above rather than the paragraph-gap branch. hyphenationEnabled=false keeps a long compound
+  // extraParagraphSpacing=false keeps resolveFirstLineIndent on the branch that returns the explicit
+  // value above verbatim rather than the paragraph-gap branch, which would suppress a positive indent
+  // — the source's own gap has already been applied by the caller. hyphenationEnabled=false keeps a long compound
   // wrapping early instead of being broken at 8pt, and focusReading is a body-text affordance that
   // has no business in an annotation.
   ParsedText annotationText(/*extraParagraphSpacing=*/false, /*hyphenationEnabled=*/false,
@@ -2350,8 +2369,13 @@ void ChapterHtmlSlimParser::emitInterlinearRow(const std::shared_ptr<TextBlock>&
 
 // Lay an original paragraph and its paired translation out as ONE full-width flow. Every source
 // SENTENCE begins a new line, and its translation is emitted as small LineFontRole::Annotation rows
-// immediately ABOVE that line, at the same left margin — a classic interlinear stack. A sentence
-// that wraps flows normally onto the lines below, which carry no rows of their own.
+// immediately ABOVE that line, starting at the same x as the line does — a classic interlinear
+// stack. A sentence that wraps flows normally onto the lines below, which carry no rows of their own.
+//
+// "The same x as the line does" is three things, not one: the block's left inset (emitInterlinearRow),
+// the block's alignment, and — for the paragraph's first line only — its first-line indent. The last
+// two are passed into buildAnnotationRows; getting either wrong un-pairs the row from its sentence
+// just as surely as putting it on the wrong line would.
 //
 // The sentence-per-line rule is what makes the pairing legible, and it is why the pairing must run
 // BEFORE layout: the sentence starts are fed into line breaking as hard constraints
@@ -2476,6 +2500,12 @@ void ChapterHtmlSlimParser::renderInterlinear(std::unique_ptr<ParsedText> origBl
   const int bodyLineHeight = renderer.getLineHeight(fontId, lineCompression);
   const int bodyAscender = renderer.getFontAscenderSize(fontId);
 
+  // The indent extractLine gave source LINE 0, read AFTER layout because that is when the block
+  // resolves isNaturalAlign (ParsedText::firstLineIndent). Only the rows over that one line take it;
+  // every later source line starts at the margin and so must its rows. Zero for a Center/Right
+  // block, since a non-natural alignment suppresses the indent on the source side too.
+  const int16_t firstLineIndent = static_cast<int16_t>(origBlock->firstLineIndent(renderer, fontId));
+
   int nextAnnotation = 0;  // annotations arrive in ascending source order, so annotationLine is too
   std::vector<std::shared_ptr<TextBlock>> annotationRows;
   annotationRows.reserve(4);
@@ -2499,8 +2529,12 @@ void ChapterHtmlSlimParser::renderInterlinear(std::unique_ptr<ParsedText> origBl
     // that no longer exists, which would silently swallow every annotation after it.
     annotationRows.clear();
     while (nextAnnotation < annotationCount && annotationLine[nextAnnotation] <= i) {
-      buildAnnotationRows(interlinearAnnotations[nextAnnotation], *transBlock, effectiveWidth, annotationFont,
-                          annotationRows);
+      // The indent belongs to the FIRST row-set over source line 0 and nothing else. `rows.empty()`
+      // is what makes that precise on the degraded path above, where a second sentence can land on
+      // line 0 without starting it: that one begins mid-line, not at the indent.
+      const int16_t rowIndent = (i == 0 && annotationRows.empty()) ? firstLineIndent : 0;
+      buildAnnotationRows(interlinearAnnotations[nextAnnotation], *transBlock, blockStyle.alignment, rowIndent,
+                          effectiveWidth, annotationFont, annotationRows);
       nextAnnotation++;
     }
 

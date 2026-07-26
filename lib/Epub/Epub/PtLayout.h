@@ -29,8 +29,9 @@ enum class PtLayout : uint8_t {
   // Original and translation paired into two half-width columns (renderSideBySide).
   SideBySide = 3,
   // The source flows full-width, but every SENTENCE starts a new line and its translation is emitted
-  // as its own line(s) in a much smaller face directly ABOVE that line, both flush to the same left
-  // margin (renderInterlinear). Those rows are ordinary PageLines tagged LineFontRole::Annotation, so
+  // as its own line(s) in a much smaller face directly ABOVE that line, starting at the same x the
+  // line does -- same inset, same alignment, and on the paragraph's first line the same first-line
+  // indent (renderInterlinear). Those rows are ordinary PageLines tagged LineFontRole::Annotation, so
   // they consume real vertical space and the source text tiles around them -- which is why this
   // cannot be an overlay composited at view time (Tooltip / Page Translation) and must be a layout of
   // its own.

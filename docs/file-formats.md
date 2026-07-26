@@ -105,14 +105,31 @@ The bump exists because the version number *is* the cache key, and under
   (`ParsedText::setForcedLineBreaks`), instead of being discovered afterwards over the
   already-broken word array. A sentence that wraps flows normally onto the lines below
   it.
-- **An annotation row sits at the block's left margin, directly above the source line
-  its sentence starts.** `text-indent` is always `0`. The version 40 hanging indent —
-  first row inset to the x of the sentence's first word, continuation rows falling back
-  to the margin, indent dropped entirely past 3/4 of the measure — **is gone**, and the
-  two version 40 bullets describing it below are superseded. That scheme produced
-  several row-sets stacked over one line while neighbouring lines carried none, and
-  parked a shard of translation against the right margin whenever a sentence started
-  late.
+- **An annotation row starts where its source line starts, directly above it.** Not
+  "at the left margin": that is only the same thing for a left-aligned or justified
+  paragraph whose sentence is not the first. Three things place the row, all taken from
+  the *source* block so the two cannot drift:
+  - the block's left inset (unchanged — `emitInterlinearRow`);
+  - the block's **alignment**. A `text-align:center` epigraph or a `text-align:right`
+    verse block gets centred / right-aligned rows, so the pair shares a centre line or
+    a right edge. `Justify` degrades to left, which is where a justified line starts
+    anyway, because a row this small stretched to the full measure would open gaping
+    word gaps;
+  - the **first-line indent**, on the rows over source line 0 *only*
+    (`ParsedText::firstLineIndent`, the value `extractLine` itself used). The
+    paragraph's first source line is indented — three spaces when extra paragraph
+    spacing is off, the CSS `text-indent` when one is set, a negative hanging indent
+    verbatim — so a row hard-zeroed to the margin left the *first* pair of every
+    paragraph out of line while every later pair matched. This is also what keeps
+    annotation rows on the body's own rule: indent when extra paragraph spacing is
+    off, no indent (and a paragraph gap instead) when it is on.
+
+  The version 40 hanging indent — first row inset to the x of the sentence's first
+  *word*, continuation rows falling back to the margin, indent dropped entirely past
+  3/4 of the measure — **is gone**, and the two version 40 bullets describing it below
+  are superseded. That scheme produced several row-sets stacked over one line while
+  neighbouring lines carried none, and parked a shard of translation against the right
+  margin whenever a sentence started late.
 - **The last line of every sentence is not justified.** It is now usually short, since
   the following sentence no longer fills it; stretching it to the full measure would
   open gaping word gaps. This reuses the rule the paragraph's own last line already had
@@ -124,10 +141,13 @@ The bump exists because the version number *is* the cache key, and under
   the one case the constraint cannot honour: no line breaker may break there. That
   sentence keeps the version 40 placement — its rows sit above the line that *contains*
   its start — but at the margin, not anchored.
-- **RTL is unchanged.** An RTL source paragraph is still not annotated at all. An RTL
-  *target* still lays its rows out at the full measure on their own natural margin
-  (flush right); with the indent gone that is now their only behaviour rather than a
-  fallback.
+- **RTL is unchanged.** An RTL source paragraph is still not annotated at all — which is
+  also what keeps the inherited alignment above safe, since a right-aligned *source* is
+  only ever an LTR block with explicit `text-align:right`. An RTL *target* still lays
+  its rows out at the full measure on their own natural margin (flush right): the
+  RTL-flip in `extractLine` fires only on the left branch, so an inherited `Center` or
+  `Right` survives it (and both are already correct for an RTL row), while a left row
+  flips to flush right and takes no indent, as before.
 
 Page cost rises accordingly: each sentence ends with roughly half a line of white
 space, so Interlinear is now about **+70% pages versus Normal** at the 14pt portrait

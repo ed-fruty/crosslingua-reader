@@ -92,9 +92,11 @@ namespace {
 //      it would be read shifted, and the pageCount / LUT offsets are consumed before the
 //      parameter-mismatch check can save you).
 // v41: PtLayout::Interlinear changes its LINE BREAKING: a source sentence now always starts a new
-//      line and its translation rows sit squarely above that line at the margin, instead of the
-//      source breaking as under OriginalOnly with each row anchored at the x of the sentence's first
-//      word. The header layout and every per-page/per-line structure are BYTE-IDENTICAL to v40 --
+//      line and its translation rows sit squarely above that line -- at the same x the line itself
+//      starts, i.e. the block's inset plus its alignment plus, on the paragraph's first line only,
+//      its first-line indent -- instead of the source breaking as under OriginalOnly with each row
+//      anchored at the x of the sentence's first WORD.
+//      The header layout and every per-page/per-line structure are BYTE-IDENTICAL to v40 --
 //      nothing was added, removed or reordered, and a v40 file is still structurally decodable.
 //      The bump is still mandatory, because the version is the CACHE KEY and the pages it keys are
 //      no longer the same pages: a device holding v40 entries would otherwise keep serving the old
