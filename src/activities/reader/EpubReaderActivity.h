@@ -204,6 +204,8 @@ class EpubReaderActivity final : public Activity {
   // return the loop to normal delay/power-saving during the pause: isBuilding() stays
   // true the whole time, and without this the loop would spin at full CPU speed doing
   // no build work — indefinitely, if the build context itself keeps the heap low.
+  // Sampled only by the tick (see backgroundBuildHasWork() for the other half of the
+  // same "is there work to do right now?" question).
   bool buildHeapPaused = false;
   // Heap floor for optional render-adjacent work (idle prewarm). Page
   // deserialization (TextBlock word vectors/strings) and glyph caching allocate
@@ -217,6 +219,21 @@ class EpubReaderActivity final : public Activity {
   // in one sitting -- instant reopen comes from Section::suspendBuild() persisting the pages
   // already laid out as a partial file on exit/sleep.
   static constexpr int BUILD_WINDOW_AHEAD = 5;
+  // Single source of truth for "the background build has work it can do right now": a build is
+  // running AND the look-ahead window is open. loop()'s build tick and skipLoopDelay() must agree
+  // on this. When they drifted apart, skipLoopDelay() stayed true for every page of a still-building
+  // chapter (isBuilding() never clears on a giant single-spine book) while the tick was a no-op with
+  // the window closed — the loop yield()-spun at full CPU doing zero build work, the same shape of
+  // bug buildHeapPaused was added to fix, just from a different cause.
+  // A partial's window is always open by design: its pageCount is pinned at the previous session's
+  // watermark until the extension catches up, so the arithmetic below would wrongly read "far enough
+  // ahead" and stall the rebuild at 0 pages.
+  // Deliberately cheap — skipLoopDelay() calls this every loop iteration, so no heap reads and no
+  // mutex peeks here; the heap gate is sampled by the tick and cached in buildHeapPaused.
+  bool backgroundBuildHasWork() const {
+    return section && section->isBuilding() &&
+           (section->isPartial() || static_cast<int>(section->pageCount) < section->currentPage + BUILD_WINDOW_AHEAD);
+  }
   // Reopening a partial does NOT immediately restart its extension build (a whole-chapter
   // re-layout from page 0 -- minutes of background CPU + SD writes on a giant spine, wasted
   // when the reader never crosses the watermark that session). Instead loop() starts it once
@@ -301,13 +318,18 @@ class EpubReaderActivity final : public Activity {
   void onExit() override;
   void loop() override;
   void render(RenderLock&& lock) override;
-  // Full CPU speed + fast loop ticks while a section build runs: at the low-power
-  // frequency a giant chapter's background rebuild stretches from ~40s to many
-  // minutes, so the reader exits before it can finalize and the next open restarts
-  // it from page 0. Reverts to normal power behavior the moment the build finishes,
-  // and while the build is heap-paused (no work is happening, so spinning at full
-  // speed would only burn battery; the paused gate still retries every loop pass).
-  bool skipLoopDelay() override { return section && section->isBuilding() && !buildHeapPaused; }
+  // Full CPU speed + fast loop ticks only while the background build can actually make progress
+  // this tick: at the low-power frequency a giant chapter's background rebuild stretches from ~40s
+  // to many minutes, so the reader exits before it can finalize and the next open restarts it from
+  // page 0. Same predicate as loop()'s build tick (backgroundBuildHasWork()) plus the tick's cached
+  // heap gate, so the loop never pins the CPU for a tick that would do nothing: it reverts to normal
+  // delay/power-saving the moment the build finishes, is heap-paused, or has run BUILD_WINDOW_AHEAD
+  // pages past the reader.
+  // The build cannot stall on this: the main loop always runs (the "no work" path is delay(10)/
+  // delay(50), never a block), and a page turn advances currentPage inside the same
+  // activityManager.loop() call that is polled here — so the window reopens before this is next
+  // evaluated, and main.cpp has already restored the normal CPU frequency on the button press.
+  bool skipLoopDelay() override { return backgroundBuildHasWork() && !buildHeapPaused; }
   bool isReaderActivity() const override { return true; }
   bool handleForcedRefresh() override {
     {
