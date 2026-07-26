@@ -394,15 +394,11 @@ void EpubReaderActivity::loop() {
   // but only within a small window ahead of the reader: an unbounded build monopolized the
   // RenderLock and locked out page turns. The build follows the reader instead, and instant
   // reopen comes from suspendBuild() persisting the laid-out pages as a partial on exit.
-  // Skip while the render mutex is busy so we never delay a pending render; re-check
+  // backgroundBuildHasWork() owns the is-building/window half of the condition and is shared with
+  // skipLoopDelay(), so the loop only stays at full CPU speed for ticks that actually build
+  // something. Skip while the render mutex is busy so we never delay a pending render; re-check
   // isBuilding() under the lock since render() may have just finished it.
-  // While extending a partial (rebuild from a previous session), pageCount is pinned at the
-  // partial's watermark until the build catches up, so the window check would wrongly read
-  // "far enough ahead" and stall the build at 0 pages -- then the first turn past the
-  // watermark re-parses the whole chapter synchronously. Keep ticking until it finalizes.
-  if (section && section->isBuilding() && !RenderLock::peek() &&
-      (section->isPartial() || static_cast<int>(section->pageCount) < section->currentPage + BUILD_WINDOW_AHEAD) &&
-      buildTickHeapGate()) {
+  if (backgroundBuildHasWork() && !RenderLock::peek() && buildTickHeapGate()) {
     RenderLock lock;
     // Re-check under the lock: render() (which also holds the RenderLock) may have finalized the
     // build between the outer isBuilding() check and acquiring the lock here, in which case
