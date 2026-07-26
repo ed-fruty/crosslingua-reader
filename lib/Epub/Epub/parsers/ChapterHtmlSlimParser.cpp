@@ -269,6 +269,41 @@ bool ChapterHtmlSlimParser::wordIsFiltered() const {
   return false;  // unreachable: every enumerator returns above
 }
 
+// Pre-Translation: which role the lines of the block currently being laid out carry. Only one
+// layout puts translated text in the main flow as a SECOND type size, so only one can tag a line:
+//
+//   Both           the two languages flow inline; a distinct translation font makes the translated
+//                  blocks visibly secondary. This is the Interleaved size's only layout. (Normal
+//                  shares this layout and must stay body-size, which is why the app hands a 0
+//                  translation font for every mode but Interleaved -- the layout engine cannot tell
+//                  the two modes apart, and must not try to.)
+//   OriginalOnly   translated words never reach a line at all (wordIsFiltered drops them), so there
+//                  is nothing to tag; the two overlay modes that map here composite their own,
+//                  separately-sized text over the finished page.
+//   TranslationOnly  the translation IS the page's primary text -- shrinking it would shrink the
+//                  whole chapter, so it stays Body.
+//   SideBySide     both columns are the same face by design (a shrunken column would defeat the
+//                  pairing), so neither is tagged; renderSideBySide leaves both at Body.
+//
+// Reads the block-level translated flag, not the per-word inline-stack one wordIsFiltered() uses: a
+// role applies to a whole laid-out line, and currentBlockIsTranslated is exactly the granularity of
+// the block that is being flushed (see the makePagesTableMode comment for why it is still valid
+// here).
+LineFontRole ChapterHtmlSlimParser::currentLineRole() const {
+  // No distinct translation font configured: every line is Body, i.e. exactly the pre-existing
+  // layout, and fontIdForRole would resolve Translation back to fontId anyway.
+  if (translationFontId == 0 || !currentBlockIsTranslated) return LineFontRole::Body;
+  switch (ptLayout) {
+    case PtLayout::Both:
+      return LineFontRole::Translation;
+    case PtLayout::OriginalOnly:
+    case PtLayout::TranslationOnly:
+    case PtLayout::SideBySide:
+      break;
+  }
+  return LineFontRole::Body;
+}
+
 // flush the contents of partWordBuffer to currentTextBlock
 void ChapterHtmlSlimParser::flushPartWordBuffer() {
   // Pre-Translation: the top of the inline style stack carries whether the word being flushed
@@ -1409,9 +1444,12 @@ void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char
     const uint16_t effectiveWidth = (horizontalInset < self->viewportWidth)
                                         ? static_cast<uint16_t>(self->viewportWidth - horizontalInset)
                                         : self->viewportWidth;
+    // Same role/font pairing as makePages(): this is the SAME open block, just flushed early, so its
+    // lines must be measured, advanced and stamped exactly as the block's remaining lines will be.
+    const LineFontRole role = self->currentLineRole();
     self->currentTextBlock->layoutAndExtractLines(
-        self->renderer, self->fontId, effectiveWidth,
-        [self](const std::shared_ptr<TextBlock>& textBlock) { self->addLineToPage(textBlock); }, false);
+        self->renderer, self->fontIdForRole(role), effectiveWidth,
+        [self, role](const std::shared_ptr<TextBlock>& textBlock) { self->addLineToPage(textBlock, role); }, false);
   }
 }
 
@@ -1747,9 +1785,17 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
   return finishParse();
 }
 
-void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line) {
-  const int lineHeight =
-      renderer.getLineHeight(fontId, lineCompression) + line->getRubyShift(renderer.getFontAscenderSize(fontId));
+void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line, const LineFontRole role) {
+  // Pitch follows the line's OWN font. yPos is the top of the line box and TextBlock::render puts the
+  // baseline at yPos + rubyShift + ascender(drawing font), with the glyphs living inside one
+  // advanceY of that top -- so advancing by exactly this line's advanceY tiles the boxes edge to
+  // edge whatever font each one used. A smaller translated line therefore consumes less height and
+  // the next line (of either size) starts right where it ended: no overlap, no leftover gap. Both
+  // terms must come from the SAME id the line was measured with, or the ruby shift baked into the
+  // advance would not match the one render() adds to the baseline.
+  const int roleFontId = fontIdForRole(role);
+  const int lineHeight = renderer.getLineHeight(roleFontId, lineCompression) +
+                         line->getRubyShift(renderer.getFontAscenderSize(roleFontId));
 
   if (!currentPage) {
     currentPage.reset(new Page());
@@ -1778,6 +1824,9 @@ void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line) {
   // Pre-Translation: stamp the line with its originating paragraph index so the renderer (and the
   // Page Translation overlay) can map rendered lines back to original paragraphs.
   pageLine->paragraphIdx = currentBlockParagraphIdx;
+  // ... and with the role it was measured and advanced with, which is the whole of what the renderer
+  // needs to draw it in the same font (PageLine::render -> PageFontSet::forRole).
+  pageLine->fontRole = role;
   // Pre-Translation: track which original paragraph indices contribute to this page. Translated
   // blocks share their original's index (via the pairing logic in startElement), so the range
   // still represents original paragraphs.
@@ -1802,7 +1851,12 @@ void ChapterHtmlSlimParser::makePages() {
     currentPageNextY = 0;
   }
 
-  const int lineHeight = renderer.getLineHeight(fontId, lineCompression);
+  // Pre-Translation: resolve the role ONCE for the whole block and use its font for measurement,
+  // for the per-line advance (addLineToPage) and for the paragraph gap below, so every vertical
+  // number this block contributes is in the type size it is drawn at.
+  const LineFontRole role = currentLineRole();
+  const int roleFontId = fontIdForRole(role);
+  const int lineHeight = renderer.getLineHeight(roleFontId, lineCompression);
 
   // Apply top spacing before the paragraph (stored in pixels)
   const BlockStyle& blockStyle = currentTextBlock->getBlockStyle();
@@ -1819,8 +1873,8 @@ void ChapterHtmlSlimParser::makePages() {
       (horizontalInset < viewportWidth) ? static_cast<uint16_t>(viewportWidth - horizontalInset) : viewportWidth;
 
   currentTextBlock->layoutAndExtractLines(
-      renderer, fontId, effectiveWidth,
-      [this](const std::shared_ptr<TextBlock>& textBlock) { addLineToPage(textBlock); });
+      renderer, roleFontId, effectiveWidth,
+      [this, role](const std::shared_ptr<TextBlock>& textBlock) { addLineToPage(textBlock, role); });
 
   // Fallback: transfer any remaining pending footnotes to current page.
   // Normally addLineToPage handles this via word-index tracking, but this catches
@@ -1914,6 +1968,11 @@ void ChapterHtmlSlimParser::renderSideBySide(std::unique_ptr<ParsedText> leftBlo
     currentPageNextY = 0;
   }
 
+  // Both columns are laid out AND drawn in the body font: the pairing is what distinguishes the two
+  // languages here, and shrinking one column would break the lockstep row geometry this loop relies
+  // on (one shared yPos and one shared advance per row). So no line here is tagged -- PageLine's
+  // fontRole default (Body) is deliberate, and currentLineRole() returns Body under SideBySide to
+  // match. See currentLineRole().
   const int lineHeight = renderer.getLineHeight(fontId) * lineCompression;
   const uint16_t gapWidth = static_cast<uint16_t>(viewportWidth * 0.04f);
   const uint16_t colWidth = static_cast<uint16_t>((viewportWidth - gapWidth) / 2);

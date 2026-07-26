@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "Epub/FootnoteEntry.h"
+#include "Epub/PageFontSet.h"
 #include "Epub/ParsedText.h"
 #include "Epub/PtLayout.h"
 #include "Epub/blocks/ImageBlock.h"
@@ -65,6 +66,12 @@ class ChapterHtmlSlimParser {
   // Pre-Translation feature: the page layout to produce. The parser never sees the user's display
   // mode -- CrossPointSettings::ptLayoutForDisplayMode() collapses the modes onto these layouts.
   PtLayout ptLayout = PtLayout::Both;
+  // Pre-Translation: font the TRANSLATED text is laid out in, or 0 for "same as fontId" (the ONLY
+  // unset sentinel — negative ids are normal, see PageFontSet.h). A non-zero id makes translated
+  // lines a second type size on the page: they are measured, broken and advanced with it, and
+  // stamped LineFontRole::Translation so the renderer resolves the same id back out of the page's
+  // PageFontSet. 0 keeps every line Body, which is byte-for-byte the pre-existing layout.
+  int translationFontId = 0;
   // Monotonic index over ORIGINAL content paragraphs. Advances once per content-bearing original
   // block regardless of nesting depth, matching the per-content-paragraph granularity of the
   // PageTranslationOverlay/TooltipOverlay reparsers (ParagraphBoundary.h SSOT). Empty/whitespace-only blocks
@@ -156,6 +163,17 @@ class ChapterHtmlSlimParser {
   // drops, so its words never reach the layout engine. Shared by flushPartWordBuffer (which drops
   // the word) and the <ruby>/<rt> handlers (which must not annotate words that were never added).
   bool wordIsFiltered() const;
+  // Pre-Translation: the role every line of the currently-open block carries. Reads the SAME
+  // block-level translated signal as the per-block hyphenation slot and the word-drop filter
+  // (currentBlockIsTranslated), so the parser keeps exactly one notion of "translated".
+  LineFontRole currentLineRole() const;
+  // The font id a role is MEASURED and ADVANCED with. Built through the same PageFontSet resolver
+  // the renderer uses, with the same slots CrossPointSettings::readerPageFontSet() fills, so a line
+  // is laid out with precisely the id it will later be drawn with — the role byte is all that
+  // crosses the section cache.
+  int fontIdForRole(const LineFontRole role) const {
+    return PageFontSet(fontId, translationFontId, translationFontId).forRole(role);
+  }
   void makePages();
   // Pre-Translation (PtLayout::SideBySide): two-column table layout. makePagesTableMode routes an
   // outermost block to either buffering (an original, held in bufferedOriginalBlock) or pairing
@@ -193,7 +211,8 @@ class ChapterHtmlSlimParser {
                                  const std::string& imageBasePath, const uint8_t imageRendering = 0,
                                  std::vector<std::string> tocAnchors = {},
                                  const std::function<void()>& popupFn = nullptr, const CssParser* cssParser = nullptr,
-                                 const PtLayout ptLayout = PtLayout::Both, const std::string& bookPrimaryLang = "")
+                                 const PtLayout ptLayout = PtLayout::Both, const std::string& bookPrimaryLang = "",
+                                 const int translationFontId = 0)
 
       : epub(epub),
         filepath(filepath),
@@ -214,6 +233,7 @@ class ChapterHtmlSlimParser {
         contentBase(contentBase),
         imageBasePath(imageBasePath),
         ptLayout(ptLayout),
+        translationFontId(translationFontId),
         bookPrimaryLang(bookPrimaryLang),
         tocAnchors(std::move(tocAnchors)) {}
 
@@ -233,7 +253,10 @@ class ChapterHtmlSlimParser {
   bool finishParse();  // flush the trailing page and tear down; returns true
   void abortParse();   // tear down without flushing (error / abandon)
 
-  void addLineToPage(std::shared_ptr<TextBlock> line);
+  // `role` is the role the caller MEASURED this line with (see makePages): it decides both the
+  // vertical advance here and the byte stamped on the emitted PageLine, so measurement, pitch and
+  // drawing can never be resolved from three different fonts.
+  void addLineToPage(std::shared_ptr<TextBlock> line, LineFontRole role);
   const std::vector<std::pair<std::string, uint16_t>>& getAnchors() const { return anchorData; }
 
   // Byte progress of the in-flight parse, used to estimate a still-building section's total page

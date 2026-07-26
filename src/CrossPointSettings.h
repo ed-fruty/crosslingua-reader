@@ -484,7 +484,9 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   //
   // LAYOUT (Interleaved): the ONLY one that reaches the cache. It feeds BOTH the section cache key
   // (ReaderRenderSpec::translationFontId) and the render-time font set (readerPageFontSet), so the
-  // two can never disagree about what a cached page was measured with.
+  // two can never disagree about what a cached page was measured with. Returns 0 whenever the active
+  // mode is not Interleaved — the mode gate has to live here rather than in the layout engine,
+  // which only ever sees the PtLayout that Normal and Interleaved share.
   int getInterleavedTranslationFontId() const;
   // VIEW TIME (Tooltip / Page Translation): composited over an already-laid-out page, so neither may
   // appear in a ReaderRenderSpec — changing one must not invalidate a single cached chapter. Read

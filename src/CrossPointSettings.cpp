@@ -375,6 +375,16 @@ int CrossPointSettings::getInterleavedTranslationFontId() const {
   // and the render-time font set (readerPageFontSet) read it through here, so changing it
   // invalidates exactly the sections whose line breaking it can move, and a page is always drawn in
   // the fonts it was measured with. The overlay sizes deliberately have no path to either.
+  //
+  // Gated on the mode being Interleaved, and this is the ONLY place that gate can live: Normal and
+  // Interleaved collapse onto the same PtLayout::Both (their pages differ only in how translated
+  // words are drawn), so the layout engine cannot tell them apart -- yet Normal must keep the
+  // translation at body size, because presenting the two languages as one undifferentiated flow is
+  // the entire point of that mode. Interlinear is here too: it has no layout of its own yet and is
+  // not selectable, so it must not inherit a size row it does not show. A stored Smaller therefore
+  // sits dormant while the mode is anything but Interleaved and returns the instant it is selected
+  // again, with no SPIFFS write either way.
+  if (translationDisplayMode != PT_INTERLEAVED) return 0;
   return translationFontIdForSize(interleavedTranslationSize);
 }
 

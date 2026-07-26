@@ -36,11 +36,21 @@ class DictionaryWordSelectActivity final : public Activity {
     uint16_t row;
     const char* text;
     EpdFontFamily::Style style;
+    // Font role of the LINE this word came from. A page can mix type sizes (a smaller translated
+    // line under Interleaved), and this screen measures, boxes and redraws words itself instead of
+    // going through PageLine::render, so it has to resolve the same role the page was drawn with or
+    // the highlight would be measured and repainted in the wrong face.
+    LineFontRole role = LineFontRole::Body;
   };
 
   enum class Popup : uint8_t { None, Busy, NotFound, Error };
 
   void extractWords();
+  // The concrete font a word draws in, and the height of its line box — both role-resolved, so a
+  // smaller translated line gets a smaller highlight instead of a body-sized one bleeding into the
+  // line below.
+  int wordFontId(const WordBox& word) const { return pageFonts.forRole(word.role); }
+  int wordLineHeight(const WordBox& word) const { return renderer.getLineHeight(wordFontId(word)); }
   int closestInRow(uint16_t row, int centerX) const;
   int wordAt(int x, int y) const;
   void moveVertical(int direction);
@@ -51,11 +61,12 @@ class DictionaryWordSelectActivity final : public Activity {
   std::unique_ptr<Page> page;
   const int marginLeft;
   const int marginTop;
-  // Word measurement / highlight drawing all happen in the BODY font; the page itself is drawn
-  // through the full role set (a page may mix body and smaller translated text).
+  // Per-word measurement and highlight drawing go through the word's own role (wordFontId); this
+  // body id is only for the one genuinely page-wide job left, priming the SD-card font's advance
+  // table. SD families ship a single loaded face, so they never have a smaller translation font and
+  // body IS every role there (CrossPointSettings::smallerReaderFontId).
   int fontId = 0;
   PageFontSet pageFonts;
-  int lineHeight = 0;
 
   std::vector<WordBox> words;
   int selected = 0;

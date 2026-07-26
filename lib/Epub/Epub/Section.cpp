@@ -110,21 +110,26 @@ constexpr uint32_t HEADER_SIZE =
     sizeof(uint16_t) + sizeof(uint16_t) + sizeof(bool) + sizeof(bool) + sizeof(uint8_t) + sizeof(bool) +
     sizeof(uint8_t) + sizeof(bool) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t);
 
-// The translation font belongs in the cache key only where translated words are actually laid out.
-// Under the OriginalOnly layout they are all dropped, so not one line in the resulting pages was
-// measured in that font and no value of it can move a line break. Stamping the real id there would
-// make a change to the Interleaved mode's Translation Size invalidate every cached chapter of the
-// book, including the chapters of a mode that lays out no translated text at all. (The two modes that
-// MAP to OriginalOnly, Tooltip and Page Translation, own SEPARATE size settings which are composited
-// at view time and by design never reach a ReaderRenderSpec -- see CrossPointSettings::
-// TRANSLATION_SIZE. This normalization covers the id that does reach one.)
+// The translation font belongs in the cache key only where translated words are actually laid out IN
+// IT, which is the Both layout and only Both -- the one layout that flows the two languages inline,
+// so a second type size there re-breaks lines (see ChapterHtmlSlimParser::currentLineRole, which
+// tags a line for that font under exactly this layout and no other). Under OriginalOnly the
+// translated words are all dropped, and under TranslationOnly / SideBySide they are laid out in the
+// BODY font by design, so in all three no line was measured in the translation font and no value of
+// it can move a line break. Stamping the real id there would make a change to the Interleaved mode's
+// Translation Size invalidate every cached chapter of the book, including chapters of a mode that
+// lays out no differently-sized text at all. (The two modes that MAP to OriginalOnly, Tooltip and
+// Page Translation, own SEPARATE size settings which are composited at view time and by design never
+// reach a ReaderRenderSpec -- see CrossPointSettings::TRANSLATION_SIZE. This normalization covers the
+// id that does reach one.)
 //
-// Keyed off the EFFECTIVE (post-fallback) layout, not the requested one, and applied to both the
-// header write and the lookup, so build and lookup can never disagree: a chapter with no committed
-// translation is laid out as Both even in Tooltip mode, keeps the real id, and so stays a cache hit
-// for the inline modes that share that layout.
+// Keyed off the EFFECTIVE (post-fallback) layout, not the requested one, and applied to the header
+// write, the lookup AND the id handed to the parser, so key and layout can never disagree: a chapter
+// with no committed translation is laid out as Both even in Tooltip mode, keeps the real id, and so
+// stays a cache hit for the inline modes that share that layout (it has no translated block to lay
+// out in that font either way).
 constexpr int keyedTranslationFontId(const int translationFontId, const PtLayout effectiveLayout) {
-  return effectiveLayout == PtLayout::OriginalOnly ? 0 : translationFontId;
+  return effectiveLayout == PtLayout::Both ? translationFontId : 0;
 }
 }  // namespace
 
@@ -557,7 +562,10 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
         ctxPtr->lut.push_back({this->onPageComplete(std::move(page)), paragraphIndex, listItemIndex});
       },
       spec.embeddedStyle, ctxPtr->contentBase, ctxPtr->imageBasePath, spec.imageRendering, std::move(tocAnchors),
-      popupFn, ctxPtr->cssParser, effectivePtLayout, epub->getLanguage());
+      popupFn, ctxPtr->cssParser, effectivePtLayout, epub->getLanguage(),
+      // The NORMALIZED id, the same one the header is keyed on: the parser measures translated lines
+      // with it, so anything that zeroes it for the key must zero it for the layout too.
+      effectiveSpec.translationFontId);
   if (!ctx->parser) {
     LOG_ERR("SCT", "OOM: ChapterHtmlSlimParser");
     if (ctx->cssParser) ctx->cssParser->clear();
