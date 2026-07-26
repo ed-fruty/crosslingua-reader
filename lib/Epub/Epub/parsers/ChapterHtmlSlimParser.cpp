@@ -2047,11 +2047,21 @@ void ChapterHtmlSlimParser::renderSideBySide(std::unique_ptr<ParsedText> leftBlo
       auto leftLine = std::make_shared<PageLine>(leftLines[i], 0, currentPageNextY);
       leftLine->paragraphIdx = bufferedOriginalParagraphIdx;
       currentPage->elements.push_back(std::move(leftLine));
+      // The page owns this line now (PageLine's ctor takes the shared_ptr BY VALUE and moves it into
+      // its member, so the copy made above is the page's own reference), so release ours instead of
+      // pinning every line of BOTH columns until the call returns. Nothing below reads an earlier
+      // line: this loop only ever touches the CURRENT index of each column, and the sizes it compares
+      // against are unaffected by a reset. That restores the makePages peak -- one page's worth of
+      // TextBlocks, freed as onPageComplete serializes each page -- for a pair long enough to span
+      // several pages, instead of holding object + arena + control block for every line of both
+      // columns at once on top of the page being built.
+      leftLines[i].reset();
     }
     if (i < rightLines.size()) {
       auto rightLine = std::make_shared<PageLine>(rightLines[i], rightColX, currentPageNextY);
       rightLine->paragraphIdx = bufferedOriginalParagraphIdx;
       currentPage->elements.push_back(std::move(rightLine));
+      rightLines[i].reset();  // same handoff as the left column above
     }
 
     // Both columns belong to the same original paragraph; keep the page's paragraph range current
