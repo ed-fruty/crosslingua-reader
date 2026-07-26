@@ -204,19 +204,28 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   fontPointSize = storedFontSize;
 
   // Font family — uses dynamic getter/setter in SettingsList so the generic loop skips it.
-  const uint8_t storedFontFamily = doc["fontFamily"] | (uint8_t)0;
-  fontFamily = clamp(storedFontFamily, BUILTIN_FONT_COUNT, 0);
+  // An ABSENT key adopts the struct-initializer default (EdsLab); a present key is
+  // honoured, so an existing user's choice survives the upgrade untouched.
+  const uint8_t storedFontFamily = doc["fontFamily"] | fontFamily;
+  fontFamily = clamp(storedFontFamily, BUILTIN_FONT_COUNT, EDSLAB);
   // SD card font family name — not in SettingsList, load manually
   const char* sfn = doc["sdFontFamilyName"] | "";
   strncpy(sdFontFamilyName, sfn, sizeof(sdFontFamilyName) - 1);
   sdFontFamilyName[sizeof(sdFontFamilyName) - 1] = '\0';
   if (storedFontFamily == LEGACY_OPENDYSLEXIC && sdFontFamilyName[0] == '\0') {
-    fontFamily = NOTOSERIF;
+    fontFamily = EDSLAB;
     strncpy(sdFontFamilyName, "OpenDyslexic", sizeof(sdFontFamilyName) - 1);
     sdFontFamilyName[sizeof(sdFontFamilyName) - 1] = '\0';
     needsResave = true;
   } else if (storedFontFamily >= BUILTIN_FONT_COUNT) {
     needsResave = true;
+  } else if (storedFontFamily == LEGACY_NOTOSERIF) {
+    // Noto Serif was dropped from the firmware and EdsLab took its slot, so the
+    // stored index already resolves to the right family and the file needs no
+    // rewrite. Logged rather than silently reinterpreted, because the reader font
+    // visibly changes for these users and their section cache is invalidated (the
+    // font id is part of the cache key — see getReaderFontId / Section.cpp:195).
+    LOG_DBG("CPS", "Font family 0 (was Noto Serif) now resolves to EdsLab");
   }
   // Dictionary folder name — uses dynamic getter/setter in SettingsList, load manually
   copyToField(dictionaryName, doc["dictionaryName"] | "", sizeof(dictionaryName));
@@ -307,7 +316,9 @@ float CrossPointSettings::getReaderLineCompression() const {
   }
 
   switch (fontFamily) {
-    case NOTOSERIF:
+    // EdsLab keeps the neutral spacing Noto Serif used in this slot; the values are
+    // unchanged from that family, not retuned for EdsLab's metrics.
+    case EDSLAB:
     default:
       switch (lineSpacing) {
         case TIGHT:
@@ -378,13 +389,13 @@ int CrossPointSettings::getReaderFontId() const {
   const bool sans = (fontFamily == NOTOSANS);
   switch (pt) {
     case 12:
-      return sans ? NOTOSANS_12_FONT_ID : NOTOSERIF_12_FONT_ID;
+      return sans ? NOTOSANS_12_FONT_ID : EDSLAB_12_FONT_ID;
     case 16:
-      return sans ? NOTOSANS_16_FONT_ID : NOTOSERIF_16_FONT_ID;
+      return sans ? NOTOSANS_16_FONT_ID : EDSLAB_16_FONT_ID;
     case 18:
-      return sans ? NOTOSANS_18_FONT_ID : NOTOSERIF_18_FONT_ID;
+      return sans ? NOTOSANS_18_FONT_ID : EDSLAB_18_FONT_ID;
     case 14:
     default:
-      return sans ? NOTOSANS_14_FONT_ID : NOTOSERIF_14_FONT_ID;
+      return sans ? NOTOSANS_14_FONT_ID : EDSLAB_14_FONT_ID;
   }
 }

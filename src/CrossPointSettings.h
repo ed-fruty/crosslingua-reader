@@ -85,8 +85,14 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // Default: Up = Previous, Down = Next
   enum SIDE_BUTTON_LAYOUT { PREV_NEXT = 0, NEXT_PREV = 1, SIDE_BUTTONS_DISABLED = 2, SIDE_BUTTON_LAYOUT_COUNT };
 
-  // Font family options (built-in fonts only; SD card fonts use sdFontFamilyName)
-  enum FONT_FAMILY { NOTOSERIF = 0, NOTOSANS = 1, FONT_FAMILY_COUNT };
+  // Font family options (built-in fonts only; SD card fonts use sdFontFamilyName).
+  // Persisted by index, so NOTOSANS must stay 1 and new families must be appended.
+  // Slot 0 held Noto Serif until EdsLab replaced it as the built-in serif/slab
+  // reading family; a settings.json that stores 0 therefore keeps working and now
+  // resolves to EdsLab, which is the intended migration (Noto Serif is no longer in
+  // the firmware, and EdsLab occupies the same niche and is the new default).
+  enum FONT_FAMILY { EDSLAB = 0, NOTOSANS = 1, FONT_FAMILY_COUNT };
+  static constexpr uint8_t LEGACY_NOTOSERIF = 0;
   static constexpr uint8_t LEGACY_OPENDYSLEXIC = 2;
   static constexpr uint8_t BUILTIN_FONT_COUNT = FONT_FAMILY_COUNT;
   // Reader font size is a point size, not an enum slot — see fontPointSize.
@@ -258,8 +264,10 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t frontButtonConfirm = FRONT_HW_CONFIRM;
   uint8_t frontButtonLeft = FRONT_HW_LEFT;
   uint8_t frontButtonRight = FRONT_HW_RIGHT;
-  // Reader font settings
-  uint8_t fontFamily = NOTOSERIF;
+  // Reader font settings. EdsLab is the default reading font for a fresh install;
+  // fromJson() only falls back to this when the "fontFamily" key is absent, so a
+  // user who already picked Noto Sans (or an SD family) keeps their choice.
+  uint8_t fontFamily = EDSLAB;
   // Point size of the reader font. Only sizes the active family actually ships
   // are selectable; SdCardFontSystem::ensureLoaded() snaps this to the nearest
   // available size (and persists the snap) whenever the family changes.

@@ -5,19 +5,51 @@ set -e
 cd "$(dirname "$0")"
 
 READER_FONT_STYLES=("Regular" "Italic" "Bold" "BoldItalic")
-NOTOSERIF_FONT_SIZES=(12 14 16 18)
 NOTOSANS_FONT_SIZES=(12 14 16 18)
 
-for size in ${NOTOSERIF_FONT_SIZES[@]}; do
+# EdsLab, the built-in default reading family. Edit THIS line to add or drop a
+# reader point size, then re-run:
+#   bash lib/EpdFont/scripts/convert-builtin-fonts.sh
+#   bash lib/EpdFont/scripts/build-font-ids.sh   # see the note in that script
+# Adding/removing a size also needs: a matching #include in builtinFonts/all.h,
+# the EpdFont/EpdFontFamily globals + insertFont() call in src/main.cpp, the
+# EDSLAB_<size>_FONT_ID entry in build-font-ids.sh, the switch in
+# CrossPointSettings::getReaderFontId(), and BUILTIN_READER_POINT_SIZES in
+# src/ReaderFontSizes.h. Changing font *content* changes the ids, which
+# invalidates every cached page layout on the SD card (by design).
+EDSLAB_FONT_SIZES=(12 14 16 18)
+# Extra EdsLab faces outside the reader matrix, "<size>:<Style>" pairs. These are
+# NOT user-selectable body sizes (BUILTIN_READER_POINT_SIZES stays 12/14/16/18) —
+# 8pt regular is the small annotation face (the counterpart to notosans_8_regular),
+# kept in the family so a slab-serif body page never mixes in a grotesque.
+# Add e.g. 10:Regular here to ship a 10pt face, then re-run the two commands above.
+EDSLAB_EXTRA_FACES=(8:Regular)
+
+for size in ${EDSLAB_FONT_SIZES[@]}; do
   for style in ${READER_FONT_STYLES[@]}; do
-    font_name="notoserif_${size}_$(echo $style | tr '[:upper:]' '[:lower:]')"
-    font_path="../builtinFonts/source/NotoSerif/NotoSerif-${style}.ttf"
+    font_name="edslab_${size}_$(echo $style | tr '[:upper:]' '[:lower:]')"
+    font_path="../builtinFonts/source/EdsLab/EdsLab-${style}.ttf"
     output_path="../builtinFonts/${font_name}.h"
     python fontconvert.py $font_name $size $font_path --2bit --compress --pnum > $output_path
     echo "Generated $output_path"
   done
 done
 
+for face in ${EDSLAB_EXTRA_FACES[@]}; do
+  size="${face%%:*}"
+  style="${face##*:}"
+  font_name="edslab_${size}_$(echo $style | tr '[:upper:]' '[:lower:]')"
+  font_path="../builtinFonts/source/EdsLab/EdsLab-${style}.ttf"
+  output_path="../builtinFonts/${font_name}.h"
+  python fontconvert.py $font_name $size $font_path --2bit --compress --pnum > $output_path
+  echo "Generated $output_path"
+done
+
+# Noto Serif is no longer a built-in family: EdsLab took the serif slot, because
+# the app partition has room for two reader families, not three. The TTFs stay in
+# builtinFonts/source/NotoSerif — to bring it back, copy the loop below with
+# NOTOSERIF_FONT_SIZES / source/NotoSerif/NotoSerif-${style}.ttf and re-add its
+# includes, globals, ids and settings enum entry (same checklist as EdsLab above).
 for size in ${NOTOSANS_FONT_SIZES[@]}; do
   for style in ${READER_FONT_STYLES[@]}; do
     font_name="notosans_${size}_$(echo $style | tr '[:upper:]' '[:lower:]')"

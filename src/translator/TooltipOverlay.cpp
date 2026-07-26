@@ -1112,8 +1112,12 @@ void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId,
 // Tooltip text renders one size SMALLER than the reader body (upstream-fork parity) in the reader's
 // own family, so the popup translation reads as a secondary annotation below the source. At the
 // smallest reader size there is nothing smaller, so fall back to the reader font itself. Adapted to
-// v2's font set (NOTOSERIF / NOTOSANS + SD card fonts); the fork's family switch used a different
+// v2's font set (EDSLAB / NOTOSANS + SD card fonts); the fork's family switch used a different
 // built-in font lineup (Bookerly/EdsLab/Caecilia/GPro).
+//
+// NOTE: the (family, point size) -> font id mapping below is a second copy of the switch in
+// CrossPointSettings::getReaderFontId(). There is no shared lookup for "this family at size N";
+// adding a built-in size means editing both.
 //
 // Reader size is a point size since 91900484 (CrossPointSettings::fontPointSize), not a
 // SMALL/MEDIUM/LARGE slot, so "one smaller" means the previous entry in the active family's
@@ -1146,13 +1150,13 @@ int getTooltipFontId() {
   const bool sans = (SETTINGS.fontFamily == CrossPointSettings::NOTOSANS);
   switch (BUILTIN_READER_POINT_SIZES[idx - 1]) {
     case 12:
-      return sans ? NOTOSANS_12_FONT_ID : NOTOSERIF_12_FONT_ID;
+      return sans ? NOTOSANS_12_FONT_ID : EDSLAB_12_FONT_ID;
     case 16:
-      return sans ? NOTOSANS_16_FONT_ID : NOTOSERIF_16_FONT_ID;
+      return sans ? NOTOSANS_16_FONT_ID : EDSLAB_16_FONT_ID;
     case 18:
-      return sans ? NOTOSANS_18_FONT_ID : NOTOSERIF_18_FONT_ID;
+      return sans ? NOTOSANS_18_FONT_ID : EDSLAB_18_FONT_ID;
     case 14:
     default:
-      return sans ? NOTOSANS_14_FONT_ID : NOTOSERIF_14_FONT_ID;
+      return sans ? NOTOSANS_14_FONT_ID : EDSLAB_14_FONT_ID;
   }
 }
