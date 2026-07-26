@@ -195,10 +195,13 @@ void TranslatingHtmlRewriter::flushBatch() {
     }
   }
 
-  // Translate the merged text
-  // Only LLM engines support batch merging (they can preserve \n\n separators)
+  // Translate the merged text.
+  // Batch merging needs an engine that takes N "\n\n"-separated parts and gives N back:
+  //  - the LLM engines are *asked* to preserve the separators (best-effort, model-dependent);
+  //  - Azure splits the merged text into a native array of text items and gets one result
+  //    object per item in input order, which is an API guarantee rather than a request.
   bool canBatchMerge = engine == CrossPointSettings::ENGINE_OPENAI || engine == CrossPointSettings::ENGINE_DEEPSEEK ||
-                       engine == CrossPointSettings::ENGINE_GEMINI;
+                       engine == CrossPointSettings::ENGINE_GEMINI || engine == CrossPointSettings::ENGINE_AZURE;
   std::vector<std::string> translations;
   if (!translatableIndices.empty()) {
     // ── Heap backpressure ──────────────────────────────────────────────────
@@ -655,6 +658,16 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewriteFromFile(
   progressOut = progress;
   onBatchBoundary = boundaryCb;
   batchBoundaryCtx = boundaryCtx;
+  // Azure authenticates with a bearer token fetched from a DIFFERENT host than the
+  // translate endpoint. Prime it here, while no session exists yet, so that (a) the
+  // token handshake peaks on its own instead of on top of a live TLS context, and
+  // (b) it cannot mark the session "everConnected" and thereby downgrade the heap
+  // floor guarding the session's own first (real) handshake. The token is cached for
+  // 8 minutes, which covers a typical chapter end to end. A failure here is ignored:
+  // the first translate() retries the fetch and the normal retry/backoff path applies.
+  if (engine == CrossPointSettings::ENGINE_AZURE) {
+    ParagraphTranslator::primeAzureToken();
+  }
   // One reusable keep-alive connection for the whole chapter: the first translate()
   // call performs the TLS handshake, every later one reuses the socket (see
   // TranslationHttpSession). Declared here so it outlives the final flushBatch()
