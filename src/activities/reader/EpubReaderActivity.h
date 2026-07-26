@@ -85,7 +85,14 @@ class EpubReaderActivity final : public Activity {
   std::optional<FontCacheManager::PrewarmScope> overlayPrewarm_;
   int overlayPrewarmSpine_ = -1;
   int overlayPrewarmPage_ = -1;
+  // BOTH fonts the warm set covers: the page's body font and the ACTIVE overlay's own font. They are
+  // usually the same id (Same size, or an SD family that cannot step size) and fold into one prewarm
+  // scan, but a smaller overlay face is a second, separately warmed font — and each of the two modes
+  // now carries its own size, so switching overlay or changing that size can move the overlay id while
+  // the body id stands still. Tracking only the body id made such a prewarm look fresh while covering
+  // the wrong glyphs.
   int overlayPrewarmFontId_ = -1;
+  int overlayPrewarmOverlayFontId_ = -1;
   uint32_t overlayPrewarmGen_ = 0;
   // Shown when a PT_PAGE_TRANSLATION long-press opens the overlay on a page that has NO translated
   // paragraphs: the overlay refuses (clears its active flag in render()), and the reader surfaces

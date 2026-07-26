@@ -113,9 +113,11 @@ constexpr uint32_t HEADER_SIZE =
 // The translation font belongs in the cache key only where translated words are actually laid out.
 // Under the OriginalOnly layout they are all dropped, so not one line in the resulting pages was
 // measured in that font and no value of it can move a line break. Stamping the real id there would
-// make a Translation Size change invalidate every cached chapter of the book -- and Size is a
-// per-mode sub-setting of exactly the two modes that map to OriginalOnly (Tooltip and Page
-// Translation), whose translation is composited on top at view time and never enters the page at all.
+// make a change to the Interleaved mode's Translation Size invalidate every cached chapter of the
+// book, including the chapters of a mode that lays out no translated text at all. (The two modes that
+// MAP to OriginalOnly, Tooltip and Page Translation, own SEPARATE size settings which are composited
+// at view time and by design never reach a ReaderRenderSpec -- see CrossPointSettings::
+// TRANSLATION_SIZE. This normalization covers the id that does reach one.)
 //
 // Keyed off the EFFECTIVE (post-fallback) layout, not the requested one, and applied to both the
 // header write and the lookup, so build and lookup can never disagree: a chapter with no committed

@@ -128,7 +128,14 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   doc["translateApiKey"] = translateApiKey;
   doc["translationDisplayMode"] = translationDisplayMode;
   doc["translationShade"] = translationShade;
-  doc["translationSize"] = translationSize;
+  // One key per mode. These are NEW names, not a rename of the single "translationSize" key they
+  // replace: keys are append-only, and a file still carrying the old key must fall through to the
+  // per-mode DEFAULTS (that is what preserves the overlays' historical Smaller behaviour) rather
+  // than inherit one shared choice. toJson() rebuilds the document from scratch on every save, so
+  // the retired key disappears from the file on the next write without a migration step.
+  doc["interleavedTranslationSize"] = interleavedTranslationSize;
+  doc["tooltipTranslationSize"] = tooltipTranslationSize;
+  doc["pageTranslationSize"] = pageTranslationSize;
   doc["tooltipButtons"] = tooltipButtons;
   doc["tooltipBehavior"] = tooltipBehavior;
   doc["pageTranslationButtons"] = pageTranslationButtons;
@@ -253,8 +260,19 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   copyToField(translateApiKey, doc["translateApiKey"] | "", sizeof(translateApiKey));
   translationShade =
       clamp(doc["translationShade"] | (uint8_t)SHADE_DIMMED, (uint8_t)TRANSLATION_SHADE_COUNT, (uint8_t)SHADE_DIMMED);
-  translationSize =
-      clamp(doc["translationSize"] | (uint8_t)SIZE_SAME, (uint8_t)TRANSLATION_SIZE_COUNT, (uint8_t)SIZE_SAME);
+  // Per-mode translated-text sizes. ArduinoJson's `|` yields its right operand when the key is
+  // ABSENT (or holds a value that will not convert), so a settings.json written before these keys
+  // existed — every existing install, since all three names are new — adopts the per-mode DEFAULT
+  // below, and only a key that is present and in range can override it. The defaults mirror the
+  // struct initializers in CrossPointSettings.h: Interleaved matched the body text before this row
+  // existed, and both overlays were always drawn one step smaller, so this load path reproduces the
+  // pre-split behaviour byte for byte instead of resetting every user to Same.
+  interleavedTranslationSize = clamp(doc["interleavedTranslationSize"] | (uint8_t)SIZE_SAME,
+                                     (uint8_t)TRANSLATION_SIZE_COUNT, (uint8_t)SIZE_SAME);
+  tooltipTranslationSize = clamp(doc["tooltipTranslationSize"] | (uint8_t)SIZE_SMALLER, (uint8_t)TRANSLATION_SIZE_COUNT,
+                                 (uint8_t)SIZE_SMALLER);
+  pageTranslationSize =
+      clamp(doc["pageTranslationSize"] | (uint8_t)SIZE_SMALLER, (uint8_t)TRANSLATION_SIZE_COUNT, (uint8_t)SIZE_SMALLER);
   // Display mode, with the retired-hole migration. Values 1 and 2 were the separate "Dimmed" and
   // "Dimmed Light" modes; they are now ONE mode (PT_INTERLEAVED) plus the translationShade colour
   // sub-setting, so a stored 1/2 folds into that pair and requests a resave — same needsResave
@@ -343,24 +361,35 @@ PtLayout CrossPointSettings::ptLayoutForDisplayMode(const uint8_t mode) {
   return PtLayout::Both;  // unreachable: every enumerator returns above
 }
 
-int CrossPointSettings::getTranslationFontId() const {
+int CrossPointSettings::translationFontIdForSize(const uint8_t sizeSetting) const {
   // 0 == "same as the body font", which is both the SIZE_SAME answer and the graceful answer when
   // the active family ships no smaller face: smallerReaderFontId() returns 0 there, so a stored
   // SIZE_SMALLER degrades to Same WITHOUT rewriting the setting (switch back to a family that has a
   // smaller face and the choice is still there — and no SPIFFS write happened to preserve it).
-  //
-  // Both the cache key (ReaderRenderSpec::translationFontId) and the render-time font set
-  // (readerPageFontSet) read the size through here, so changing it invalidates exactly the sections
-  // whose line breaking it can move, and a page is always drawn in the fonts it was measured with.
-  if (translationSize != SIZE_SMALLER) return 0;
+  if (sizeSetting != SIZE_SMALLER) return 0;
   return smallerReaderFontId();
 }
 
+int CrossPointSettings::getInterleavedTranslationFontId() const {
+  // The one size that is a LAYOUT input. Both the cache key (ReaderRenderSpec::translationFontId)
+  // and the render-time font set (readerPageFontSet) read it through here, so changing it
+  // invalidates exactly the sections whose line breaking it can move, and a page is always drawn in
+  // the fonts it was measured with. The overlay sizes deliberately have no path to either.
+  return translationFontIdForSize(interleavedTranslationSize);
+}
+
+int CrossPointSettings::getTooltipTranslationFontId() const { return translationFontIdForSize(tooltipTranslationSize); }
+
+int CrossPointSettings::getPageTranslationOverlayFontId() const {
+  return translationFontIdForSize(pageTranslationSize);
+}
+
 PageFontSet CrossPointSettings::readerPageFontSet() const {
-  // Same two ids readerRenderSpec() keys the cache on, read from the same accessors: a page is
-  // always drawn in the fonts it was measured with. The Annotation role has no setting of its own
-  // yet, so it follows the translated text (0 -> body font, via the PageFontSet constructor).
-  const int translationFontId = getTranslationFontId();
+  // Same two ids readerRenderSpec() keys the cache on, read from the same accessor: a page is
+  // always drawn in the fonts it was measured with. Only the Interleaved size belongs here — the
+  // overlays draw outside the Page. The Annotation role has no setting of its own yet, so it follows
+  // the translated text (0 -> body font, via the PageFontSet constructor).
+  const int translationFontId = getInterleavedTranslationFontId();
   return PageFontSet(getReaderFontId(), translationFontId, translationFontId);
 }
 
@@ -379,9 +408,12 @@ ReaderRenderSpec CrossPointSettings::readerRenderSpec(const uint16_t viewportWid
   spec.focusReadingEnabled = focusReadingEnabled != 0;
   // Pre-Translation: the cache key carries the LAYOUT the mode implies, never the mode itself.
   // Drawing-only differences (translationShade) and the overlay modes therefore do not invalidate
-  // a cached section. translationFontId does change line breaking, so it IS keyed.
+  // a cached section. The INTERLEAVED translated-text font does change line breaking, so it IS keyed
+  // — and it is the only one of the three sizes that is, which is why this reads the Interleaved
+  // accessor by name rather than a shared one: the tooltip and Page Translation sizes are composited
+  // over a finished page and must never reach a spec.
   spec.ptLayout = ptLayoutForDisplayMode(translationDisplayMode);
-  spec.translationFontId = getTranslationFontId();
+  spec.translationFontId = getInterleavedTranslationFontId();
   return spec;
 }
 

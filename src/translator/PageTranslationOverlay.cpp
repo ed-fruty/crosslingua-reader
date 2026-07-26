@@ -13,7 +13,6 @@
 
 #include "SentenceSplitter.h"
 #include "TextNormalize.h"
-#include "TooltipOverlay.h"  // getTooltipFontId() — Page Translation shares the tooltip's font
 #include "activities/translator/LanguagePickerActivity.h"
 #include "fontIds.h"
 
@@ -937,10 +936,20 @@ void PageTranslationOverlay::render(GfxRenderer& renderer, const Page& page, int
 
 // ── Font helper ──────────────────────────────────────────────────────────────
 //
-// Fork parity: the Page Translation overlay renders in the SAME reader-derived font as the tooltip
-// (getTooltipFontId — the reader's family, at the size the Lingua submenu's Translation Size row
-// selects), so it honors the reader's Font Family and Font Size settings as well as that row. It
-// previously returned a fixed UI_12_FONT_ID, which ignored all three (that predated the Tooltip port
-// that brought getTooltipFontId in).
+// Fork parity: the Page Translation overlay renders in the same reader-derived FAMILY as the tooltip,
+// so it honors the reader's Font Family and Font Size settings. It previously returned a fixed
+// UI_12_FONT_ID, which ignored both (that predated the Tooltip port that brought getTooltipFontId in).
+//
+// The SIZE, however, is this mode's own setting (pageTranslationSize), not the tooltip's: the two
+// overlays are different reading gestures — a per-sentence popup beside the source line versus a
+// full-page replacement — and a user who wants the popup small has said nothing about the full page.
+// It was briefly one shared field, which made either row silently retune the other. Both are
+// composited at view time, so neither can reach the section cache key.
+//
+// 0 (Same, or a family with no smaller face) becomes the body font, keeping renderOverlayFrame's
+// single-prewarm fast path intact — same contract as getTooltipFontId().
 
-int getPageTranslationFontId() { return getTooltipFontId(); }
+int getPageTranslationFontId() {
+  const int translationFontId = SETTINGS.getPageTranslationOverlayFontId();
+  return translationFontId != 0 ? translationFontId : SETTINGS.getReaderFontId();
+}

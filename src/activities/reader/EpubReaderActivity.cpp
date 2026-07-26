@@ -1008,11 +1008,13 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
     case EpubReaderMenuActivity::MenuAction::PRE_TRANSLATION: {
       // Remember the two Lingua settings that are part of the ReaderRenderSpec cache key, as they
       // were before opening the submenu. The submenu can change either live — the display mode
-      // (cycle mode / delete translations), whose PtLayout is keyed, and Translation Size, whose
-      // resolved font id is keyed — so a change means the in-RAM Section may hold a stale layout and
-      // must be re-resolved (a cache HIT when the new mode shares the old mode's layout).
+      // (cycle mode / delete translations), whose PtLayout is keyed, and the INTERLEAVED translation
+      // size, whose resolved font id is keyed — so a change means the in-RAM Section may hold a stale
+      // layout and must be re-resolved (a cache HIT when the new mode shares the old mode's layout).
+      // The Tooltip and Page Translation sizes are absent here BY DESIGN: they only affect text the
+      // overlays composite at view time, so they invalidate nothing and need no re-layout.
       const uint8_t modeBeforeSubmenu = SETTINGS.translationDisplayMode;
-      const int translationFontIdBeforeSubmenu = SETTINGS.getTranslationFontId();
+      const int translationFontIdBeforeSubmenu = SETTINGS.getInterleavedTranslationFontId();
       startActivityForResult(
           std::make_unique<PreTranslationSubmenuActivity>(renderer, mappedInput, epub, currentSpineIndex),
           [this, modeBeforeSubmenu, translationFontIdBeforeSubmenu](const ActivityResult& result) {
@@ -1037,9 +1039,11 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
               // layout (or build it), and applyDeferredReposition() remaps the page once the new page
               // count is known. Translation Colour is deliberately NOT in this gate: it only moves
               // the renderer's translation gray level, which main.cpp's loop() re-reads from
-              // SETTINGS every tick, so it needs no re-layout and no extra wiring here.
+              // SETTINGS every tick, so it needs no re-layout and no extra wiring here. The two
+              // overlay sizes are out for the same reason: renderOverlayFrame() re-reads them per
+              // frame, and no cached page was measured with either.
               if (SETTINGS.translationDisplayMode != modeBeforeSubmenu ||
-                  SETTINGS.getTranslationFontId() != translationFontIdBeforeSubmenu) {
+                  SETTINGS.getInterleavedTranslationFontId() != translationFontIdBeforeSubmenu) {
                 RenderLock lock(*this);
                 if (section) {
                   cachedSpineIndex = currentSpineIndex;
@@ -1831,9 +1835,19 @@ void EpubReaderActivity::renderOverlayFrame(Page& page, const PageFontSet& fonts
 
   auto* fcm = renderer.getFontCacheManager();
   const int curPage = section ? section->currentPage : -1;
+  // Which overlay is up decides which font ITS text is drawn in, and the two modes carry independent
+  // sizes (tooltipTranslationSize / pageTranslationSize), so resolve that id BEFORE the staleness test
+  // instead of inside the rebuild: a prewarmed set is only valid for the overlay font it was warmed
+  // for. Keying the test on the body font alone considered a prewarm fresh after the overlay font
+  // changed under it — every overlay glyph then missed into the per-glyph slow path, the exact
+  // regression this cache exists to prevent. Both ids are tracked, because either moving invalidates
+  // the warm set. The two accessors are pure SETTINGS reads plus a walk of the point-size ladder (no
+  // allocation), and are already called once per frame further down.
+  const bool pageTranslationActive = pageTranslationOverlay.isActive();
+  const int overlayFontId = pageTranslationActive ? getPageTranslationFontId() : getTooltipFontId();
   const bool cacheStale = !overlayPrewarm_ || overlayPrewarmSpine_ != currentSpineIndex ||
                           overlayPrewarmPage_ != curPage || overlayPrewarmFontId_ != fontId ||
-                          overlayPrewarmGen_ != fcm->cacheGeneration();
+                          overlayPrewarmOverlayFontId_ != overlayFontId || overlayPrewarmGen_ != fcm->cacheGeneration();
   if (cacheStale) {
     // The overlay draws the page's TRANSLATION text, whose alphabet (e.g. Cyrillic) is disjoint from
     // the page's SOURCE text. For an SD-card font the reader body and the overlay resolve to the SAME
@@ -1842,9 +1856,7 @@ void EpubReaderActivity::renderOverlayFrame(Page& page, const PageFontSet& fonts
     // glyphs and every overlay glyph would miss into the per-glyph SD overflow path — hundreds of SD
     // reads per frame. Gather the page's FULL overlay text ONCE here (bounded to this page's sentences /
     // paragraphs) and prewarm it alongside the page so stepping/scrolling is zero-SD-I/O. Done only on
-    // rebuild (page turn / overlay open), never per step.
-    const bool pageTranslationActive = pageTranslationOverlay.isActive();
-    const int overlayFontId = pageTranslationActive ? getPageTranslationFontId() : getTooltipFontId();
+    // rebuild (page turn / overlay open / either font changing), never per step.
     std::string overlayText;
     if (pageTranslationActive) {
       pageTranslationOverlay.collectPageGlyphText(page, overlayText);
@@ -1870,6 +1882,7 @@ void EpubReaderActivity::renderOverlayFrame(Page& page, const PageFontSet& fonts
     overlayPrewarmSpine_ = currentSpineIndex;
     overlayPrewarmPage_ = curPage;
     overlayPrewarmFontId_ = fontId;
+    overlayPrewarmOverlayFontId_ = overlayFontId;
     overlayPrewarmGen_ = fcm->cacheGeneration();  // capture AFTER prewarm; any later clear bumps it
   }
 
@@ -1952,7 +1965,7 @@ void EpubReaderActivity::renderContents(Page& page, const int orientedMarginTop,
   // held) so the per-frame scope below owns the glyph cache exactly as it did before any overlay
   // opened. Its dtor re-wipes anyway, but releasing here keeps ownership single and teardown eager.
   overlayPrewarm_.reset();
-  overlayPrewarmSpine_ = overlayPrewarmPage_ = overlayPrewarmFontId_ = -1;
+  overlayPrewarmSpine_ = overlayPrewarmPage_ = overlayPrewarmFontId_ = overlayPrewarmOverlayFontId_ = -1;
 
   // The image pixel-cache RAM slot lives for exactly one page render (it feeds
   // the BW double-refresh and every grayscale band pass); release it on every

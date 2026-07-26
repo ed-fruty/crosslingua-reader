@@ -133,16 +133,19 @@ void PreTranslationSubmenuActivity::appendModeChildren() {
       // Colour is Interleaved-only: it is the gray level the inline translated words are drawn at,
       // and no other mode draws translated text in the main flow.
       child(Action::CYCLE_TRANSLATION_COLOUR, StrId::STR_TRANSLATION_COLOUR);
-      child(Action::CYCLE_TRANSLATION_SIZE, StrId::STR_TRANSLATION_SIZE);
+      // Same label on all three Size rows, three DIFFERENT fields behind them: the row lives under
+      // the mode it belongs to, so "Translation Size" already reads as that mode's size and needs no
+      // per-mode wording (and so no new i18n keys).
+      child(Action::CYCLE_INTERLEAVED_SIZE, StrId::STR_TRANSLATION_SIZE);
       return;
     case CrossPointSettings::PT_TOOLTIP:
       child(Action::CYCLE_TOOLTIP_BUTTONS, StrId::STR_TOOLTIP_BUTTONS);
       child(Action::CYCLE_TOOLTIP_BEHAVIOR, StrId::STR_TOOLTIP_NAV);
-      child(Action::CYCLE_TRANSLATION_SIZE, StrId::STR_TRANSLATION_SIZE);
+      child(Action::CYCLE_TOOLTIP_SIZE, StrId::STR_TRANSLATION_SIZE);
       return;
     case CrossPointSettings::PT_PAGE_TRANSLATION:
       child(Action::CYCLE_PAGE_TRANSLATION_BUTTONS, StrId::STR_PAGE_TRANSLATION_BUTTONS);
-      child(Action::CYCLE_TRANSLATION_SIZE, StrId::STR_TRANSLATION_SIZE);
+      child(Action::CYCLE_PAGE_TRANSLATION_SIZE, StrId::STR_TRANSLATION_SIZE);
       return;
     // No sub-settings. Normal is NOT "no translated text": it maps to PtLayout::Both exactly as
     // Interleaved does, so its pages are byte-identical and do carry the translation inline. What
@@ -348,16 +351,19 @@ void PreTranslationSubmenuActivity::onActionSelected(Action a) {
       requestUpdate();
       return;
 
-    case Action::CYCLE_TRANSLATION_SIZE:
-      // Not cyclable when the active family has no smaller face (every SD family, and a built-in
-      // already at its smallest point size): the row then reads Same permanently. Author's call —
-      // no "(n/a)" state, no toast, the option simply is not there. Guarded before the write so a
-      // press on a locked row costs no SPIFFS cycle.
-      if (SETTINGS.smallerReaderFontId() == 0) return;
-      SETTINGS.translationSize =
-          static_cast<uint8_t>((SETTINGS.translationSize + 1) % CrossPointSettings::TRANSLATION_SIZE_COUNT);
-      SETTINGS.saveToFile();
-      requestUpdate();
+    // Three rows, three independent fields, one shared cycle rule. Only the Interleaved one changes
+    // line breaking; the reader's result handler compares getInterleavedTranslationFontId() and so
+    // re-lays out the section for that row alone, while the two overlay rows just repaint.
+    case Action::CYCLE_INTERLEAVED_SIZE:
+      cycleTranslationSize(SETTINGS.interleavedTranslationSize);
+      return;
+
+    case Action::CYCLE_TOOLTIP_SIZE:
+      cycleTranslationSize(SETTINGS.tooltipTranslationSize);
+      return;
+
+    case Action::CYCLE_PAGE_TRANSLATION_SIZE:
+      cycleTranslationSize(SETTINGS.pageTranslationSize);
       return;
 
     case Action::ENTER_API_KEY: {
@@ -380,6 +386,18 @@ void PreTranslationSubmenuActivity::onActionSelected(Action a) {
       return;
     }
   }
+}
+
+void PreTranslationSubmenuActivity::cycleTranslationSize(uint8_t& storedSize) {
+  // Not cyclable when the active family has no smaller face (every SD family — SdCardFontSystem::
+  // resolveFontId ignores its pointSize argument by design — and a built-in already at its smallest
+  // point size): the row then reads Same permanently. Author's call — no "(n/a)" state, no toast, the
+  // option simply is not there. Guarded before the write so a press on a locked row costs no SPIFFS
+  // cycle. Availability is a property of the FAMILY, not of the mode, so all three rows share it.
+  if (SETTINGS.smallerReaderFontId() == 0) return;
+  storedSize = static_cast<uint8_t>((storedSize + 1) % CrossPointSettings::TRANSLATION_SIZE_COUNT);
+  SETTINGS.saveToFile();
+  requestUpdate();
 }
 
 // ─── value labels ─────────────────────────────────────────────────────────────
@@ -419,13 +437,14 @@ const char* PreTranslationSubmenuActivity::translationColourLabel() const {
                                                                                       : StrId::STR_SHADE_DIMMED);
 }
 
-const char* PreTranslationSubmenuActivity::translationSizeLabel() const {
-  // Report Same whenever no smaller face exists, whatever is stored: getTranslationFontId() also
+const char* PreTranslationSubmenuActivity::translationSizeLabel(const uint8_t storedSize) const {
+  // Report Same whenever no smaller face exists, whatever is stored: translationFontIdForSize() also
   // degrades to the body font there, so Same is what the reader actually does. The stored value is
   // left alone on purpose — switch back to a family that ships a smaller face and the user's
   // Smaller choice is still in effect, without this screen having spent an SPIFFS write to erase it.
-  const bool smaller =
-      SETTINGS.translationSize == CrossPointSettings::SIZE_SMALLER && SETTINGS.smallerReaderFontId() != 0;
+  // Takes the value rather than reading a field, so the three per-mode rows cannot diverge in how
+  // they present it.
+  const bool smaller = storedSize == CrossPointSettings::SIZE_SMALLER && SETTINGS.smallerReaderFontId() != 0;
   return I18N.get(smaller ? StrId::STR_SIZE_SMALLER : StrId::STR_SIZE_SAME);
 }
 
@@ -520,8 +539,12 @@ void PreTranslationSubmenuActivity::render(RenderLock&&) {
             return pageTranslationButtonsLabel();
           case Action::CYCLE_TRANSLATION_COLOUR:
             return translationColourLabel();
-          case Action::CYCLE_TRANSLATION_SIZE:
-            return translationSizeLabel();
+          case Action::CYCLE_INTERLEAVED_SIZE:
+            return translationSizeLabel(SETTINGS.interleavedTranslationSize);
+          case Action::CYCLE_TOOLTIP_SIZE:
+            return translationSizeLabel(SETTINGS.tooltipTranslationSize);
+          case Action::CYCLE_PAGE_TRANSLATION_SIZE:
+            return translationSizeLabel(SETTINGS.pageTranslationSize);
           case Action::PICK_TARGET_LANG:
             return targetLangLabel();
           case Action::PICK_SOURCE_LANG:

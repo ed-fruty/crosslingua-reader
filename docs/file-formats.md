@@ -138,9 +138,12 @@ one field:
   The byte occupies the same header slot as the old mode byte but is *not* the
   same value space, so v37 files must be rejected rather than reinterpreted.
 - **`translationFontId`** is added as an `s32` immediately after `fontId`. It is
-  the font translated text is laid out in (`0` = same as the body font). Unlike
-  the drawing-only shade, a distinct font changes word measurement and hence
-  line breaking, so it belongs in the cache key. It is stamped as `0` whenever
+  the font translated text is laid out in (`0` = same as the body font),
+  resolved from the *Interleaved* mode's own size setting; the Tooltip and Page
+  Translation sizes are separate settings, composited at view time, and never
+  reach this field. Unlike the drawing-only shade, a distinct font changes word
+  measurement and hence line breaking, so it belongs in the cache key. It is
+  stamped as `0` whenever
   the (effective) layout is `OriginalOnly`: that layout drops every translated
   word, so no line in the resulting pages was measured in the translation font
   and no value of it could move a line break. The lookup normalizes the same

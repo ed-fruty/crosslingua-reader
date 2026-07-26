@@ -208,8 +208,14 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
 
   // Pre-Translation: type size of the TRANSLATED text relative to the book's own text.
   // SIZE_SMALLER means one step DOWN the active family's point-size ladder, resolved by
-  // smallerReaderFontId(). It is a LAYOUT difference (narrower glyphs re-break lines), so unlike
-  // the shade it DOES enter the section cache key, via getTranslationFontId().
+  // smallerReaderFontId().
+  // ONE ENUM, THREE INDEPENDENT FIELDS: the value space is shared, the choice is not. Each mode
+  // that shows translated text owns its own stored size (interleavedTranslationSize,
+  // tooltipTranslationSize, pageTranslationSize) because the three answer different questions and
+  // have different costs — the Interleaved size is a LAYOUT difference (narrower glyphs re-break
+  // lines) and so enters the section cache key, while the two overlay sizes are composited at view
+  // time over an unchanged page and must NOT invalidate anything. Sharing one field made shrinking
+  // the tooltip silently re-lay out the whole book.
   // AVAILABILITY: SIZE_SMALLER is only offered when the active family actually ships a smaller
   // face; where it does not, smallerReaderFontId() returns 0 and everything behaves as SIZE_SAME
   // without the stored value being rewritten (see smallerReaderFontId()).
@@ -367,9 +373,19 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t translationDisplayMode = PT_NORMAL;
   // Interleaved-mode (PT_INTERLEAVED) translated-text colour. Drawing-only; see TRANSLATION_SHADE.
   uint8_t translationShade = SHADE_DIMMED;
-  // Translated-text type size, shared by every mode that shows translated text (Interleaved inline,
-  // Tooltip and Page Translation in their overlays). Layout-affecting; see TRANSLATION_SIZE.
-  uint8_t translationSize = SIZE_SAME;
+  // Translated-text type size — ONE field per mode that shows translated text, never shared (see
+  // TRANSLATION_SIZE). The defaults differ on purpose and each is the mode's own pre-existing
+  // behaviour, so an upgrade changes nothing on screen:
+  //  - Interleaved draws the translation in the main flow, where a smaller face would re-break every
+  //    line; it has always matched the body text, so SIZE_SAME.
+  //  - Tooltip and Page Translation composite an overlay over the page, and both have ALWAYS drawn it
+  //    one step down the ladder (getTooltipFontId() called smallerReaderFontId() unconditionally
+  //    before the row existed), so SIZE_SMALLER. Defaulting these to Same would have handed every
+  //    existing user body-size overlays on upgrade.
+  // These three defaults are mirrored in fromJson(); keep the pairs in sync.
+  uint8_t interleavedTranslationSize = SIZE_SAME;
+  uint8_t tooltipTranslationSize = SIZE_SMALLER;
+  uint8_t pageTranslationSize = SIZE_SMALLER;
   // Tooltip display mode (PT_TOOLTIP) controls. Ported from the upstream fork.
   // tooltipButtons: which button pair steps through per-sentence tooltips (OVERLAY_BUTTONS).
   //   Default SIDE — the page-turn pair reads as the natural "next sentence" control.
@@ -462,10 +478,19 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // chapter out. A switch with no `default:` case, so -Wswitch flags an unmapped future mode.
   static PtLayout ptLayoutForDisplayMode(uint8_t mode);
 
-  // Pre-Translation: font id the TRANSLATED text is laid out in, or 0 for "same as the body font".
-  // Feeds BOTH the cache key (ReaderRenderSpec::translationFontId) and the render-time font set,
-  // so the two can never disagree about what a cached page was measured with.
-  int getTranslationFontId() const;
+  // Pre-Translation: font id the TRANSLATED text is drawn in, or 0 for "same as the body font".
+  // THREE resolvers, one per owning mode — deliberately not one shared accessor, so that the
+  // layout-affecting choice and the two view-time ones cannot be confused at a call site.
+  //
+  // LAYOUT (Interleaved): the ONLY one that reaches the cache. It feeds BOTH the section cache key
+  // (ReaderRenderSpec::translationFontId) and the render-time font set (readerPageFontSet), so the
+  // two can never disagree about what a cached page was measured with.
+  int getInterleavedTranslationFontId() const;
+  // VIEW TIME (Tooltip / Page Translation): composited over an already-laid-out page, so neither may
+  // appear in a ReaderRenderSpec — changing one must not invalidate a single cached chapter. Read
+  // only by getTooltipFontId() / getPageTranslationFontId(), which turn 0 into the body font.
+  int getTooltipTranslationFontId() const;
+  int getPageTranslationOverlayFontId() const;
 
   // THE construction point for the reader's per-role font ids. Every path that draws a Page must
   // build its PageFontSet here, so pages are drawn with exactly the ids readerRenderSpec() keyed
@@ -482,6 +507,11 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   float getReaderLineCompression() const;
   unsigned long getSleepTimeoutMs() const;
   int getRefreshFrequency() const;
+
+ private:
+  // THE single TRANSLATION_SIZE -> font id rule behind all three accessors above: SIZE_SAME (and a
+  // SIZE_SMALLER the active family cannot honour) resolve to 0, the "same as the body font" signal.
+  int translationFontIdForSize(uint8_t sizeSetting) const;
 };
 
 // Helper macro to access settings

@@ -1116,17 +1116,19 @@ void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId,
 // SMALL/MEDIUM/LARGE slot, so "one smaller" means the previous entry in the active family's
 // selectable point sizes rather than an enum decrement.
 //
-// The setting is read through CrossPointSettings::getTranslationFontId(), the ONE resolver for "the
-// font translated text is shown in": it returns 0 both for SIZE_SAME and for a SIZE_SMALLER that
-// cannot be honoured (every SD family, and a built-in already at its smallest point size, ship no
-// smaller face — which is also why the Lingua row reads Same and refuses to cycle there). Reading it
-// here rather than smallerReaderFontId() directly is what makes the row mean something in Tooltip
-// and Page Translation; before, both ignored it and always stepped down.
+// The size is read through CrossPointSettings::getTooltipTranslationFontId() — the TOOLTIP's own
+// stored size, not a value shared with the inline modes: the tooltip is composited over a finished
+// page, so its size must not be able to re-break a line of the book (see TRANSLATION_SIZE). It
+// returns 0 both for SIZE_SAME and for a SIZE_SMALLER that cannot be honoured (every SD family, and
+// a built-in already at its smallest point size, ship no smaller face — which is also why the Lingua
+// row reads Same and refuses to cycle there). Reading the setting here rather than
+// smallerReaderFontId() directly is what makes the row mean something; before the row existed this
+// stepped down unconditionally, which is exactly why tooltipTranslationSize defaults to SIZE_SMALLER.
 //
 // 0 becomes getReaderFontId() — the body font — which also keeps renderOverlayFrame's
 // overlayFontId == fontId fast path (one shared prewarm for page + overlay) intact for SIZE_SAME.
 
 int getTooltipFontId() {
-  const int translationFontId = SETTINGS.getTranslationFontId();
+  const int translationFontId = SETTINGS.getTooltipTranslationFontId();
   return translationFontId != 0 ? translationFontId : SETTINGS.getReaderFontId();
 }

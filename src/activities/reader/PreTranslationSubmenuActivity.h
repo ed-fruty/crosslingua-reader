@@ -56,8 +56,12 @@ class PreTranslationSubmenuActivity final : public Activity {
     CYCLE_PAGE_TRANSLATION_BUTTONS,
     // Interleaved mode (PT_INTERLEAVED) control: gray level translated words are drawn at.
     CYCLE_TRANSLATION_COLOUR,
-    // Shared by every mode that shows translated text: its type size relative to the body text.
-    CYCLE_TRANSLATION_SIZE,
+    // Translated-text type size relative to the body text. THREE actions, one per owning mode, each
+    // bound to that mode's own stored field — not one action over a shared field, which made the
+    // tooltip row silently retune the Interleaved layout (and invalidate its section cache).
+    CYCLE_INTERLEAVED_SIZE,
+    CYCLE_TOOLTIP_SIZE,
+    CYCLE_PAGE_TRANSLATION_SIZE,
   };
 
   explicit PreTranslationSubmenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
@@ -100,6 +104,9 @@ class PreTranslationSubmenuActivity final : public Activity {
   // onEnter() and from each child-activity result handler.
   void rebuildAfterReturn();
   void onActionSelected(Action a);
+  // Advances one of the three per-mode size fields, or does nothing when the active family ships no
+  // smaller face. Shared so the availability rule and the SPIFFS-write guard exist in ONE place.
+  void cycleTranslationSize(uint8_t& storedSize);
 
   // Dynamic right-hand value labels for the list rows.
   const char* displayModeLabel() const;
@@ -110,7 +117,8 @@ class PreTranslationSubmenuActivity final : public Activity {
   const char* tooltipBehaviorLabel() const;
   const char* pageTranslationButtonsLabel() const;
   const char* translationColourLabel() const;
-  const char* translationSizeLabel() const;
+  // Value label for any of the three Size rows: pass the mode's own stored TRANSLATION_SIZE.
+  const char* translationSizeLabel(uint8_t storedSize) const;
   // Writes a masked representation of the API key into `out`.
   void maskedApiKey(char* out, size_t outSize) const;
 
