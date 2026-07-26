@@ -1329,7 +1329,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     // Pre-Translation auto-fallback. A non-Normal display mode is active but THIS chapter has no
     // committed translation, so Section lays it out in Normal (see Section::effectiveTranslationMode).
     // Rather than silently downgrading just this one chapter, we PERSIST the switch: set the display
-    // mode to Normal and save it. The user's mental model then matches reality -- the Bilingua menu
+    // mode to Normal and save it. The user's mental model then matches reality -- the Lingua menu
     // shows Normal, every chapter renders the same way, and to get bilingual output again the user
     // downloads a translation and re-enables the mode they want.
     //
@@ -1902,7 +1902,7 @@ void EpubReaderActivity::renderContents(Page& page, const int orientedMarginTop,
   // displayWithRefreshCycle (handleForcedRefresh also set pagesUntilFullRefresh = 1, so the frame
   // goes out HALF); only the image branch further down bypasses that cadence, so it needs the
   // captured bool to issue its own clean base pass. Clearing below the early-return would leave the
-  // flag latched for every press made while a Bilingua overlay is open, firing a spurious extra
+  // flag latched for every press made while a Lingua overlay is open, firing a spurious extra
   // full-screen HALF_REFRESH on the next image page rendered without an overlay.
   const bool manualRefreshPending = forcedRefreshPending;
   forcedRefreshPending = false;
@@ -2393,7 +2393,7 @@ void EpubReaderActivity::armFallbackDialog() {
 }
 
 void EpubReaderActivity::drawFallbackDialog() const {
-  // Full-screen confirm/prompt-style modal (matches ClearCacheActivity and the Bilingua submenu):
+  // Full-screen confirm/prompt-style modal (matches ClearCacheActivity and the Lingua submenu):
   // header + centered wrapped message + a single OK/Back button hint. ONE clearScreen + ONE
   // displayBuffer, so it never composites a second refresh over a page refresh.
   const auto& metrics = UITheme::getInstance().getMetrics();

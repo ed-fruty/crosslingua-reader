@@ -44,7 +44,7 @@ class BookTranslatorActivity final : public Activity {
     DONE,
     // Post-success chooser: when at least one chapter was translated, this replaces the DONE
     // screen so the user can enable a bilingual display mode without diving back into the
-    // Bilingua submenu (a no-translation fallback leaves the mode at PT_NORMAL). Confirm
+    // Lingua submenu (a no-translation fallback leaves the mode at PT_NORMAL). Confirm
     // persists the highlighted mode; Back skips. Both exit via the normal returnToCaller().
     CHOOSE_DISPLAY_MODE,
     FAILED,

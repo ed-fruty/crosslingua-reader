@@ -425,7 +425,7 @@ STR_FIRMWARE_UPDATE_DO_NOT_POWER_OFF: "Do not power off!"
 STR_RECOVERY_MODE: "Recovery Mode"
 STR_RECOVERY_MODE_HINT: "Place firmware.bin on SD card root and select it"
 
-STR_PRE_TRANSLATION: "Bilingua"
+STR_PRE_TRANSLATION: "Lingua"
 STR_DISPLAY_MODE: "Display Mode"
 STR_CHOOSE_DISPLAY_MODE: "Choose display mode"
 STR_DELETE_TRANSLATIONS: "Delete Translations"

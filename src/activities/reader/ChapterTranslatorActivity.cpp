@@ -578,7 +578,7 @@ void ChapterTranslatorActivity::loop() {
   }
 
   // Display-mode chooser: Up/Down move the highlight, Confirm persists the choice (guarded
-  // save, mirroring the Bilingua submenu) and exits, Back skips and exits. Both exits use the
+  // save, mirroring the Lingua submenu) and exits, Back skips and exits. Both exits use the
   // normal return path so the relaunched reader picks up the mode from settings.
   if (state == CHOOSE_DISPLAY_MODE) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
@@ -745,7 +745,7 @@ void ChapterTranslatorActivity::render(RenderLock&&) {
 void ChapterTranslatorActivity::renderDisplayModeChooser() {
   renderer.clearScreen();
 
-  // Same header + list + hints layout the Bilingua submenu uses, so it stays orientation-aware
+  // Same header + list + hints layout the Lingua submenu uses, so it stays orientation-aware
   // in all 4 modes via the UITheme safe area / metrics (no hardcoded pixel coordinates).
   const auto& metrics = UITheme::getInstance().getMetrics();
   const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, /*hasFrontButtonHints=*/true,

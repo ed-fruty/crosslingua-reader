@@ -409,7 +409,7 @@ STR_RECOVERY_MODE_HINT: "Đặt firmware.bin ở thư mục gốc thẻ SD rồi
 STR_ADD_HIDDEN_NETWORK: "Thêm mạng ẩn..."
 STR_ENTER_WIFI_SSID: "Nhập tên mạng (SSID)"
 
-STR_PRE_TRANSLATION: "Bilingua"
+STR_PRE_TRANSLATION: "Lingua"
 STR_DISPLAY_MODE: "Chế độ hiển thị"
 STR_CHOOSE_DISPLAY_MODE: "Chọn chế độ hiển thị"
 STR_DELETE_TRANSLATIONS: "Xóa bản dịch"

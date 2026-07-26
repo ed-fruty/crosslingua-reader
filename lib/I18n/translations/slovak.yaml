@@ -392,7 +392,7 @@ STR_RECOVERY_MODE_HINT: "Umiestnite firmware.bin do koreňového adresára SD ka
 STR_ADD_HIDDEN_NETWORK: "Pridať skrytú sieť..."
 STR_ENTER_WIFI_SSID: "Zadajte názov siete (SSID)"
 
-STR_PRE_TRANSLATION: "Bilingua"
+STR_PRE_TRANSLATION: "Lingua"
 STR_DISPLAY_MODE: "Režim zobrazenia"
 STR_CHOOSE_DISPLAY_MODE: "Zvoľte režim zobrazenia"
 STR_DELETE_TRANSLATIONS: "Odstrániť preklady"

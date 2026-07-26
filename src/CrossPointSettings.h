@@ -339,7 +339,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // tooltipBehavior: what stepping does at a page boundary (TOOLTIP_NAVIGATION).
   //   Default TURN_PAGE — stepping past the last sentence turns the page and continues.
   // Persisted manually in toJson/fromJson alongside the other Pre-Translation fields (they are
-  // edited from the Bilingua submenu, not the generic on-device Settings list).
+  // edited from the Lingua submenu, not the generic on-device Settings list).
   uint8_t tooltipButtons = OVERLAY_BUTTONS_SIDE;
   uint8_t tooltipBehavior = TOOLTIP_NAV_TURN_PAGE;
   // Modal display mode (PT_MODAL) control: which button pair scrolls/closes the OPEN modal

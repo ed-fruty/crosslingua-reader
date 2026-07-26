@@ -286,7 +286,7 @@ STR_TILT_PAGE_TURN: "Sivunkääntö kallistamalla"
 STR_ADD_HIDDEN_NETWORK: "Lisää piilotettu verkko..."
 STR_ENTER_WIFI_SSID: "Anna verkon nimi (SSID)"
 
-STR_PRE_TRANSLATION: "Bilingua"
+STR_PRE_TRANSLATION: "Lingua"
 STR_DISPLAY_MODE: "Näyttötila"
 STR_CHOOSE_DISPLAY_MODE: "Valitse näyttötila"
 STR_DELETE_TRANSLATIONS: "Poista käännökset"
