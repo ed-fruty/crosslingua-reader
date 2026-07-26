@@ -1331,7 +1331,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   buildViewportWidth = viewportWidth;
   buildViewportHeight = viewportHeight;
 
-  const ReaderRenderSpec renderSpec = SETTINGS.readerRenderSpec(viewportWidth, viewportHeight);
+  ReaderRenderSpec renderSpec = SETTINGS.readerRenderSpec(viewportWidth, viewportHeight);
 
   if (!section) {
     const auto filepath = epub->getSpineItem(currentSpineIndex).href;
@@ -1356,13 +1356,19 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     // after it, the setting IS Normal, so the gate below (renderSpec/SETTINGS both Normal) is never
     // true again until the user deliberately re-enables a bilingual mode.
     //
-    // Same-pass safety: renderSpec was computed above (readerRenderSpec) from the OLD mode and every
-    // build in this `if (!section)` block uses that captured spec; Section::effectiveLayout has
-    // already mapped this untranslated chapter to the Both layout and the Both cache key, so the
-    // setting write here changes NO build input for this pass and forces no second rebuild. It also
-    // does not touch pendingModeReposition (that is only for the submenu-return relayout), so no
-    // reposition machinery fires. Subsequent chapter loads recompute renderSpec from SETTINGS and
-    // see PT_NORMAL, gating out further toasts.
+    // Same-pass safety: the write DOES change a build input. renderSpec.translationFontId is
+    // mode-derived (CrossPointSettings::getInterleavedTranslationFontId() returns non-zero only while
+    // PT_INTERLEAVED is active) and readerPageFontSet() -- read fresh at draw time in
+    // renderContents() -- resolves through the same accessor. renderSpec was computed above from the
+    // OLD mode, so if it were left as-is, any line the parser tags Translation (a lang-mismatched
+    // block in the chapter's own original HTML; Section::effectiveLayout forces the Both layout here,
+    // which is the one layout that tags such lines) would be BUILT/measured under the old mode's
+    // translation font while every draw resolves the same line back to the (now Normal) body font --
+    // wrong word x-positions, line height and page breaks. So renderSpec is re-resolved immediately
+    // below, before section->loadSectionFile() and every build call in this `if (!section)` block, to
+    // match what draw time will use. It does not touch pendingModeReposition (that is only for the
+    // submenu-return relayout), so no reposition machinery fires. Subsequent chapter loads recompute
+    // renderSpec from SETTINGS and see PT_NORMAL, gating out further toasts.
     //
     // This is the single, cache-state-independent trigger for every user-facing entry into a chapter:
     // the enclosing `if (!section)` block runs exactly once per section (re)creation, i.e. once per
@@ -1388,6 +1394,10 @@ void EpubReaderActivity::render(RenderLock&& lock) {
         // mode is non-Normal, so this assignment always changes the value before we write to SPIFFS.
         SETTINGS.translationDisplayMode = CrossPointSettings::PT_NORMAL;
         SETTINGS.saveToFile();
+        // Re-resolve renderSpec against the just-persisted mode BEFORE any build call below reads it
+        // (loadSectionFile / createSectionFile / startBuild): translationFontId is mode-derived, so the
+        // spec captured under the old mode is now stale. See the "Same-pass safety" note above.
+        renderSpec = SETTINGS.readerRenderSpec(viewportWidth, viewportHeight);
         armFallbackDialog();
       }
     }
