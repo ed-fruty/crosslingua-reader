@@ -1,4 +1,4 @@
-#include "ModalOverlay.h"
+#include "PageTranslationOverlay.h"
 
 #include <CrossPointSettings.h>
 #include <Epub/hyphenation/Hyphenator.h>
@@ -13,20 +13,20 @@
 
 #include "SentenceSplitter.h"
 #include "TextNormalize.h"
-#include "TooltipOverlay.h"  // getTooltipFontId() — the modal shares the tooltip's reader-derived font
+#include "TooltipOverlay.h"  // getTooltipFontId() — Page Translation shares the tooltip's font
 #include "activities/translator/LanguagePickerActivity.h"
 #include "fontIds.h"
 
 // ── State management ─────────────────────────────────────────────────────────
 
-void ModalOverlay::setTranslatedHtmlPath(const std::string& path) { translatedHtmlPath = path; }
+void PageTranslationOverlay::setTranslatedHtmlPath(const std::string& path) { translatedHtmlPath = path; }
 
-void ModalOverlay::open() {
+void PageTranslationOverlay::open() {
   active = true;
   scrollOffset = 0;
 }
 
-void ModalOverlay::onSectionChanged() {
+void PageTranslationOverlay::onSectionChanged() {
   active = false;
   scrollOffset = 0;
   totalContentHeight = 0;
@@ -35,7 +35,7 @@ void ModalOverlay::onSectionChanged() {
   translatedCount = 0;
 }
 
-void ModalOverlay::onPageChanged() {
+void PageTranslationOverlay::onPageChanged() {
   active = false;
   scrollOffset = 0;
   totalContentHeight = 0;
@@ -47,7 +47,7 @@ void ModalOverlay::onPageChanged() {
 // Sentence math (countSentences / trimToSentences / trimToLastSentences /
 // countSentencesBefore) lives in SentenceSplitter, reimplemented over the shared
 // textnorm canonical fold — the same single source of sentence-boundary truth the
-// word-span splitter uses. The modal only wraps those helpers here.
+// word-span splitter uses. This overlay only wraps those helpers here.
 
 // ── HTML parsing: extract (original, translation) paragraph pairs ─────────────
 //
@@ -65,8 +65,8 @@ void ModalOverlay::onPageChanged() {
 //      paragraphs that can be partially visible and need countSentencesBefore().
 //   4. XML_StopParser() once past wantLast so expat bails without scanning the rest of the
 //      chapter. Peak heap stays under ~5 KB even for long chapters.
-struct ModalParseCtx {
-  std::vector<ModalOverlay::ParagraphPair>* entries;
+struct PageTranslationParseCtx {
+  std::vector<PageTranslationOverlay::ParagraphPair>* entries;
   int wantFirst = 0;
   int wantLast = 0;
   // Tracks the original (non-translation) paragraph index — matches the chapter parser's
@@ -89,11 +89,11 @@ struct ModalParseCtx {
 };
 
 // Push currentText as a finished original paragraph entry and advance
-// paragraphCounter — same body as the original branch in modalOnEnd, factored
-// out so <br/> handling in modalOnStart can reuse it. Whitespace-only text is
+// paragraphCounter — same body as the original branch in pageTranslationOnEnd, factored
+// out so <br/> handling in pageTranslationOnStart can reuse it. Whitespace-only text is
 // dropped (no counter increment), matching ChapterHtmlSlimParser which skips
 // empty blocks.
-static void flushOriginalParagraph(ModalParseCtx* ctx) {
+static void flushOriginalParagraph(PageTranslationParseCtx* ctx) {
   auto& t = ctx->currentText;
   while (!t.empty() && (t.front() == ' ' || t.front() == '\n')) t.erase(0, 1);
   while (!t.empty() && (t.back() == ' ' || t.back() == '\n')) t.pop_back();
@@ -112,7 +112,7 @@ static void flushOriginalParagraph(ModalParseCtx* ctx) {
     return;
   }
   const bool needsOrigText = (idx == ctx->wantFirst || idx == ctx->wantLast);
-  ModalOverlay::ParagraphPair entry;
+  PageTranslationOverlay::ParagraphPair entry;
   entry.paragraphIdx = static_cast<int16_t>(idx);
   entry.origSentenceCount = static_cast<int16_t>(countSentences(t));
   if (needsOrigText) {
@@ -136,7 +136,7 @@ static bool hasVisibleText(const std::string& s) {
 // <li><table>…</table></li>) — is still a NON-empty block it counts as one (bullet-only) paragraph.
 // Seed the same bullet just before ANY flush of the current block so the reparser counts it too;
 // a no-op when the block is not an <li> or already has real text.
-static void seedLiBulletIfEmpty(ModalParseCtx* ctx) {
+static void seedLiBulletIfEmpty(PageTranslationParseCtx* ctx) {
   if (ctx->currentBlockIsLi && !hasVisibleText(ctx->currentText)) {
     ctx->currentText = "\xe2\x80\xa2";
   }
@@ -160,19 +160,19 @@ static bool imgSrcDecodable(const char* src) {
   return ext == ".jpg" || ext == ".jpeg" || ext == ".png";
 }
 
-static void XMLCALL modalOnStart(void* ud, const XML_Char* name, const XML_Char** atts) {
-  auto* ctx = static_cast<ModalParseCtx*>(ud);
+static void XMLCALL pageTranslationOnStart(void* ud, const XML_Char* name, const XML_Char** atts) {
+  auto* ctx = static_cast<PageTranslationParseCtx*>(ud);
 
   // Inside a skipped subtree (table cell / undecodable-image alt content): swallow every nested
   // element so it can never contribute a paragraph, exactly like ChapterHtmlSlimParser's
-  // skipUntilDepth. Balanced by the matching drops in modalOnEnd.
+  // skipUntilDepth. Balanced by the matching drops in pageTranslationOnEnd.
   if (ctx->skipDepth > 0) {
     ctx->skipDepth++;
     return;
   }
 
   // <br/> — a hard break is an EMPTY, NO-SCOPE element: it never opens a scope, so it must NEVER
-  // touch blockDepth (modalOnEnd skips its self-close too, keeping the count balanced in ALL
+  // touch blockDepth (pageTranslationOnEnd skips its self-close too, keeping the count balanced in ALL
   // cases). In an ORIGINAL block it ends the current paragraph in place so the counter advances
   // exactly as ChapterHtmlSlimParser does on <br/>; in a TRANSLATION block it is just an internal
   // line break, so keep accumulating (no flush).
@@ -207,7 +207,7 @@ static void XMLCALL modalOnStart(void* ud, const XML_Char* name, const XML_Char*
   // <img> — a decodable image (.jpg/.jpeg/.png) renders with NO paragraph; an undecodable image
   // (any other src, or none) WITH alt text falls back to a single "[Image: …]" paragraph. Match
   // both so images never drift the count. An image is otherwise a no-scope empty element, so
-  // (like <br/>) it must not touch blockDepth — modalOnEnd treats <img> as a no-op.
+  // (like <br/>) it must not touch blockDepth — pageTranslationOnEnd treats <img> as a no-op.
   if (strcmp(name, "img") == 0) {
     const char* src = nullptr;
     const char* alt = nullptr;
@@ -280,8 +280,8 @@ static void XMLCALL modalOnStart(void* ud, const XML_Char* name, const XML_Char*
   }
 }
 
-static void XMLCALL modalOnEnd(void* ud, const XML_Char* name) {
-  auto* ctx = static_cast<ModalParseCtx*>(ud);
+static void XMLCALL pageTranslationOnEnd(void* ud, const XML_Char* name) {
+  auto* ctx = static_cast<PageTranslationParseCtx*>(ud);
   // Leaving a skipped subtree (table cell / undecodable-image alt content). The matching close of
   // the <table>/<img> that opened the skip brings skipDepth back to 0. Mirrors skipUntilDepth.
   if (ctx->skipDepth > 0) {
@@ -289,7 +289,7 @@ static void XMLCALL modalOnEnd(void* ud, const XML_Char* name) {
     return;
   }
   // <br/> is an empty element: expat fires a matching end event for it. It has no
-  // scope (modalOnStart already flushed the paragraph in place and left blockDepth
+  // scope (pageTranslationOnStart already flushed the paragraph in place and left blockDepth
   // untouched), so ignore it here. Otherwise it would decrement blockDepth, close
   // the enclosing block one tag early, drop post-<br/> text, and drift the counter.
   if (paraboundary::isHardBreak(name)) return;
@@ -319,8 +319,8 @@ static void XMLCALL modalOnEnd(void* ud, const XML_Char* name) {
   ctx->currentBlockIsLi = false;
 }
 
-static void XMLCALL modalOnText(void* ud, const XML_Char* s, int len) {
-  auto* ctx = static_cast<ModalParseCtx*>(ud);
+static void XMLCALL pageTranslationOnText(void* ud, const XML_Char* s, int len) {
+  auto* ctx = static_cast<PageTranslationParseCtx*>(ud);
   if (ctx->skipDepth > 0) return;  // text inside a skipped table cell / image subtree
   if (!ctx->inBlock) return;
   // Canonicalize inter-token separators to a single ASCII space so origText and
@@ -375,32 +375,32 @@ static void XMLCALL modalOnText(void* ud, const XML_Char* s, int len) {
   }
 }
 
-static std::vector<ModalOverlay::ParagraphPair> parseChapterHtml(const std::string& htmlPath, int wantFirst,
-                                                                 int wantLast) {
-  std::vector<ModalOverlay::ParagraphPair> entries;
+static std::vector<PageTranslationOverlay::ParagraphPair> parseChapterHtml(const std::string& htmlPath, int wantFirst,
+                                                                           int wantLast) {
+  std::vector<PageTranslationOverlay::ParagraphPair> entries;
 
   if (htmlPath.empty()) return entries;
 
   HalFile file;
-  if (!Storage.openFileForRead("MOD", htmlPath, file)) {
-    LOG_ERR("MOD", "Cannot open %s", htmlPath.c_str());
+  if (!Storage.openFileForRead("PGT", htmlPath, file)) {
+    LOG_ERR("PGT", "Cannot open %s", htmlPath.c_str());
     return entries;
   }
 
   XML_Parser parser = XML_ParserCreate(nullptr);
   if (!parser) {
-    LOG_ERR("MOD", "Failed to create expat parser");
+    LOG_ERR("PGT", "Failed to create expat parser");
     return entries;
   }
 
-  ModalParseCtx ctx;
+  PageTranslationParseCtx ctx;
   ctx.entries = &entries;
   ctx.wantFirst = wantFirst;
   ctx.wantLast = wantLast;
   ctx.parser = parser;
   XML_SetUserData(parser, &ctx);
-  XML_SetElementHandler(parser, modalOnStart, modalOnEnd);
-  XML_SetCharacterDataHandler(parser, modalOnText);
+  XML_SetElementHandler(parser, pageTranslationOnStart, pageTranslationOnEnd);
+  XML_SetCharacterDataHandler(parser, pageTranslationOnText);
 
   char buf[1024];
   bool done = false;
@@ -415,13 +415,13 @@ static std::vector<ModalOverlay::ParagraphPair> parseChapterHtml(const std::stri
       if (XML_GetErrorCode(parser) == XML_ERROR_ABORTED) {
         stopped = true;
       } else {
-        LOG_ERR("MOD", "XML parse error at line %lu", XML_GetCurrentLineNumber(parser));
+        LOG_ERR("PGT", "XML parse error at line %lu", XML_GetCurrentLineNumber(parser));
       }
       break;
     }
   }
   XML_ParserFree(parser);
-  LOG_DBG("MOD", "Parsed %d pair(s) in [%d..%d] from %s%s", (int)entries.size(), wantFirst, wantLast, htmlPath.c_str(),
+  LOG_DBG("PGT", "Parsed %d pair(s) in [%d..%d] from %s%s", (int)entries.size(), wantFirst, wantLast, htmlPath.c_str(),
           stopped ? " (early-stop)" : "");
   return entries;
 }
@@ -436,8 +436,9 @@ static std::vector<ModalOverlay::ParagraphPair> parseChapterHtml(const std::stri
 // per-sentence alignment would be unreliable: no detectable translation sentences
 // (transSentenceCount == 0 treated as ordinary), or source vs. translation
 // sentence totals differ by more than one (large skew => do not mis-slice).
-static std::string sliceTranslationForPage(const ModalOverlay::ParagraphPair& pair, const std::string& visibleText,
-                                           int visibleSentences, bool isFirst, bool isLast) {
+static std::string sliceTranslationForPage(const PageTranslationOverlay::ParagraphPair& pair,
+                                           const std::string& visibleText, int visibleSentences, bool isFirst,
+                                           bool isLast) {
   const int transTotal = pair.transSentenceCount;
   const int origTotal = pair.origSentenceCount;
 
@@ -466,7 +467,7 @@ static std::string sliceTranslationForPage(const ModalOverlay::ParagraphPair& pa
   return trimmed;
 }
 
-void ModalOverlay::collectPageGlyphText(const Page& page, std::string& out) {
+void PageTranslationOverlay::collectPageGlyphText(const Page& page, std::string& out) {
   preparePage(page);  // idempotent (pagePrepared guard); render() will find it already done
   size_t need = 0;
   bool anyUntranslated = false;
@@ -484,7 +485,7 @@ void ModalOverlay::collectPageGlyphText(const Page& page, std::string& out) {
   if (anyUntranslated) out += marker;  // dim marker line drawn for each source-fallback paragraph
 }
 
-void ModalOverlay::preparePage(const Page& page) {
+void PageTranslationOverlay::preparePage(const Page& page) {
   if (pagePrepared) return;
   pagePrepared = true;
   pageParagraphs.clear();
@@ -492,10 +493,10 @@ void ModalOverlay::preparePage(const Page& page) {
   totalContentHeight = 0;
 
   // The page knows exactly which paragraph indices it contains (set by the parser).
-  LOG_DBG("MOD", "Page paragraph indices: first=%d last=%d", page.firstParagraphIdx, page.lastParagraphIdx);
+  LOG_DBG("PGT", "Page paragraph indices: first=%d last=%d", page.firstParagraphIdx, page.lastParagraphIdx);
 
   if (page.firstParagraphIdx < 0 || page.lastParagraphIdx < 0) {
-    LOG_DBG("MOD", "Page has no paragraph indices (old cache?) — clear cache and retry");
+    LOG_DBG("PGT", "Page has no paragraph indices (old cache?) — clear cache and retry");
     return;
   }
 
@@ -503,7 +504,7 @@ void ModalOverlay::preparePage(const Page& page) {
   // freed after this function; only boundary paragraphs retain origText, bounding
   // peak RAM to ~5 KB. May be EMPTY (untranslated page) — we still source-fill
   // every visible paragraph below and let the render() guard decide whether to
-  // open the modal at all.
+  // open the overlay at all.
   auto pairs = parseChapterHtml(translatedHtmlPath, page.firstParagraphIdx, page.lastParagraphIdx);
 
   // Per-paragraph VISIBLE text from the page's lines, keyed by paragraphIdx. This
@@ -550,7 +551,7 @@ void ModalOverlay::preparePage(const Page& page) {
     if (visiblePtr == nullptr) continue;  // image/gap index with no visible text line — nothing to show
     const std::string& visibleText = *visiblePtr;
 
-    const ModalOverlay::ParagraphPair* pair = nullptr;
+    const PageTranslationOverlay::ParagraphPair* pair = nullptr;
     for (const auto& p : pairs) {
       if (p.paragraphIdx == idx) {
         pair = &p;
@@ -604,7 +605,7 @@ void ModalOverlay::preparePage(const Page& page) {
         const std::string foldedOrig = textnorm::foldForMatch(pair->origText);
         if (foldedOrig.find(needle) == std::string::npos) {
           if (!boundaryErrLogged) {
-            LOG_ERR("MOD", "boundary drift at idx %d: visible text not in source paragraph — source fallback", idx);
+            LOG_ERR("PGT", "boundary drift at idx %d: visible text not in source paragraph — source fallback", idx);
             boundaryErrLogged = true;
           }
           forceSource = true;
@@ -638,18 +639,18 @@ void ModalOverlay::preparePage(const Page& page) {
     }
   }
 
-  LOG_DBG("MOD", "Result: %d paragraph(s), %d translated", (int)pageParagraphs.size(), (int)translatedCount);
+  LOG_DBG("PGT", "Result: %d paragraph(s), %d translated", (int)pageParagraphs.size(), (int)translatedCount);
 }
 
 // ── Button handling ──────────────────────────────────────────────────────────
 //
-// Which pair scrolls/closes the OPEN modal is configurable (SETTINGS.modalButtons):
+// Which pair scrolls/closes the OPEN overlay is configurable (SETTINGS.pageTranslationButtons):
 // SIDE (default) uses PageBack/PageForward, FRONT uses Left/Right. The "longpress-opens-overlay"
 // gesture is NOT handled here: it is detected by EpubReaderActivity (always on the side pair),
-// which calls ModalOverlay::open() externally. Back always dismisses.
+// which calls PageTranslationOverlay::open() externally. Back always dismisses.
 
-bool ModalOverlay::handleInput(MappedInputManager& input) {
-  const bool useFrontButtons = (SETTINGS.modalButtons == CrossPointSettings::OVERLAY_BUTTONS_FRONT);
+bool PageTranslationOverlay::handleInput(MappedInputManager& input) {
+  const bool useFrontButtons = (SETTINGS.pageTranslationButtons == CrossPointSettings::OVERLAY_BUTTONS_FRONT);
   const auto nextBtn = useFrontButtons ? MappedInputManager::Button::Right : MappedInputManager::Button::PageForward;
   const auto backBtn = useFrontButtons ? MappedInputManager::Button::Left : MappedInputManager::Button::PageBack;
 
@@ -660,13 +661,13 @@ bool ModalOverlay::handleInput(MappedInputManager& input) {
     const int vpH = cachedViewportHeight > 0 ? cachedViewportHeight : 700;
     const int screenScroll = (vpH / lh) * lh;
     const int maxScroll = std::max(0, (int)totalContentHeight - vpH);
-    LOG_DBG("MOD", "SCROLL NEXT: offset %d -> %d (step=%d, vpH=%d, lh=%d, totalH=%d, maxScroll=%d)", scrollOffset,
+    LOG_DBG("PGT", "SCROLL NEXT: offset %d -> %d (step=%d, vpH=%d, lh=%d, totalH=%d, maxScroll=%d)", scrollOffset,
             scrollOffset + screenScroll, screenScroll, vpH, lh, totalContentHeight, maxScroll);
     if (scrollOffset + vpH < totalContentHeight) {
       // More content below — scroll down.
       scrollOffset += screenScroll;
     } else {
-      // Already showing last content — close modal.
+      // Already showing last content — close the overlay.
       active = false;
       scrollOffset = 0;
     }
@@ -689,7 +690,7 @@ bool ModalOverlay::handleInput(MappedInputManager& input) {
     return true;
   }
 
-  // ESC/Back button: dismiss modal if active.
+  // ESC/Back button: dismiss the overlay if active.
   if (input.wasReleased(MappedInputManager::Button::Back)) {
     if (active) {
       active = false;
@@ -709,7 +710,7 @@ namespace {
 // One wrapped line of a paragraph. Produced by breakParagraph() and consumed by BOTH the height
 // measurement and the draw pass — a single source of truth so the scroll height can never drift
 // from what's actually drawn.
-struct ModalLine {
+struct PageTranslationLine {
   std::string content;           // words joined by single spaces (no trailing hyphen)
   bool hyphen = false;           // append '-' when drawing (word was hyphenated here)
   bool lastInParagraph = false;  // last line of its paragraph — never justified
@@ -730,9 +731,9 @@ std::vector<std::string> splitWords(const std::string& s) {
 
 // Greedy word-wrap with optional Liang hyphenation (mirrors the reader): when a word overflows the
 // remaining space and hyphenation is on, break it at the longest language-valid point that fits.
-std::vector<ModalLine> breakParagraph(const GfxRenderer& r, int fontId, const std::string& text, int maxW, int spW,
-                                      bool hyphenate) {
-  std::vector<ModalLine> lines;
+std::vector<PageTranslationLine> breakParagraph(const GfxRenderer& r, int fontId, const std::string& text, int maxW,
+                                                int spW, bool hyphenate) {
+  std::vector<PageTranslationLine> lines;
   std::vector<std::string> words = splitWords(text);
   if (words.empty()) return lines;
 
@@ -771,7 +772,7 @@ std::vector<ModalLine> breakParagraph(const GfxRenderer& r, int fontId, const st
       if (avail > 0) {
         // includeFallback=true (matches the reader): return break positions obeying the min
         // prefix/suffix even when no language rule matches. translated=true selects the
-        // translated-language hyphenator slot (v2's per-block routing) — the modal shows the
+        // translated-language hyphenator slot (v2's per-block routing) — the overlay shows the
         // translation, so it must break in the target language, not the book's source language.
         for (const auto& b : Hyphenator::breakOffsets(word, true, true)) {
           if (b.byteOffset == 0 || b.byteOffset >= word.size()) continue;
@@ -803,8 +804,8 @@ std::vector<ModalLine> breakParagraph(const GfxRenderer& r, int fontId, const st
 
 // Draw one wrapped line honoring the reader's paragraph-alignment setting. Justified spreads the
 // slack evenly across inter-word gaps on every line except the paragraph's last.
-void drawModalLine(const GfxRenderer& r, int fontId, const ModalLine& ln, int x, int y, int maxW, int spW,
-                   uint8_t align) {
+void drawPageTranslationLine(const GfxRenderer& r, int fontId, const PageTranslationLine& ln, int x, int y, int maxW,
+                             int spW, uint8_t align) {
   if (ln.dim) {
     // Missing-translation marker (Option C): left-aligned, never justified. The fork rendered it
     // through drawText's grayLevel path (grayLevel=1) so it dimmed on grayscale panels; v2's
@@ -853,14 +854,14 @@ void drawModalLine(const GfxRenderer& r, int fontId, const ModalLine& ln, int x,
 
 // ── Rendering ────────────────────────────────────────────────────────────────
 
-void ModalOverlay::render(GfxRenderer& renderer, const Page& page, int fontId, int modalFontId, int xOffset,
-                          int yOffset, int viewportWidth, int viewportHeight) {
+void PageTranslationOverlay::render(GfxRenderer& renderer, const Page& page, int fontId, int pageTranslationFontId,
+                                    int xOffset, int yOffset, int viewportWidth, int viewportHeight) {
   (void)fontId;
   if (!active) return;
 
   preparePage(page);
 
-  // Per-page open guard: refuse to open the modal on a page where NOTHING is
+  // Per-page open guard: refuse to open the overlay on a page where NOTHING is
   // translated (fully-untranslated page => fall through to the normal reader,
   // which shows the "switch to Normal" toast). A partly-translated page still
   // opens and source-fills the gaps.
@@ -871,8 +872,8 @@ void ModalOverlay::render(GfxRenderer& renderer, const Page& page, int fontId, i
 
   renderer.fillRect(xOffset, yOffset, viewportWidth, viewportHeight, false);
 
-  const int lh = renderer.getLineHeight(modalFontId);
-  const int spW = renderer.getSpaceWidth(modalFontId);
+  const int lh = renderer.getLineHeight(pageTranslationFontId);
+  const int spW = renderer.getSpaceWidth(pageTranslationFontId);
   constexpr int PAD = 10;
   const int maxTextW = viewportWidth - 2 * PAD;
   // Mirror the reader's "Extra Paragraph Spacing" setting: a blank-line gap between paragraphs
@@ -883,7 +884,7 @@ void ModalOverlay::render(GfxRenderer& renderer, const Page& page, int fontId, i
   cachedViewportHeight = static_cast<int16_t>(viewportHeight);
   cachedLineHeight = static_cast<int16_t>(lh);
 
-  // Honor the reader's hyphenation toggle + paragraph alignment. The modal shows the *translated*
+  // Honor the reader's hyphenation toggle + paragraph alignment. The overlay shows the *translated*
   // text, so route hyphenation through the translation's target-language slot (falls back to
   // generic breaks when that language has no trie).
   const bool hyphenate = SETTINGS.hyphenationEnabled != 0;
@@ -894,16 +895,16 @@ void ModalOverlay::render(GfxRenderer& renderer, const Page& page, int fontId, i
   const uint8_t align = SETTINGS.paragraphAlignment;
 
   // Break every paragraph into lines ONCE; reuse for both height and drawing so they can't diverge.
-  std::vector<std::vector<ModalLine>> paras;
+  std::vector<std::vector<PageTranslationLine>> paras;
   paras.reserve(pageParagraphs.size());
   const char* const marker = tr(STR_NO_TRANSLATION);
   int contentH = 0;
   for (const auto& para : pageParagraphs) {
-    auto lines = breakParagraph(renderer, modalFontId, para.text, maxTextW, spW, hyphenate);
+    auto lines = breakParagraph(renderer, pageTranslationFontId, para.text, maxTextW, spW, hyphenate);
     if (!para.translated) {
       // Option C: the body already holds the SOURCE text; append one short dim
       // marker line so the untranslated gap is visible but unobtrusive.
-      ModalLine mk;
+      PageTranslationLine mk;
       mk.content = marker;
       mk.lastInParagraph = true;
       mk.dim = true;
@@ -926,7 +927,7 @@ void ModalOverlay::render(GfxRenderer& renderer, const Page& page, int fontId, i
   for (const auto& lines : paras) {
     for (const auto& ln : lines) {
       if (curY + lh > clipTop && curY + lh <= clipBottom) {
-        drawModalLine(renderer, modalFontId, ln, xOffset + PAD, curY, maxTextW, spW, align);
+        drawPageTranslationLine(renderer, pageTranslationFontId, ln, xOffset + PAD, curY, maxTextW, spW, align);
       }
       curY += lh;
     }
@@ -936,9 +937,9 @@ void ModalOverlay::render(GfxRenderer& renderer, const Page& page, int fontId, i
 
 // ── Font helper ──────────────────────────────────────────────────────────────
 //
-// Fork parity: the modal renders in the SAME reader-derived font as the tooltip
+// Fork parity: the Page Translation overlay renders in the SAME reader-derived font as the tooltip
 // (getTooltipFontId — the reader's family, one size smaller than the body text), so it honors
 // the reader's Font Family and Font Size settings. It previously returned a fixed UI_12_FONT_ID,
 // which ignored both (that predated the Tooltip port that brought getTooltipFontId in).
 
-int getModalFontId() { return getTooltipFontId(); }
+int getPageTranslationFontId() { return getTooltipFontId(); }

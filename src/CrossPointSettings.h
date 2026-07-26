@@ -171,8 +171,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // VALUE STABILITY: translationDisplayMode persists as this integer in settings.json, so new
   // modes MUST be APPENDED at the end — never inserted or renumbered — or existing on-device
   // saves are silently reinterpreted. PT_TOOLTIP is therefore 7 here even though the upstream
-  // fork numbered its tooltip mode 6 (its enum ordered TOOLTIP before MODAL); v2 already shipped
-  // PT_MODAL = 6, so tooltip appends as 7.
+  // fork numbered its tooltip mode 6 (its enum ordered TOOLTIP before its Modal mode); v2 had
+  // already shipped that mode as 6 — PT_PAGE_TRANSLATION — so tooltip appends as 7.
   //
   // PERMANENT HOLES: 1 and 2. They were the "Dimmed" / "Dimmed Light" modes, which are now ONE
   // mode (PT_INTERLEAVED) plus the translationShade colour sub-setting. The two values are retired,
@@ -186,7 +186,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     PT_ORIGINAL_ONLY = 3,
     PT_TRANSLATION_ONLY = 4,
     PT_SIDE_BY_SIDE = 5,
-    PT_MODAL = 6,
+    PT_PAGE_TRANSLATION = 6,
     PT_TOOLTIP = 7,
     PT_INTERLEAVED = 8,
     // Reserved, NOT yet selectable: the layout is not implemented, so it is deliberately absent
@@ -221,7 +221,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   };
 
   // Which physical button pair drives a translation overlay (tooltip sentence stepping /
-  // modal scrolling). Shared by tooltipButtons and modalButtons.
+  // Page Translation scrolling). Shared by tooltipButtons and pageTranslationButtons.
   // VALUE STABILITY: persisted as an integer; 0/1 are fixed — append only, never renumber.
   enum OVERLAY_BUTTONS : uint8_t {
     OVERLAY_BUTTONS_FRONT = 0,  // front pair (Left / Right)
@@ -366,10 +366,12 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // edited from the Lingua submenu, not the generic on-device Settings list).
   uint8_t tooltipButtons = OVERLAY_BUTTONS_SIDE;
   uint8_t tooltipBehavior = TOOLTIP_NAV_TURN_PAGE;
-  // Modal display mode (PT_MODAL) control: which button pair scrolls/closes the OPEN modal
-  // (OVERLAY_BUTTONS). The modal still OPENS on a side long-press regardless of this setting.
-  // Default SIDE (same pair that opened it). Persisted manually in toJson/fromJson.
-  uint8_t modalButtons = OVERLAY_BUTTONS_SIDE;
+  // Page Translation display mode (PT_PAGE_TRANSLATION) control: which button pair scrolls/closes
+  // the OPEN overlay (OVERLAY_BUTTONS). The overlay still OPENS on a side long-press regardless of
+  // this setting. Default SIDE (same pair that opened it). Persisted manually in toJson/fromJson,
+  // under the "pageTranslationButtons" key (legacy files stored it as "modalButtons"; fromJson
+  // reads that as a fallback and resaves).
+  uint8_t pageTranslationButtons = OVERLAY_BUTTONS_SIDE;
 
   static constexpr uint8_t MIN_SLEEP_TIMEOUT_MINUTES = 1;
   static constexpr uint8_t SLEEP_TIMEOUT_NEVER_MINUTES = 31;

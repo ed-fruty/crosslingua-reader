@@ -180,7 +180,7 @@ static std::vector<size_t> sentenceEndOffsets(const std::string& text) {
     // separators (U+00A0, U+2000..200A, U+202F, U+205F), which translation
     // services and EPUBs emit. Accepting only ASCII space here previously made
     // an NBSP-separated boundary invisible, undercounting the sentence and
-    // shifting every downstream tooltip/modal mapping by one.
+    // shifting every downstream tooltip / page-translation mapping by one.
     if (next >= text.size() || textnorm::whitespaceLenAt(text, next) > 0) {
       ends.push_back(next);
     }

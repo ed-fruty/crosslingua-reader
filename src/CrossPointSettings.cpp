@@ -114,7 +114,7 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   doc["translationShade"] = translationShade;
   doc["tooltipButtons"] = tooltipButtons;
   doc["tooltipBehavior"] = tooltipBehavior;
-  doc["modalButtons"] = modalButtons;
+  doc["pageTranslationButtons"] = pageTranslationButtons;
 }
 
 bool CrossPointSettings::fromJson(JsonVariantConst doc) {
@@ -251,15 +251,25 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   } else {
     translationDisplayMode = clamp(storedDisplayMode, (uint8_t)PT_MODE_COUNT, (uint8_t)PT_NORMAL);
   }
-  // Tooltip/modal overlay controls: 0/1 selectors clamped to their enum counts. An ABSENT key
-  // falls back to the feature default (SIDE buttons, TURN_PAGE nav) rather than 0 — a settings.json
-  // written before these defaults changed had no key, so it should adopt the new default too.
+  // Tooltip / Page Translation overlay controls: 0/1 selectors clamped to their enum counts. An
+  // ABSENT key falls back to the feature default (SIDE buttons, TURN_PAGE nav) rather than 0 — a
+  // settings.json written before these defaults changed had no key, so it should adopt the new
+  // default too.
   tooltipButtons = clamp(doc["tooltipButtons"] | (uint8_t)OVERLAY_BUTTONS_SIDE, (uint8_t)OVERLAY_BUTTONS_COUNT,
                          (uint8_t)OVERLAY_BUTTONS_SIDE);
   tooltipBehavior = clamp(doc["tooltipBehavior"] | (uint8_t)TOOLTIP_NAV_TURN_PAGE, (uint8_t)TOOLTIP_NAVIGATION_COUNT,
                           (uint8_t)TOOLTIP_NAV_TURN_PAGE);
-  modalButtons = clamp(doc["modalButtons"] | (uint8_t)OVERLAY_BUTTONS_SIDE, (uint8_t)OVERLAY_BUTTONS_COUNT,
-                       (uint8_t)OVERLAY_BUTTONS_SIDE);
+  // The key was "modalButtons" until the mode was renamed to Page Translation. Fall back to the
+  // legacy key so an existing button choice is not silently reset to the default, and request a
+  // resave so the file is rewritten under the new name — same needsResave mechanism as the
+  // sleepTimeout and font-size migrations above. The legacy value is only consulted when the new
+  // key is absent (the `|` default chain), so a file carrying both prefers the new one.
+  const uint8_t legacyPageTranslationButtons = doc["modalButtons"] | (uint8_t)OVERLAY_BUTTONS_SIDE;
+  if (doc["pageTranslationButtons"].isNull() && !doc["modalButtons"].isNull()) {
+    needsResave = true;
+  }
+  pageTranslationButtons = clamp(doc["pageTranslationButtons"] | legacyPageTranslationButtons,
+                                 (uint8_t)OVERLAY_BUTTONS_COUNT, (uint8_t)OVERLAY_BUTTONS_SIDE);
 
   if (needsResave) {
     LOG_DBG("CPS", "Resaving settings to update format");
@@ -293,7 +303,7 @@ PtLayout CrossPointSettings::ptLayoutForDisplayMode(const uint8_t mode) {
     // Overlay modes surface their translations in a popup composited at view time, so their main
     // flow is original-only — the same pages Original Only produces, byte for byte.
     case PT_ORIGINAL_ONLY:
-    case PT_MODAL:
+    case PT_PAGE_TRANSLATION:
     case PT_TOOLTIP:
       return PtLayout::OriginalOnly;
     case PT_TRANSLATION_ONLY:

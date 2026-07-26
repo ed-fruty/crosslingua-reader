@@ -151,7 +151,7 @@ struct ParseCtx {
   std::string lastOrigText;
   bool hasLastOrig = false;
   int pairCount = 0;
-  // Selective parse (mirrors ModalOverlay): only build index entries for paragraphs the current
+  // Selective parse (mirrors PageTranslationOverlay): only build index entries for paragraphs the current
   // page actually shows. Without this the index holds every translated sentence in the chapter,
   // which exhausts the heap on long chapters and reboots the device.
   int wantFirst = 0;
@@ -1013,7 +1013,7 @@ void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId,
   SentenceSpan span{};
   const char* text = nullptr;
   if (stepCount == 0) {
-    // Nothing translated on this page (Option C parity with ModalOverlay): the source still
+    // Nothing translated on this page (Option C parity with PageTranslationOverlay): the source still
     // shows through, so surface the marker over the first source sentence rather than a blank
     // popup. Never triggers for a correctly-translated book. No sentences at all → nothing to do.
     if (splits.count == 0) return;

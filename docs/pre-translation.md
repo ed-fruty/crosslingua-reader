@@ -2,7 +2,7 @@
 
 Pre-Translation lets CrossPoint produce a bilingual copy of any EPUB on
 device, then read it in one of several display modes — original-only,
-translation-only, side-by-side, modal overlay, or with translated paragraphs
+translation-only, side-by-side, a page-translation overlay, or with translated paragraphs
 shaded gray.
 
 <img src="./images/pre-translation/overview.jpg" height="500" alt="Side-by-Side mode showing English original above each Russian translation" />
@@ -18,8 +18,8 @@ shaded gray.
 
 ## What it doesn't do
 
-- It is **not** an on-the-fly translator for the page you're looking at —
-  that's the upcoming **Page Translation** feature (separate PR).
+- It is **not** an on-the-fly translator that renders the page you are looking
+  at through a live translation engine (separate PR).
 - It does not modify your EPUB files.
 
 ## Setup
@@ -117,17 +117,17 @@ between paired paragraphs and normal spacing between pairs.
 
 <img src="./images/pre-translation/mode-side-by-side.jpg" height="500" alt="Side by side mode" />
 
-### Modal
+### Page Translation
 
 The reader shows only the original text on each page. **Long-press either
-side button** to bring up a modal overlay with the translations of the
+side button** to bring up an overlay with the translations of the
 paragraphs visible on the current page.
 
-<img src="./images/pre-translation/mode-modal.gif" height="500" alt="Modal mode overlay" />
+<img src="./images/pre-translation/mode-modal.gif" height="500" alt="Page Translation mode overlay" />
 
 *Long-press to open, side buttons scroll, Back to close.*
 
-In Modal mode, when a paragraph spans page boundaries (starts on one page
+In Page Translation mode, when a paragraph spans page boundaries (starts on one page
 and continues on the next), the overlay shows only the translation of the
 sentences actually visible on the current page — not the whole paragraph.
 
@@ -186,7 +186,7 @@ invalidates them.
 - **Network required only during translation.** Once translated, the book
   reads offline.
 - **CJK sentence detection** is limited in v1 — paragraphs straddling pages
-  in Modal mode may show the whole translated paragraph rather than the
+  in Page Translation mode may show the whole translated paragraph rather than the
   sentences corresponding to visible text. Latin, Cyrillic, Greek, and
   Vietnamese punctuation work correctly.
 - **Translation engines have rate limits.** Google Free can throttle on

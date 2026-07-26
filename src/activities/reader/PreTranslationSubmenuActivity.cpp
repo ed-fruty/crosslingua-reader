@@ -93,8 +93,8 @@ void PreTranslationSubmenuActivity::buildMenuItems() {
     menuItems.push_back({Action::CYCLE_TOOLTIP_BUTTONS, StrId::STR_TOOLTIP_BUTTONS});
     menuItems.push_back({Action::CYCLE_TOOLTIP_BEHAVIOR, StrId::STR_TOOLTIP_NAV});
   }
-  if (SETTINGS.translationDisplayMode == CrossPointSettings::PT_MODAL) {
-    menuItems.push_back({Action::CYCLE_MODAL_BUTTONS, StrId::STR_MODAL_BUTTONS});
+  if (SETTINGS.translationDisplayMode == CrossPointSettings::PT_PAGE_TRANSLATION) {
+    menuItems.push_back({Action::CYCLE_PAGE_TRANSLATION_BUTTONS, StrId::STR_PAGE_TRANSLATION_BUTTONS});
   }
 
   // Translation Engine follows the mode block; the API-key row is only meaningful for engines
@@ -292,9 +292,9 @@ void PreTranslationSubmenuActivity::onActionSelected(Action a) {
       requestUpdate();
       return;
 
-    case Action::CYCLE_MODAL_BUTTONS:
-      SETTINGS.modalButtons =
-          static_cast<uint8_t>((SETTINGS.modalButtons + 1) % CrossPointSettings::OVERLAY_BUTTONS_COUNT);
+    case Action::CYCLE_PAGE_TRANSLATION_BUTTONS:
+      SETTINGS.pageTranslationButtons =
+          static_cast<uint8_t>((SETTINGS.pageTranslationButtons + 1) % CrossPointSettings::OVERLAY_BUTTONS_COUNT);
       SETTINGS.saveToFile();
       requestUpdate();
       return;
@@ -339,9 +339,10 @@ const char* PreTranslationSubmenuActivity::tooltipBehaviorLabel() const {
                                                                                         : StrId::STR_LOOP);
 }
 
-const char* PreTranslationSubmenuActivity::modalButtonsLabel() const {
-  return I18N.get(SETTINGS.modalButtons == CrossPointSettings::OVERLAY_BUTTONS_SIDE ? StrId::STR_SIDE_BUTTONS
-                                                                                    : StrId::STR_FRONT_BUTTONS);
+const char* PreTranslationSubmenuActivity::pageTranslationButtonsLabel() const {
+  return I18N.get(SETTINGS.pageTranslationButtons == CrossPointSettings::OVERLAY_BUTTONS_SIDE
+                      ? StrId::STR_SIDE_BUTTONS
+                      : StrId::STR_FRONT_BUTTONS);
 }
 
 const char* PreTranslationSubmenuActivity::engineLabel() const {
@@ -431,8 +432,8 @@ void PreTranslationSubmenuActivity::render(RenderLock&&) {
             return tooltipButtonsLabel();
           case Action::CYCLE_TOOLTIP_BEHAVIOR:
             return tooltipBehaviorLabel();
-          case Action::CYCLE_MODAL_BUTTONS:
-            return modalButtonsLabel();
+          case Action::CYCLE_PAGE_TRANSLATION_BUTTONS:
+            return pageTranslationButtonsLabel();
           case Action::PICK_TARGET_LANG:
             return targetLangLabel();
           case Action::PICK_SOURCE_LANG:

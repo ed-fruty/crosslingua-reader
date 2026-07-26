@@ -67,7 +67,7 @@ class ChapterHtmlSlimParser {
   PtLayout ptLayout = PtLayout::Both;
   // Monotonic index over ORIGINAL content paragraphs. Advances once per content-bearing original
   // block regardless of nesting depth, matching the per-content-paragraph granularity of the
-  // ModalOverlay/TooltipOverlay reparsers (ParagraphBoundary.h SSOT). Empty/whitespace-only blocks
+  // PageTranslationOverlay/TooltipOverlay reparsers (ParagraphBoundary.h SSOT). Empty/whitespace-only blocks
   // and translated blocks do NOT advance it.
   int16_t paragraphCounter = 0;
   // Paragraph index stamped on the currently-open block's laid-out lines; -1 before any block opens.
@@ -88,7 +88,7 @@ class ChapterHtmlSlimParser {
   // (see renderSideBySide). bufferedOriginalParagraphIdx carries the original's paragraph index
   // across the buffering window — the block-level currentBlockParagraphIdx has already advanced to
   // the next block by the time the pair is emitted, so the emitted PageLines would otherwise stamp
-  // the wrong index for the Modal overlay's line->paragraph mapping.
+  // the wrong index for the Page Translation overlay's line->paragraph mapping.
   std::unique_ptr<ParsedText> bufferedOriginalBlock = nullptr;
   int16_t bufferedOriginalParagraphIdx = -1;
 

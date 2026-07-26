@@ -48,7 +48,7 @@ constexpr size_t MAX_ANCHORS_PER_CHAPTER = 1024;
 constexpr const char* HEADER_TAGS[] = {"h1", "h2", "h3", "h4", "h5", "h6"};
 // Paragraph-boundary block tags (p, li, div, br, blockquote and h1..h6) now live
 // in the shared paraboundary predicate (ParagraphBoundary.h) so the layout parser
-// and the ModalOverlay SAX reparser cannot diverge. HEADER_TAGS above is retained
+// and the PageTranslationOverlay SAX reparser cannot diverge. HEADER_TAGS above is retained
 // only for header-specific STYLING (centered + bold), not boundary detection.
 constexpr const char* BOLD_TAGS[] = {"b", "strong"};
 constexpr const char* ITALIC_TAGS[] = {"i", "em"};
@@ -249,8 +249,8 @@ void ChapterHtmlSlimParser::flushPendingAnchor() {
 
 // Pre-Translation: layout-based block filtering, shared by flushPartWordBuffer and the ruby
 // handlers. Both and SideBySide emit everything (SideBySide pairs the two languages into columns
-// instead of dropping either); OriginalOnly drops translated text -- which is also what the Modal
-// and Tooltip display modes need, since they surface translations through a popup at view time and
+// instead of dropping either); OriginalOnly drops translated text -- which is also what the Page
+// Translation and Tooltip display modes need, since they surface translations through a popup at view time and
 // emitting them inline would double the text and break the tooltip's underline/sentence-index math.
 // The top of the inline style stack carries whether the current text belongs to a translated block
 // (block-opening and inline tags stamp isTranslatedBlock onto their StyleStackEntry, and children
@@ -1437,7 +1437,7 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
   // Ruby text: </rt> distributes ruby to base words, </ruby> resets ruby state
   if (strcmp(name, "rt") == 0) {
     self->collectingRubyText = false;
-    // Pre-Translation: in a mode that drops this block (OrigOnly/TransOnly/Modal/Tooltip), the base
+    // Pre-Translation: in a mode that drops this block (OrigOnly/TransOnly/PageTranslation/Tooltip), the base
     // characters never became words, so baseWordCount would be 0 and the fallback below would walk
     // back and glue this furigana onto the last SURVIVING word of an unrelated run. Skip the whole
     // distribution instead; rubyTextBuffer is cleared below either way.
@@ -1776,7 +1776,7 @@ void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line) {
   const int16_t xOffset = line->getBlockStyle().leftInset();
   auto pageLine = std::make_shared<PageLine>(line, xOffset, currentPageNextY);
   // Pre-Translation: stamp the line with its originating paragraph index so the renderer (and the
-  // Modal overlay) can map rendered lines back to original paragraphs.
+  // Page Translation overlay) can map rendered lines back to original paragraphs.
   pageLine->paragraphIdx = currentBlockParagraphIdx;
   // Pre-Translation: track which original paragraph indices contribute to this page. Translated
   // blocks share their original's index (via the pairing logic in startElement), so the range
@@ -1902,7 +1902,7 @@ void ChapterHtmlSlimParser::flushBufferedOriginal() {
 // Pre-Translation (SideBySide, mode 5): lay an original (left) and its paired translation (right)
 // into two half-width columns, emitted as lockstep PageLine rows — left at xPos=0, right at
 // rightColX, both sharing one yPos and advancing one lineHeight per row. Both columns stamp the
-// original paragraph's index (bufferedOriginalParagraphIdx) so the Modal overlay's line->paragraph
+// original paragraph's index (bufferedOriginalParagraphIdx) so the Page Translation overlay's line->paragraph
 // mapping still resolves. RTL is handled per-word inside each half-width line by
 // layoutAndExtractLines; the columns themselves are never mirrored (original always left).
 void ChapterHtmlSlimParser::renderSideBySide(std::unique_ptr<ParsedText> leftBlock,

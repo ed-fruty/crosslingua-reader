@@ -101,10 +101,11 @@ one field:
   `lib/Epub/Epub/PtLayout.h`). Several display modes produce byte-identical
   pages and now share one cache entry: Normal / Interleaved / Interlinear all map
   to `Both` (Interleaved differs only in the *gray level* translated words are
-  drawn at, which never moves a glyph), and Original Only / Modal / Tooltip all
-  map to `OriginalOnly` (the overlay modes composite their translation at view
-  time, so their main flow is original-only). Switching between two modes that
-  share a layout is therefore a cache hit instead of a full chapter re-layout.
+  drawn at, which never moves a glyph), and Original Only / Page Translation /
+  Tooltip all map to `OriginalOnly` (the overlay modes composite their
+  translation at view time, so their main flow is original-only). Switching
+  between two modes that share a layout is therefore a cache hit instead of a
+  full chapter re-layout.
   The byte occupies the same header slot as the old mode byte but is *not* the
   same value space, so v37 files must be rejected rather than reinterpreted.
 - **`translationFontId`** is added as an `s32` immediately after `fontId`. It is

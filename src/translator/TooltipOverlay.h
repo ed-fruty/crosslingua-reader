@@ -23,7 +23,7 @@ struct TooltipStep {
 
 // Pre-Translation "Tooltip" display mode (PT_TOOLTIP). The reader lays the page out as
 // original-only text (the ChapterHtmlSlimParser drops translated words in this mode, exactly like
-// PT_MODAL / PT_ORIGINAL_ONLY); this overlay then surfaces the translation of ONE sentence at a
+// PT_PAGE_TRANSLATION / PT_ORIGINAL_ONLY); this overlay then surfaces the translation of ONE sentence at a
 // time as a small popup near the selected sentence, which is underlined on the page.
 //
 // Translation data is NOT read from the section.bin cache — it is re-parsed on demand from the

@@ -13,7 +13,7 @@
 #include "EpubReaderMenuActivity.h"
 #include "ProgressMapper.h"
 #include "activities/Activity.h"
-#include "translator/ModalOverlay.h"
+#include "translator/PageTranslationOverlay.h"
 #include "translator/TooltipOverlay.h"
 
 // Defined in PreTranslationSubmenuActivity.h; forward-declared here so the reader
@@ -65,18 +65,18 @@ class EpubReaderActivity final : public Activity {
   bool showDictionaryMessage = false;
   unsigned long dictionaryMessageTime = 0UL;
   bool ignoreNextConfirmRelease = false;
-  // Pre-Translation modal overlay (PT_MODAL mode). Opened by a long-press RELEASE on either side
+  // Page Translation overlay (PT_PAGE_TRANSLATION mode). Opened by a long-press RELEASE on either side
   // button, detected in loop() before detectPageTurn: detecting the OPEN on the release (not
   // mid-hold) means the same release cannot also be consumed as a scroll by handleInput(), and
   // returning after open() suppresses the page-turn / chapter-skip / orientation long-press that
   // would otherwise fire on that release -- so no ignore-next-release latch is needed.
-  ModalOverlay modalOverlay;
+  PageTranslationOverlay pageTranslationOverlay;
   // Pre-Translation tooltip overlay (PT_TOOLTIP mode). Owns its configured nav buttons for
   // per-sentence stepping and its own long-press page-turn; see loop()'s tooltip input block.
   TooltipOverlay tooltipOverlay;
   // Retained reader-font glyph prewarm for an ACTIVE translation overlay. Built ONCE (wipe + scan +
   // prewarm) when an overlay opens or the page under it turns, then HELD across every sentence-step /
-  // modal-scroll so those steps reuse the warm page buffer instead of re-wiping and re-decoding the
+  // overlay-scroll so those steps reuse the warm page buffer instead of re-wiping and re-decoding the
   // whole page on demand each press (that on-demand path was ~10x slower -- see renderOverlayFrame()).
   // Torn down when the overlay closes (normal branch of renderContents) and in onExit(); the scope's
   // dtor clears the decompressor cache. Reuse is gated on the page identity it was built for AND the
@@ -87,11 +87,11 @@ class EpubReaderActivity final : public Activity {
   int overlayPrewarmPage_ = -1;
   int overlayPrewarmFontId_ = -1;
   uint32_t overlayPrewarmGen_ = 0;
-  // Shown when a PT_MODAL long-press opens the overlay on a page that has NO translated
+  // Shown when a PT_PAGE_TRANSLATION long-press opens the overlay on a page that has NO translated
   // paragraphs: the overlay refuses (clears its active flag in render()), and the reader surfaces
   // this toast instead of the previous silent no-op. Timed out in loop() like the other toasts.
-  bool showModalNoTranslationToast = false;
-  unsigned long modalNoTranslationToastTime = 0UL;
+  bool showNoTranslationsForPageToast = false;
+  unsigned long noTranslationsForPageToastTime = 0UL;
   // Pre-Translation: when the user opens a chapter that has no translated HTML while a non-Normal
   // display mode is active, render() PERSISTS the switch to Normal (SETTINGS.translationDisplayMode =
   // PT_NORMAL, saved) and arms this modal dialog so the change isn't silent. Because the setting is
@@ -158,9 +158,9 @@ class EpubReaderActivity final : public Activity {
 
   void renderContents(Page& page, int orientedMarginTop, int orientedMarginRight, int orientedMarginBottom,
                       int orientedMarginLeft);
-  // Fork-parity render path for a page with an active translation overlay (PT_TOOLTIP / PT_MODAL):
+  // Fork-parity render path for a page with an active translation overlay (PT_TOOLTIP / PT_PAGE_TRANSLATION):
   // page + status bar + overlay composited into ONE BW frame, a single refresh, and (when the page
-  // is visible, i.e. not under the modal) the grayscale AA pass. Avoids the second slow refresh the
+  // is visible, i.e. not under the Page Translation overlay) the grayscale AA pass. Avoids the second slow refresh the
   // old overlay path did on every sentence step / scroll.
   void renderOverlayFrame(Page& page, const PageFontSet& fonts, int orientedMarginTop, int orientedMarginRight,
                           int orientedMarginBottom, int orientedMarginLeft);

@@ -20,13 +20,14 @@
 // but the layout does not exist yet (CrossPointSettings::ptLayoutForDisplayMode maps it to
 // PtLayout::Both), so offering it would let the user select and persist a mode that renders
 // exactly like Normal. TO RE-ADD once the Interlinear layout lands: append
-// `CrossPointSettings::PT_INTERLINEAR` to the table below (last, after PT_MODAL — appending is
+// `CrossPointSettings::PT_INTERLINEAR` to the table below (last, after PT_PAGE_TRANSLATION — appending is
 // what keeps the cycle order stable for users), and change the static_assert's `- 3` back to
 // `- 2` together with its message.
 inline constexpr CrossPointSettings::PRE_TRANSLATION_MODE PT_SELECTABLE_MODES[] = {
-    CrossPointSettings::PT_NORMAL,        CrossPointSettings::PT_INTERLEAVED,      CrossPointSettings::PT_SIDE_BY_SIDE,
-    CrossPointSettings::PT_ORIGINAL_ONLY, CrossPointSettings::PT_TRANSLATION_ONLY, CrossPointSettings::PT_TOOLTIP,
-    CrossPointSettings::PT_MODAL,
+    CrossPointSettings::PT_NORMAL,           CrossPointSettings::PT_INTERLEAVED,
+    CrossPointSettings::PT_SIDE_BY_SIDE,     CrossPointSettings::PT_ORIGINAL_ONLY,
+    CrossPointSettings::PT_TRANSLATION_ONLY, CrossPointSettings::PT_TOOLTIP,
+    CrossPointSettings::PT_PAGE_TRANSLATION,
 };
 
 inline constexpr size_t PT_SELECTABLE_MODE_COUNT = sizeof(PT_SELECTABLE_MODES) / sizeof(PT_SELECTABLE_MODES[0]);
@@ -55,8 +56,8 @@ constexpr StrId ptModeLabel(const CrossPointSettings::PRE_TRANSLATION_MODE mode)
       return StrId::STR_PT_TRANSLATION_ONLY;
     case CrossPointSettings::PT_TOOLTIP:
       return StrId::STR_PT_TOOLTIP;
-    case CrossPointSettings::PT_MODAL:
-      return StrId::STR_PT_MODAL;
+    case CrossPointSettings::PT_PAGE_TRANSLATION:
+      return StrId::STR_PT_PAGE_TRANSLATION;
     case CrossPointSettings::PT_INTERLINEAR:
       return StrId::STR_PT_INTERLINEAR;
     // Retired holes. Unreachable through the UI (never selectable) and unreachable from settings

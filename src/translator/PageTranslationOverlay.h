@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-class ModalOverlay {
+class PageTranslationOverlay {
  public:
   // Public because static XML callbacks in the .cpp need access.
   // Sparse: only paragraphs in the current page's [first..last] range get an entry, and each
@@ -27,23 +27,23 @@ class ModalOverlay {
 
   bool handleInput(MappedInputManager& input);
 
-  void render(GfxRenderer& renderer, const Page& page, int fontId, int modalFontId, int xOffset, int yOffset,
+  void render(GfxRenderer& renderer, const Page& page, int fontId, int pageTranslationFontId, int xOffset, int yOffset,
               int viewportWidth, int viewportHeight);
 
   void onPageChanged();
   void onSectionChanged();
 
   // Prepare this page's paragraph translations (idempotent with render()'s own preparePage) and append
-  // every string the modal will draw for this page — each visible paragraph's text plus the
+  // every string the overlay will draw for this page — each visible paragraph's text plus the
   // STR_NO_TRANSLATION marker when any paragraph is a source fallback — into `out`. Lets the caller
-  // prewarm the modal font's glyph cache ONCE per page (see EpubReaderActivity::renderOverlayFrame)
+  // prewarm the overlay font's glyph cache ONCE per page (see EpubReaderActivity::renderOverlayFrame)
   // instead of taking a per-glyph SD read while scrolling. Text only: no rendering, no SD I/O.
   void collectPageGlyphText(const Page& page, std::string& out);
 
   bool isActive() const { return active; }
 
  private:
-  // One paragraph to display in the modal, in reading order. `text` is either a
+  // One paragraph to display in the overlay, in reading order. `text` is either a
   // real translation or — when no translation exists for this paragraph — the
   // page's own SOURCE text (Option C fallback), in which case render() appends a
   // short dim STR_NO_TRANSLATION marker so the gap is visible but unobtrusive.
@@ -71,4 +71,4 @@ class ModalOverlay {
   void preparePage(const Page& page);
 };
 
-int getModalFontId();
+int getPageTranslationFontId();

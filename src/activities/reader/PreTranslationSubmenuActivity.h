@@ -51,8 +51,9 @@ class PreTranslationSubmenuActivity final : public Activity {
     // (NOT SettingsList.h) so they aren't double-written; edited only from this submenu.
     CYCLE_TOOLTIP_BUTTONS,
     CYCLE_TOOLTIP_BEHAVIOR,
-    // Modal-mode (PT_MODAL) control: which button pair scrolls/closes the open modal.
-    CYCLE_MODAL_BUTTONS,
+    // Page Translation mode (PT_PAGE_TRANSLATION) control: which button pair scrolls/closes the
+    // open overlay.
+    CYCLE_PAGE_TRANSLATION_BUTTONS,
   };
 
   explicit PreTranslationSubmenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
@@ -97,7 +98,7 @@ class PreTranslationSubmenuActivity final : public Activity {
   const char* sourceLangLabel() const;
   const char* tooltipButtonsLabel() const;
   const char* tooltipBehaviorLabel() const;
-  const char* modalButtonsLabel() const;
+  const char* pageTranslationButtonsLabel() const;
   // Writes a masked representation of the API key into `out`.
   void maskedApiKey(char* out, size_t outSize) const;
 

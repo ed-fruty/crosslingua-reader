@@ -55,11 +55,11 @@ namespace {
 //      is ever reinterpreted under the new numbering.
 // v38: The header no longer stores the raw Pre-Translation display mode. It stores the LAYOUT that
 //      mode implies (PtLayout: Both / OriginalOnly / TranslationOnly / SideBySide), so modes whose
-//      pages are byte-identical -- Normal vs Paragraph (a gray level, drawn not laid out), Original
-//      Only vs Modal vs Tooltip (overlays composited at view time) -- now share one cache entry and
-//      switching between them is instant instead of a full chapter re-layout. The byte occupies the
-//      same header slot as the old mode byte but means something different, so v37 files must be
-//      rejected rather than reinterpreted. v38 also adds a translationFontId int to the header:
+//      pages are byte-identical -- Normal vs Interleaved (a gray level, drawn not laid out),
+//      Original Only vs Page Translation vs Tooltip (overlays composited at view time) -- now share
+//      one cache entry and switching between them is instant instead of a full chapter re-layout.
+//      The byte occupies the same header slot as the old mode byte but means something different,
+//      so v37 files must be rejected rather than reinterpreted. v38 also adds a translationFontId int to the header:
 //      laying translated text out in its own font changes word measurement and line breaking, so
 //      unlike the drawing-only shade it IS part of the cache key. Finally, PageLine serializes a
 //      LineFontRole byte after paragraphIdx so a page can mix body and smaller/annotation text;
