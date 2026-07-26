@@ -181,24 +181,46 @@ class Section {
   std::optional<uint16_t> getParagraphIndexForPage(uint16_t page) const;
 
   // --- Reposition anchors ---------------------------------------------------------------------
-  // The paragraph LUT is the only layout-INDEPENDENT handle on a reading position this cache has:
-  // entry[page] is the count of <p> elements opened by the end of that page, a pure function of the
-  // source HTML. It therefore survives every re-layout (font family/size, line and paragraph
-  // spacing, margins, orientation, Pre-Translation layout), unlike a page number or a page ratio.
-  // The three wrappers below extend the on-disk lookups above to a build in PROGRESS, whose pages
-  // exist only in build_->lut -- the state a re-layout is always in, since the cache-key mismatch
-  // that triggered it deleted the committed .bin.
+  // The paragraph LUT is the only layout-INDEPENDENT handle on a reading position this cache has,
+  // and it is a NARROW one. entry[page] is ChapterHtmlSlimParser::xpathParagraphIndex as of the
+  // flush of `page`: the running count of literal `<p>` OPEN TAGS, incremented nowhere else
+  // (ChapterHtmlSlimParser::startElement). That is the same counter the KOSync xpath mapper uses,
+  // and it is NOT the parser's other paragraph counter -- `paragraphCounter`, which backs
+  // Page::firstParagraphIdx, advances on every content-bearing block (p, li, div, blockquote,
+  // headers) and deliberately does NOT advance for a translated block. The distinction decides real
+  // behaviour, so do not swap one for the other:
+  //   * A chapter that marks its paragraphs with <div> (no <p> anywhere) has entry[page] == 0 on
+  //     every page and can NEVER be anchored. Every reposition in such a chapter falls back to the
+  //     page-ratio remap in EpubReaderActivity, which is a guess.
+  //   * Because the counter includes the `<p lang="xx">` blocks of the bilingual
+  //     `.translated.html` sidecar, the count roughly DOUBLES when a translation appears. An anchor
+  //     is therefore only comparable while the source HTML is unchanged -- which is what
+  //     ReaderPosition's FLAG_TRANSLATED_SOURCE records. (Under `paragraphCounter` the count would
+  //     be unchanged and that flag would look unnecessary. It is not.)
+  // Widening coverage to div/li/header-marked paragraphs means giving Page::firstParagraphIdx
+  // (which already carries `paragraphCounter`) a LUT of its own in the .bin, i.e. a
+  // SECTION_FILE_VERSION bump that invalidates every cached layout on every device.
+  //
+  // What the LUT does buy: it is a pure function of the source HTML, so within its coverage it
+  // survives every re-layout (font family/size, line and paragraph spacing, margins, orientation,
+  // Pre-Translation layout), unlike a page number or a page ratio. The three wrappers below extend
+  // the on-disk lookups above to a build in PROGRESS, whose pages exist only in build_->lut -- the
+  // state a re-layout is always in, since the cache-key mismatch that triggered it deleted the
+  // committed .bin.
 
   // Paragraph index stamped on `page`: from the in-progress build's table when it reaches that far,
   // otherwise from the committed file (finalized section, or a partial that already covers it).
   std::optional<uint16_t> findParagraphIndexForPage(uint16_t page) const;
 
-  // The anchor to persist for `page`, or nullopt when this page cannot be anchored: the stamped
-  // index must be non-zero (the chapter uses <p> at all) AND must first appear on this page, i.e.
-  // `page` starts a new paragraph. That second condition is what makes the anchor round-trip
-  // EXACTLY back onto `page` under an unchanged layout, and it is what rejects the degenerate
-  // chapter laid out as one enormous paragraph, where every page carries the same index and the
-  // anchor would send the reader to the chapter's first page.
+  // The anchor to persist for `page`, or nullopt when this page cannot be anchored. See
+  // ParagraphAnchor.h for the rule and why each half of it is shaped that way; in short, `page`
+  // anchors on the first paragraph it OPENS (an exact round-trip under an unchanged pagination), or
+  // failing that on the paragraph running through it provided that one started no more than
+  // ParagraphAnchor::MAX_BACKWARD_DRIFT_PAGES pages earlier.
+  //
+  // nullopt -- the caller must have a fallback -- for: page 0 (which needs no anchor, being the
+  // chapter top under every pagination), a chapter with no `<p>` at all, a page deep inside one
+  // enormous paragraph, and any LUT read that fails.
   std::optional<uint16_t> paragraphAnchorForPage(uint16_t page) const;
 
   // First page on which paragraph `pIndex` has begun. While a build is running this sees only the

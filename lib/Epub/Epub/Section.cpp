@@ -7,6 +7,7 @@
 
 #include "Epub/css/CssParser.h"
 #include "Page.h"
+#include "ParagraphAnchor.h"
 #include "hyphenation/Hyphenator.h"
 #include "parsers/ChapterHtmlSlimParser.h"
 
@@ -1119,16 +1120,28 @@ std::optional<uint16_t> Section::findParagraphIndexForPage(const uint16_t page) 
 }
 
 std::optional<uint16_t> Section::paragraphAnchorForPage(const uint16_t page) const {
+  // Page 0 needs no anchor: the chapter's first page is page 0 under EVERY pagination, so the saved
+  // page number is already layout-independent. Anchoring it would be actively worse -- the only
+  // index page 0 can offer is the last paragraph on it, which under a larger font starts on page 1.
+  if (page == 0) return std::nullopt;
   const auto here = findParagraphIndexForPage(page);
-  // 0 means no <p> has been opened yet by the end of this page, so there is nothing to anchor to.
+  // 0 = the chapter has opened no <p> at all by this page (it marks its paragraphs with something
+  // else, or this is still the front matter). Checked before the second read so a chapter that can
+  // never be anchored costs one LUT lookup per page turn rather than two.
   if (!here || *here == 0) return std::nullopt;
-  if (page == 0) return here;
   const auto prev = findParagraphIndexForPage(page - 1);
-  // The index must FIRST appear on this page. Otherwise the paragraph started earlier and
-  // findPageForParagraphIndex() would resolve back to that earlier page, moving the reader
-  // backwards even when nothing re-paginated. Reject instead and let the caller fall back.
-  if (!prev || *prev >= *here) return std::nullopt;
-  return here;
+  if (!prev) return std::nullopt;
+  // Preferred: the first paragraph this page opens. Resolves back to exactly this page under an
+  // unchanged pagination, and after a re-layout lands at most one paragraph tail above the old top.
+  if (const uint16_t opening = ParagraphAnchor::openingAnchor(*prev, *here)) return opening;
+  // This page opens no paragraph of its own: it lies inside one that began earlier. Anchor on that
+  // running paragraph -- landing at its start is a bounded re-read, never a skip -- but only when it
+  // began recently enough.
+  if (!ParagraphAnchor::guardNeeded(page)) return here;  // cannot have started before page 0
+  const auto guard = findParagraphIndexForPage(ParagraphAnchor::guardPage(page));
+  if (!guard) return std::nullopt;
+  if (const uint16_t spanning = ParagraphAnchor::spanningAnchor(*here, *guard)) return spanning;
+  return std::nullopt;
 }
 
 std::optional<uint16_t> Section::findPageForParagraphIndex(const uint16_t pIndex) const {

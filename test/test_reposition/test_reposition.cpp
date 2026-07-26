@@ -1,14 +1,19 @@
 #include <unity.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <iterator>
+#include <optional>
 
-// The real header. `[env:native]` puts src/activities/reader on the include path, and
-// ReaderPosition.h is deliberately free of Arduino/SD/Epub deps so the production code -- not a
-// copy of it -- is what runs here. The two things under test are the pieces of the reposition
-// machinery that are pure arithmetic: the length-discriminated progress record (does a record
-// written by older firmware still decode, and does the new one round-trip?) and the fallback
-// page-ratio remap (is its denominator handling safe?).
+// The real headers. `[env:native]` puts src/activities/reader and lib/Epub/Epub on the include path,
+// and both files are deliberately free of Arduino/SD/Epub deps so the production code -- not a copy
+// of it -- is what runs here. Three things are under test, all of them the pure parts of the
+// reposition machinery: the length-discriminated progress record (does a record written by older
+// firmware still decode, and does the new one round-trip?), the fallback page-ratio remap (is its
+// denominator handling safe?), and the paragraph-anchor rule (which pages can be anchored, and how
+// far can resolving one move the reader?).
+#include "ParagraphAnchor.h"
 #include "ReaderPosition.h"
 
 using ReaderPosition::decode;
@@ -139,6 +144,137 @@ static void test_ratio_remap_keeps_the_first_page_first() {
   }
 }
 
+// --- paragraph anchor ----------------------------------------------------------------------------
+
+namespace {
+
+// Drives ParagraphAnchor::* in exactly the order Section::paragraphAnchorForPage() does, with a flat
+// array standing in for the section.bin paragraph LUT (entry[p] = the count of <p> open tags the
+// parser had seen when page p was flushed). Section reads those entries one at a time, from RAM
+// during a build and from SD afterwards, which is the only reason it is not this function.
+std::optional<uint16_t> anchorForPage(const uint16_t* lut, const size_t count, const uint16_t page) {
+  if (page == 0 || page >= count) return std::nullopt;
+  const uint16_t here = lut[page];
+  if (here == 0) return std::nullopt;
+  const uint16_t prev = lut[page - 1];
+  if (const uint16_t opening = ParagraphAnchor::openingAnchor(prev, here)) return opening;
+  if (!ParagraphAnchor::guardNeeded(page)) return here;
+  const uint16_t spanning = ParagraphAnchor::spanningAnchor(here, lut[ParagraphAnchor::guardPage(page)]);
+  if (spanning == 0) return std::nullopt;
+  return spanning;
+}
+
+// Mirrors Section::findPageForParagraphIndex(): the first page whose entry has reached the index,
+// i.e. the page the anchored paragraph starts on.
+std::optional<uint16_t> pageForAnchor(const uint16_t* lut, const size_t count, const uint16_t index) {
+  for (size_t i = 0; i < count; i++) {
+    if (lut[i] >= index) return static_cast<uint16_t>(i);
+  }
+  return std::nullopt;
+}
+
+// Ordinary prose: three paragraphs finish on every page.
+constexpr uint16_t PROSE[] = {3, 6, 9, 12, 15, 18, 21, 24};
+
+}  // namespace
+
+// The property the whole anchored path rests on: under an UNCHANGED pagination the anchor resolves
+// back to the very page it was taken from, so a rebuild that did not re-paginate (Delete Cache) puts
+// the reader back exactly where they were.
+static void test_anchor_round_trips_on_an_unchanged_layout() {
+  for (uint16_t page = 1; page < std::size(PROSE); page++) {
+    const auto anchor = anchorForPage(PROSE, std::size(PROSE), page);
+    TEST_ASSERT_TRUE(anchor.has_value());
+    const auto landing = pageForAnchor(PROSE, std::size(PROSE), *anchor);
+    TEST_ASSERT_TRUE(landing.has_value());
+    TEST_ASSERT_EQUAL_UINT16(page, *landing);
+  }
+}
+
+// The anchor must be the FIRST paragraph the page opens, not the last one on it. Page 2 of PROSE
+// holds paragraphs 7, 8 and 9; anchoring on 9 would, after any re-layout that pushes 9 onto a later
+// page, skip 7 and 8 entirely -- content the reader had not read.
+static void test_anchor_is_the_first_paragraph_the_page_opens() {
+  TEST_ASSERT_EQUAL_UINT16(7, *anchorForPage(PROSE, std::size(PROSE), 2));
+  TEST_ASSERT_EQUAL_UINT16(4, *anchorForPage(PROSE, std::size(PROSE), 1));
+}
+
+// Same chapter re-laid-out at a larger font (two paragraphs per page instead of three). The reader
+// was at the top of old page 2, which begins at paragraph 7; they must land on the new page that
+// begins at paragraph 7, never past it.
+static void test_anchor_lands_on_the_same_paragraph_after_growing() {
+  constexpr uint16_t BIGGER[] = {2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24};
+  const auto anchor = anchorForPage(PROSE, std::size(PROSE), 2);
+  TEST_ASSERT_EQUAL_UINT16(7, *anchor);
+  const auto landing = pageForAnchor(BIGGER, std::size(BIGGER), *anchor);
+  TEST_ASSERT_EQUAL_UINT16(3, *landing);  // BIGGER page 3 holds paragraphs 7 and 8
+}
+
+// The shrinking direction, which was one of the original bugs: four paragraphs per page now.
+static void test_anchor_lands_on_the_same_paragraph_after_shrinking() {
+  constexpr uint16_t SMALLER[] = {4, 8, 12, 16, 20, 24};
+  const auto anchor = anchorForPage(PROSE, std::size(PROSE), 4);  // old page 4 opens paragraph 13
+  TEST_ASSERT_EQUAL_UINT16(13, *anchor);
+  const auto landing = pageForAnchor(SMALLER, std::size(SMALLER), *anchor);
+  TEST_ASSERT_EQUAL_UINT16(3, *landing);  // SMALLER page 3 holds paragraphs 13-16
+}
+
+// Page 0 is the chapter top under every pagination, so the saved page number already survives the
+// re-layout and the anchor must stay out of it -- the only index page 0 could offer is the last
+// paragraph on it, which under a larger font starts on page 1.
+static void test_page_zero_is_never_anchored() {
+  TEST_ASSERT_FALSE(anchorForPage(PROSE, std::size(PROSE), 0).has_value());
+}
+
+// A chapter that marks its paragraphs with <div> opens no <p> at all, so every entry is 0 and no
+// page can be anchored. This is the case the page-ratio fallback exists for; it must not be
+// papered over with a bogus anchor of 0, which would resolve to the chapter's first page.
+static void test_a_chapter_without_p_elements_is_never_anchored() {
+  constexpr uint16_t NO_PARAGRAPHS[] = {0, 0, 0, 0, 0, 0};
+  for (uint16_t page = 0; page < std::size(NO_PARAGRAPHS); page++) {
+    TEST_ASSERT_FALSE(anchorForPage(NO_PARAGRAPHS, std::size(NO_PARAGRAPHS), page).has_value());
+  }
+}
+
+// A page that opens no paragraph of its own (it lies inside one that began earlier) still anchors,
+// on the paragraph running through it -- that is most of the anchor's coverage on a long-paragraph
+// book, and under Interlinear, where every paragraph is roughly twice as tall. Resolving it steps
+// BACK to the paragraph's first page, which is a re-read and never a skip, and the step is bounded.
+static void test_a_page_inside_a_paragraph_anchors_within_the_drift_bound() {
+  // Paragraph 4 spans pages 3, 4 and 5; paragraph 5 opens on page 6.
+  constexpr uint16_t LONG_PARAGRAPH[] = {1, 2, 3, 4, 4, 4, 5, 6};
+  for (uint16_t page = 3; page <= 5; page++) {
+    const auto anchor = anchorForPage(LONG_PARAGRAPH, std::size(LONG_PARAGRAPH), page);
+    TEST_ASSERT_TRUE(anchor.has_value());
+    const auto landing = pageForAnchor(LONG_PARAGRAPH, std::size(LONG_PARAGRAPH), *anchor);
+    TEST_ASSERT_TRUE(landing.has_value());
+    TEST_ASSERT_TRUE(*landing <= page);
+    TEST_ASSERT_TRUE(page - *landing <= ParagraphAnchor::MAX_BACKWARD_DRIFT_PAGES);
+  }
+}
+
+// ...and the degenerate chapter laid out as one enormous <p> is refused rather than teleporting the
+// reader to the chapter top. Pages 1 and 2 are still inside the bound (nothing can start before page
+// 0); everything past that is out.
+static void test_one_enormous_paragraph_is_refused_past_the_drift_bound() {
+  constexpr uint16_t ONE_PARAGRAPH[] = {1, 1, 1, 1, 1, 1, 1, 1};
+  for (uint16_t page = 1; page <= ParagraphAnchor::MAX_BACKWARD_DRIFT_PAGES; page++) {
+    TEST_ASSERT_TRUE(anchorForPage(ONE_PARAGRAPH, std::size(ONE_PARAGRAPH), page).has_value());
+  }
+  for (uint16_t page = ParagraphAnchor::MAX_BACKWARD_DRIFT_PAGES + 1; page < std::size(ONE_PARAGRAPH); page++) {
+    TEST_ASSERT_FALSE(anchorForPage(ONE_PARAGRAPH, std::size(ONE_PARAGRAPH), page).has_value());
+  }
+}
+
+// A page whose paragraph began just inside the bound is kept; one page further back is dropped.
+static void test_the_drift_bound_is_exactly_max_backward_drift_pages() {
+  // Paragraph 2 begins on page 2 and runs to page 4: page 4 is 2 pages after it began (kept),
+  // page 5 would be 3 (dropped).
+  constexpr uint16_t SPANNING[] = {1, 1, 2, 2, 2, 2, 3};
+  TEST_ASSERT_EQUAL_UINT16(2, *anchorForPage(SPANNING, std::size(SPANNING), 4));
+  TEST_ASSERT_FALSE(anchorForPage(SPANNING, std::size(SPANNING), 5).has_value());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_record_round_trips_every_field);
@@ -154,5 +290,14 @@ int main(int, char**) {
   RUN_TEST(test_ratio_remap_keeps_the_page_when_a_total_is_unusable);
   RUN_TEST(test_ratio_remap_never_leaves_the_new_page_range);
   RUN_TEST(test_ratio_remap_keeps_the_first_page_first);
+  RUN_TEST(test_anchor_round_trips_on_an_unchanged_layout);
+  RUN_TEST(test_anchor_is_the_first_paragraph_the_page_opens);
+  RUN_TEST(test_anchor_lands_on_the_same_paragraph_after_growing);
+  RUN_TEST(test_anchor_lands_on_the_same_paragraph_after_shrinking);
+  RUN_TEST(test_page_zero_is_never_anchored);
+  RUN_TEST(test_a_chapter_without_p_elements_is_never_anchored);
+  RUN_TEST(test_a_page_inside_a_paragraph_anchors_within_the_drift_bound);
+  RUN_TEST(test_one_enormous_paragraph_is_refused_past_the_drift_bound);
+  RUN_TEST(test_the_drift_bound_is_exactly_max_backward_drift_pages);
   return UNITY_END();
 }
