@@ -36,6 +36,8 @@
 #include "QrDisplayActivity.h"
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
+#include "SdCardFontSystem.h"
+#include "activities/settings/TextSettingsActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/BookmarkUtil.h"
@@ -1070,6 +1072,66 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
           });
       break;
     }
+    case EpubReaderMenuActivity::MenuAction::TEXT_SETTINGS: {
+      // Reuses the Settings screen's TextSettingsActivity verbatim -- family, size, line spacing,
+      // alignment, margin, style AND its live preview -- so the reader menu holds ONE row instead
+      // of a second copy of that list to keep in sync.
+      //
+      // Every row that screen writes except Text Anti-Aliasing is a section.bin cache key input,
+      // so the pre-change state is remembered here and the chapter is re-laid-out only when it
+      // actually moved. Both specs are built from the SAME (pre-change) viewport so it cancels out
+      // and only the settings-derived fields can differ; screenMargin is compared on its own
+      // because it feeds that viewport, which render() derives from panel geometry + status bar +
+      // margin and which cannot be recomputed here without duplicating the math.
+      //
+      // The viewport is captured by value rather than re-read through `this` in the handler, so
+      // the two specs are comparable regardless of what runs in between.
+      const uint16_t vpWidth = buildViewportWidth;
+      const uint16_t vpHeight = buildViewportHeight;
+      const ReaderRenderSpec specBefore = SETTINGS.readerRenderSpec(vpWidth, vpHeight);
+      const uint8_t marginBefore = SETTINGS.screenMargin;
+      const bool antiAliasingBefore = SETTINGS.textAntiAliasing != 0;
+      startActivityForResult(
+          std::make_unique<TextSettingsActivity>(renderer, mappedInput, &sdFontSystem.registry(),
+                                                 TextSettingsActivity::Tab::Family),
+          [this, specBefore, marginBefore, antiAliasingBefore, vpWidth, vpHeight](const ActivityResult&) {
+            const bool layoutChanged = !SETTINGS.readerRenderSpec(vpWidth, vpHeight).layoutEquals(specBefore) ||
+                                       SETTINGS.screenMargin != marginBefore;
+
+            // TextSettingsActivity mutates SETTINGS in place and never persists, so this
+            // path has to -- but value-change-guarded: a visit that only browsed must not
+            // burn a SPIFFS erase cycle. Anti-Aliasing is checked separately because it is
+            // the one row that screen writes which is a DRAW-time choice, not a layout
+            // input: it must persist without forcing a re-layout.
+            if (layoutChanged || (SETTINGS.textAntiAliasing != 0) != antiAliasingBefore) {
+              SETTINGS.saveToFile();
+            }
+
+            if (layoutChanged) {
+              // Funnel into the SAME settings-change reposition the Lingua submenu and
+              // applyOrientation() use: stash the pre-change spine + chapter page count, keep the
+              // raw page number, drop the Section, and let render() rebuild against the new spec
+              // while applyDeferredReposition() remaps the page once the final count is known.
+              RenderLock lock(*this);
+              if (section) {
+                cachedSpineIndex = currentSpineIndex;
+                cachedChapterTotalPageCount = section->pageCount;
+                nextPageNumber = section->currentPage;
+              }
+              section.reset();
+              // A new font/size/margin is a different section.bin key, so the rebuild can be a
+              // cache HIT with DIFFERENT pagination: this flag keeps the cached page count alive
+              // past render()'s cacheLoaded reset and forces the full build on a miss, which is
+              // what makes the remap fire in both cases. Gated on a count actually being stashed:
+              // openReaderMenu() runs applyOrientation() BEFORE this handler, so a visit that both
+              // rotated and opened Text Settings arrives here with the section already dropped and
+              // the count already stored -- that reposition still needs the flag.
+              if (cachedChapterTotalPageCount != 0) pendingModeReposition = true;
+            }
+            requestUpdate();
+          });
+      break;
+    }
     case EpubReaderMenuActivity::MenuAction::AUTO_PAGE_TURN:
     case EpubReaderMenuActivity::MenuAction::ROTATE_SCREEN:
       // Adjusted in place inside the menu (an option popup writes MenuResult::orientation /
@@ -1375,8 +1437,9 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     // wrong word x-positions, line height and page breaks. So renderSpec is re-resolved immediately
     // below, before section->loadSectionFile() and every build call in this `if (!section)` block, to
     // match what draw time will use. It does not touch pendingModeReposition (that is only for the
-    // submenu-return relayout), so no reposition machinery fires. Subsequent chapter loads recompute
-    // renderSpec from SETTINGS and see PT_NORMAL, gating out further toasts.
+    // deliberate Lingua-submenu / Text-Settings relayouts), so no reposition machinery fires.
+    // Subsequent chapter loads recompute renderSpec from SETTINGS and see PT_NORMAL, gating out
+    // further toasts.
     //
     // This is the single, cache-state-independent trigger for every user-facing entry into a chapter:
     // the enclosing `if (!section)` block runs exactly once per section (re)creation, i.e. once per

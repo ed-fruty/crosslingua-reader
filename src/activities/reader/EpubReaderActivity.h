@@ -51,6 +51,11 @@ class EpubReaderActivity final : public Activity {
   // a full (blocking) build (so a cache-miss first switch remaps against the final count) -- a
   // windowed build can finalize after applyDeferredReposition()'s window, silently dropping the
   // reposition. See the PRE_TRANSLATION submenu-return handler and render().
+  //
+  // Also set by the TEXT_SETTINGS return handler, whose problem is identical in shape: a new font
+  // family / size / margin / layout option is likewise a different section.bin key that can load a
+  // DIFFERENTLY paginated cached layout. Kept under this name (rather than a broader one) so the
+  // two reposition triggers stay one mechanism with one set of render() interactions.
   bool pendingModeReposition = false;
   bool pendingScreenshot = false;
   bool pendingSyncSaveError = false;
