@@ -415,7 +415,7 @@ STR_PT_TRANSLATION_ONLY: "Yalnızca Çeviri"
 STR_PT_SIDE_BY_SIDE: "Yan Yana"
 STR_PT_MODAL: "Modal"
 STR_PT_TOOLTIP: "İpucu"
-STR_PT_PARAGRAPH: "Paragraf paragraf"
+STR_PT_INTERLEAVED: "Dönüşümlü"
 STR_PT_INTERLINEAR: "Satır arası"
 
 STR_TOOLTIP_BUTTONS: "İpucu Tuşları"

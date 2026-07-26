@@ -326,7 +326,7 @@ STR_PT_TRANSLATION_ONLY: "Samo prevod"
 STR_PT_SIDE_BY_SIDE: "Vzporedno"
 STR_PT_MODAL: "Modalno"
 STR_PT_TOOLTIP: "Oblaček"
-STR_PT_PARAGRAPH: "Odstavek za odstavkom"
+STR_PT_INTERLEAVED: "Izmenično"
 STR_PT_INTERLINEAR: "Medvrstični"
 
 STR_TOOLTIP_BUTTONS: "Gumbi oblačka"

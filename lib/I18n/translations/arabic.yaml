@@ -402,7 +402,7 @@ STR_PT_TRANSLATION_ONLY: "الترجمة فقط"
 STR_PT_SIDE_BY_SIDE: "جنبًا إلى جنب"
 STR_PT_MODAL: "نافذة منبثقة"
 STR_PT_TOOLTIP: "تلميح"
-STR_PT_PARAGRAPH: "فقرة بفقرة"
+STR_PT_INTERLEAVED: "متناوب"
 STR_PT_INTERLINEAR: "بين السطور"
 
 STR_TOOLTIP_BUTTONS: "أزرار التلميح"

@@ -99,8 +99,8 @@ one field:
   `translationDisplayMode` now holds the `PtLayout` that mode implies:
   `0 = Both`, `1 = OriginalOnly`, `2 = TranslationOnly`, `3 = SideBySide` (see
   `lib/Epub/Epub/PtLayout.h`). Several display modes produce byte-identical
-  pages and now share one cache entry: Normal / Paragraph / Interlinear all map
-  to `Both` (Paragraph differs only in the *gray level* translated words are
+  pages and now share one cache entry: Normal / Interleaved / Interlinear all map
+  to `Both` (Interleaved differs only in the *gray level* translated words are
   drawn at, which never moves a glyph), and Original Only / Modal / Tooltip all
   map to `OriginalOnly` (the overlay modes composite their translation at view
   time, so their main flow is original-only). Switching between two modes that

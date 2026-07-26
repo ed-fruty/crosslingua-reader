@@ -325,7 +325,7 @@ STR_PT_TRANSLATION_ONLY: "Тек аударма"
 STR_PT_SIDE_BY_SIDE: "Қатар"
 STR_PT_MODAL: "Модальды"
 STR_PT_TOOLTIP: "Қалқыма"
-STR_PT_PARAGRAPH: "Абзацтан абзацқа"
+STR_PT_INTERLEAVED: "Кезектесіп"
 STR_PT_INTERLINEAR: "Жолдар аралық"
 
 STR_TOOLTIP_BUTTONS: "Қалқыма түймелері"

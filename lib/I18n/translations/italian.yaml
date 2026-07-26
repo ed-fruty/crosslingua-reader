@@ -438,7 +438,7 @@ STR_PT_TRANSLATION_ONLY: "Solo traduzione"
 STR_PT_SIDE_BY_SIDE: "Affiancati"
 STR_PT_MODAL: "Modale"
 STR_PT_TOOLTIP: "Tooltip"
-STR_PT_PARAGRAPH: "Paragrafo per paragrafo"
+STR_PT_INTERLEAVED: "Alternato"
 STR_PT_INTERLINEAR: "Interlineare"
 
 STR_TOOLTIP_BUTTONS: "Pulsanti tooltip"

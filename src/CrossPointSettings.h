@@ -175,20 +175,20 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // PT_MODAL = 6, so tooltip appends as 7.
   //
   // PERMANENT HOLES: 1 and 2. They were the "Dimmed" / "Dimmed Light" modes, which are now ONE
-  // mode (PT_PARAGRAPH) plus the translationShade colour sub-setting. The two values are retired,
+  // mode (PT_INTERLEAVED) plus the translationShade colour sub-setting. The two values are retired,
   // NEVER selectable (they are absent from PT_SELECTABLE_MODES in PreTranslationModes.h) and
-  // migrated to PT_PARAGRAPH + shade at load (see fromJson). They are kept as holes — never
+  // migrated to PT_INTERLEAVED + shade at load (see fromJson). They are kept as holes — never
   // reused, never renumbered — so an old settings.json is migrated rather than reinterpreted.
   enum PRE_TRANSLATION_MODE : uint8_t {
     PT_NORMAL = 0,
-    PT_LEGACY_DIMMED = 1,        // retired hole -> PT_PARAGRAPH + SHADE_DIMMED
-    PT_LEGACY_DIMMED_LIGHT = 2,  // retired hole -> PT_PARAGRAPH + SHADE_DIMMED_LIGHT
+    PT_LEGACY_DIMMED = 1,        // retired hole -> PT_INTERLEAVED + SHADE_DIMMED
+    PT_LEGACY_DIMMED_LIGHT = 2,  // retired hole -> PT_INTERLEAVED + SHADE_DIMMED_LIGHT
     PT_ORIGINAL_ONLY = 3,
     PT_TRANSLATION_ONLY = 4,
     PT_SIDE_BY_SIDE = 5,
     PT_MODAL = 6,
     PT_TOOLTIP = 7,
-    PT_PARAGRAPH = 8,
+    PT_INTERLEAVED = 8,
     // Reserved, NOT yet selectable: the layout is not implemented, so it is deliberately absent
     // from PT_SELECTABLE_MODES (see PreTranslationModes.h for how to re-add it).
     PT_INTERLINEAR = 9,
@@ -199,7 +199,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // PT_SELECTABLE_MODES instead (src/PreTranslationModes.h).
   static constexpr uint8_t PT_MODE_COUNT = PT_INTERLINEAR + 1;
 
-  // Pre-Translation: colour of translated text in Paragraph mode (PT_PARAGRAPH). It selects the
+  // Pre-Translation: colour of translated text in Interleaved mode (PT_INTERLEAVED). It selects the
   // renderer's gray level for words carrying the TRANSLATED style bit.
   // DRAWING ONLY: it never changes word measurement, line breaking or pagination, so it must NOT
   // enter the section.bin cache key (ReaderRenderSpec) — switching shade stays instant.
@@ -355,7 +355,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t translationEngine = ENGINE_GOOGLE_V2;
   char translateApiKey[128] = "";
   uint8_t translationDisplayMode = PT_NORMAL;
-  // Paragraph-mode (PT_PARAGRAPH) translated-text colour. Drawing-only; see TRANSLATION_SHADE.
+  // Interleaved-mode (PT_INTERLEAVED) translated-text colour. Drawing-only; see TRANSLATION_SHADE.
   uint8_t translationShade = SHADE_DIMMED;
   // Tooltip display mode (PT_TOOLTIP) controls. Ported from the upstream fork.
   // tooltipButtons: which button pair steps through per-sentence tooltips (OVERLAY_BUTTONS).

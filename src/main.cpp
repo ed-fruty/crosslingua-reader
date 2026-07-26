@@ -138,13 +138,13 @@ enum class BootResume : uint8_t {
 static bool deepSleepInProgress = false;
 
 // Pre-Translation: map the display mode + shade sub-setting to the renderer's 3-level gray value.
-// Only Paragraph mode dims translated text, and the shade picks how far (SHADE_DIMMED->1,
+// Only Interleaved mode dims translated text, and the shade picks how far (SHADE_DIMMED->1,
 // SHADE_DIMMED_LIGHT->2); every other mode draws in normal black (0), including the overlay modes
 // which render original-only in the main flow. The shade is DRAWING-only, which is why it is read
 // here (every tick) and not in the section cache key. constexpr keeps this a compile-time lookup
 // with zero runtime/flash overhead.
 static constexpr uint8_t modeToGray(uint8_t mode, uint8_t shade) {
-  return (mode != CrossPointSettings::PT_PARAGRAPH) ? 0 : (shade == CrossPointSettings::SHADE_DIMMED_LIGHT) ? 2 : 1;
+  return (mode != CrossPointSettings::PT_INTERLEAVED) ? 0 : (shade == CrossPointSettings::SHADE_DIMMED_LIGHT) ? 2 : 1;
 }
 
 void silentRestart() {

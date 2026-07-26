@@ -24,7 +24,7 @@
 // what keeps the cycle order stable for users), and change the static_assert's `- 3` back to
 // `- 2` together with its message.
 inline constexpr CrossPointSettings::PRE_TRANSLATION_MODE PT_SELECTABLE_MODES[] = {
-    CrossPointSettings::PT_NORMAL,        CrossPointSettings::PT_PARAGRAPH,        CrossPointSettings::PT_SIDE_BY_SIDE,
+    CrossPointSettings::PT_NORMAL,        CrossPointSettings::PT_INTERLEAVED,      CrossPointSettings::PT_SIDE_BY_SIDE,
     CrossPointSettings::PT_ORIGINAL_ONLY, CrossPointSettings::PT_TRANSLATION_ONLY, CrossPointSettings::PT_TOOLTIP,
     CrossPointSettings::PT_MODAL,
 };
@@ -45,8 +45,8 @@ constexpr StrId ptModeLabel(const CrossPointSettings::PRE_TRANSLATION_MODE mode)
   switch (mode) {
     case CrossPointSettings::PT_NORMAL:
       return StrId::STR_PT_NORMAL;
-    case CrossPointSettings::PT_PARAGRAPH:
-      return StrId::STR_PT_PARAGRAPH;
+    case CrossPointSettings::PT_INTERLEAVED:
+      return StrId::STR_PT_INTERLEAVED;
     case CrossPointSettings::PT_SIDE_BY_SIDE:
       return StrId::STR_PT_SIDE_BY_SIDE;
     case CrossPointSettings::PT_ORIGINAL_ONLY:

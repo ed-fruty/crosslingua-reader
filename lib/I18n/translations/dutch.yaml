@@ -329,7 +329,7 @@ STR_PT_TRANSLATION_ONLY: "Alleen vertaling"
 STR_PT_SIDE_BY_SIDE: "Naast elkaar"
 STR_PT_MODAL: "Modaal"
 STR_PT_TOOLTIP: "Tooltip"
-STR_PT_PARAGRAPH: "Alinea voor alinea"
+STR_PT_INTERLEAVED: "Afwisselend"
 STR_PT_INTERLINEAR: "Interlineair"
 
 STR_TOOLTIP_BUTTONS: "Tooltip-knoppen"

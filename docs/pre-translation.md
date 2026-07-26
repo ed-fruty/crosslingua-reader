@@ -72,7 +72,7 @@ EPUBs prepared elsewhere (e.g. Calibre's Polyglot output).
 
 <img src="./images/pre-translation/mode-normal.jpg" height="500" alt="Normal mode" />
 
-### Paragraph by Paragraph
+### Interleaved
 
 Like Normal — original and translation alternate paragraph by paragraph —
 but translated paragraphs are drawn in gray so you can tell them apart at a
@@ -82,11 +82,11 @@ The gray level is a separate stored setting (**Dimmed** or **Dimmed
 Light**), not a mode of its own. It affects drawing only: switching shade
 never re-lays out the chapter.
 
-<img src="./images/pre-translation/mode-dark.jpg" height="500" alt="Paragraph by Paragraph mode, Dimmed shade" />
+<img src="./images/pre-translation/mode-dark.jpg" height="500" alt="Interleaved mode, Dimmed shade" />
 
 *Dimmed shade.*
 
-<img src="./images/pre-translation/mode-light.jpg" height="500" alt="Paragraph by Paragraph mode, Dimmed Light shade" />
+<img src="./images/pre-translation/mode-light.jpg" height="500" alt="Interleaved mode, Dimmed Light shade" />
 
 *Dimmed Light shade.*
 

@@ -237,7 +237,7 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   translationShade =
       clamp(doc["translationShade"] | (uint8_t)SHADE_DIMMED, (uint8_t)TRANSLATION_SHADE_COUNT, (uint8_t)SHADE_DIMMED);
   // Display mode, with the retired-hole migration. Values 1 and 2 were the separate "Dimmed" and
-  // "Dimmed Light" modes; they are now ONE mode (PT_PARAGRAPH) plus the translationShade colour
+  // "Dimmed Light" modes; they are now ONE mode (PT_INTERLEAVED) plus the translationShade colour
   // sub-setting, so a stored 1/2 folds into that pair and requests a resave — same needsResave
   // mechanism as the font-size rescale and the OpenDyslexic family remap above. Anything else out
   // of range clamps to PT_NORMAL. These two branches are exhaustive over the stored value, and
@@ -245,7 +245,7 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   // holding a retired hole.
   const uint8_t storedDisplayMode = doc["translationDisplayMode"] | (uint8_t)PT_NORMAL;
   if (storedDisplayMode == PT_LEGACY_DIMMED || storedDisplayMode == PT_LEGACY_DIMMED_LIGHT) {
-    translationDisplayMode = PT_PARAGRAPH;
+    translationDisplayMode = PT_INTERLEAVED;
     translationShade = (storedDisplayMode == PT_LEGACY_DIMMED_LIGHT) ? SHADE_DIMMED_LIGHT : SHADE_DIMMED;
     needsResave = true;
   } else {
@@ -300,12 +300,12 @@ PtLayout CrossPointSettings::ptLayoutForDisplayMode(const uint8_t mode) {
       return PtLayout::TranslationOnly;
     case PT_SIDE_BY_SIDE:
       return PtLayout::SideBySide;
-    // Everything inline-bilingual. Paragraph differs from Normal only in the gray level translated
+    // Everything inline-bilingual. Interleaved differs from Normal only in the gray level translated
     // words are DRAWN at (translationShade), which never moves a glyph, so the pages are identical.
     // Interlinear is listed here until it grows its own layout. The retired holes can never reach
     // this function (fromJson migrates them), but are mapped so the switch stays exhaustive.
     case PT_NORMAL:
-    case PT_PARAGRAPH:
+    case PT_INTERLEAVED:
     case PT_INTERLINEAR:
     case PT_LEGACY_DIMMED:
     case PT_LEGACY_DIMMED_LIGHT:

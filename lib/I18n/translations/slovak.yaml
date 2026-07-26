@@ -405,7 +405,7 @@ STR_PT_TRANSLATION_ONLY: "Iba preklad"
 STR_PT_SIDE_BY_SIDE: "Vedľa seba"
 STR_PT_MODAL: "Modálny"
 STR_PT_TOOLTIP: "Bublina"
-STR_PT_PARAGRAPH: "Odsek po odseku"
+STR_PT_INTERLEAVED: "Striedavo"
 STR_PT_INTERLINEAR: "Medziriadkový"
 
 STR_TOOLTIP_BUTTONS: "Tlačidlá bubliny"

@@ -422,7 +422,7 @@ STR_PT_TRANSLATION_ONLY: "Chỉ bản dịch"
 STR_PT_SIDE_BY_SIDE: "Song song"
 STR_PT_MODAL: "Cửa sổ nổi"
 STR_PT_TOOLTIP: "Khung nổi"
-STR_PT_PARAGRAPH: "Từng đoạn văn"
+STR_PT_INTERLEAVED: "Xen kẽ"
 STR_PT_INTERLINEAR: "Xen dòng"
 
 STR_TOOLTIP_BUTTONS: "Nút khung nổi"

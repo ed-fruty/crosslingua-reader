@@ -416,7 +416,7 @@ STR_PT_TRANSLATION_ONLY: "Csak fordítás"
 STR_PT_SIDE_BY_SIDE: "Egymás mellett"
 STR_PT_MODAL: "Modális"
 STR_PT_TOOLTIP: "Buborék"
-STR_PT_PARAGRAPH: "Bekezdésenként"
+STR_PT_INTERLEAVED: "Felváltva"
 STR_PT_INTERLINEAR: "Sorközi"
 
 STR_TOOLTIP_BUTTONS: "Buborékgombok"
