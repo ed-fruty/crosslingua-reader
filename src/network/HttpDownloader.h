@@ -49,9 +49,12 @@ class HttpDownloader {
 
   /**
    * Fetch text content from a URL with optional credentials.
+   * @param userAgent Overrides the default "CrossPoint-ESP32-<version>" User-Agent for
+   *        this call only; nullptr keeps the default. Needed for endpoints that are
+   *        UA-sensitive (the anonymous Azure/Edge token endpoint expects a browser UA).
    */
   static bool fetchUrl(const std::string& url, std::string& outContent, const std::string& username = "",
-                       const std::string& password = "");
+                       const std::string& password = "", const char* userAgent = nullptr);
 
   static bool fetchUrl(const std::string& url, Stream& stream, const std::string& username = "",
                        const std::string& password = "");

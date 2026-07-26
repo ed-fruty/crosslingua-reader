@@ -108,7 +108,7 @@ bool insufficientHeapForReuse() {
 }
 
 HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std::string& username,
-                                         const std::string& password, Sink& sink) {
+                                         const std::string& password, Sink& sink, const char* userAgent) {
   std::string url = startUrl;
 
   for (int hop = 0; hop <= MAX_REDIRECTS; ++hop) {
@@ -123,8 +123,9 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
     }
     // setUserAgent replaces SecureHttpClient's built-in UA; addHeader would
     // append a second User-Agent header, which strict servers reject (aiohttp
-    // answers 400 "Duplicate 'User-Agent' header found").
-    http.setUserAgent("CrossPoint-ESP32-" CROSSPOINT_VERSION);
+    // answers 400 "Duplicate 'User-Agent' header found"). A caller-supplied UA
+    // replaces ours the same way — still exactly one User-Agent header.
+    http.setUserAgent(userAgent ? userAgent : "CrossPoint-ESP32-" CROSSPOINT_VERSION);
     if (!username.empty() && !password.empty()) {
       const std::string credentials = username + ":" + password;
       const String encoded = base64::encode(credentials.c_str());
@@ -230,7 +231,7 @@ bool runPostWolf(const std::string& url, const std::string& body, const char* co
 // that ends early as ESP_ERR_HTTP_INCOMPLETE_DATA, whereas the read loop streams
 // large/slow files and surfaces a short read directly.
 HttpDownloader::DownloadError runGet(const std::string& url, const std::string& username, const std::string& password,
-                                     Sink& sink) {
+                                     Sink& sink, const char* userAgent) {
   esp_http_client_config_t config = {};
   config.url = url.c_str();
   config.buffer_size = HTTP_RX_BUF;
@@ -251,7 +252,8 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
     return HttpDownloader::HTTP_ERROR;
   }
 
-  esp_http_client_set_header(client, "User-Agent", "CrossPoint-ESP32-" CROSSPOINT_VERSION);
+  // A caller-supplied UA replaces the default for this request only.
+  esp_http_client_set_header(client, "User-Agent", userAgent ? userAgent : "CrossPoint-ESP32-" CROSSPOINT_VERSION);
   if (!username.empty() && !password.empty()) {
     // Preemptive Basic auth, like the prior addHeader; don't wait for a 401.
     const std::string credentials = username + ":" + password;
@@ -407,12 +409,14 @@ bool runPost(const std::string& url, const std::string& body, const char* conten
 // speaks TLS 1.3 and reads large bodies from servers where the esp_http_client/
 // mbedTLS path fails to connect or stalls mid-stream. Plain-http URLs still use a
 // WiFiClient inside runGetWolf, so this is safe for non-TLS targets too.
+// `userAgent` is nullptr for every caller but the ones that must present a specific
+// User-Agent (see HttpDownloader::fetchUrl); nullptr keeps the default CrossPoint UA.
 HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::string& username,
-                                           const std::string& password, Sink& sink) {
+                                           const std::string& password, Sink& sink, const char* userAgent = nullptr) {
 #if defined(FREEINK_NET_WOLFSSL)
-  return runGetWolf(url, username, password, sink);
+  return runGetWolf(url, username, password, sink, userAgent);
 #else
-  return runGet(url, username, password, sink);
+  return runGet(url, username, password, sink, userAgent);
 #endif
 }
 
@@ -436,7 +440,7 @@ bool HttpDownloader::fetchUrl(const std::string& url, Stream& outContent, const 
 }
 
 bool HttpDownloader::fetchUrl(const std::string& url, std::string& outContent, const std::string& username,
-                              const std::string& password) {
+                              const std::string& password, const char* userAgent) {
   LOG_DBG("HTTP", "Fetching: %s", url.c_str());
   outContent.clear();  // start clean; the sink appends, so don't carry prior content
   Sink sink;
@@ -444,7 +448,7 @@ bool HttpDownloader::fetchUrl(const std::string& url, std::string& outContent, c
     outContent.append(reinterpret_cast<const char*>(data), len);
     return true;
   };
-  return runGetSecure(url, username, password, sink) == OK;
+  return runGetSecure(url, username, password, sink, userAgent) == OK;
 }
 
 bool HttpDownloader::fetchUrl(const std::string& url, const DataCallback& onData, const std::string& username,

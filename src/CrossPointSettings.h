@@ -224,6 +224,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
 
   // Pre-Translation feature: translation backend selection
   // Values match upstream fork (crosspoint-reader) to keep JSON-stored indices stable.
+  // VALUE STABILITY: persisted as an integer — append only, never renumber.
   enum TRANSLATION_ENGINE : uint8_t {
     ENGINE_GOOGLE_FREE = 0,
     ENGINE_DEEPL = 1,
@@ -233,6 +234,11 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     ENGINE_GEMINI = 5,
     ENGINE_GOOGLE_V2 = 6,
     ENGINE_GOOGLE_HTML = 7,
+    // Microsoft's Edge-browser translator deployment (api-edge.cognitive.microsofttranslator.com),
+    // authenticated with an anonymous short-lived token from edge.microsoft.com/translate/auth.
+    // This is NOT the paid Azure Translator resource (api.cognitive.microsofttranslator.com),
+    // which would need a subscription key + region — this endpoint is keyless, so no UI is needed.
+    ENGINE_AZURE = 8,
     TRANSLATION_ENGINE_COUNT
   };
 

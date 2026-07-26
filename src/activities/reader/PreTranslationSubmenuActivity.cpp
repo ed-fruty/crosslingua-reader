@@ -451,10 +451,11 @@ const char* PreTranslationSubmenuActivity::translationSizeLabel(const uint8_t st
 }
 
 const char* PreTranslationSubmenuActivity::engineLabel() const {
+  // Positional: index == CrossPointSettings::TRANSLATION_ENGINE value. Append only.
   static const StrId labels[] = {
       StrId::STR_ENGINE_GOOGLE_FREE, StrId::STR_ENGINE_DEEPL,       StrId::STR_ENGINE_DEEPL_PRO,
       StrId::STR_ENGINE_OPENAI,      StrId::STR_ENGINE_DEEPSEEK,    StrId::STR_ENGINE_GEMINI,
-      StrId::STR_ENGINE_GOOGLE_V2,   StrId::STR_ENGINE_GOOGLE_HTML,
+      StrId::STR_ENGINE_GOOGLE_V2,   StrId::STR_ENGINE_GOOGLE_HTML, StrId::STR_ENGINE_AZURE,
   };
   const uint8_t eng = SETTINGS.translationEngine;
   if (eng >= sizeof(labels) / sizeof(labels[0])) return I18N.get(StrId::STR_ENGINE_GOOGLE_V2);

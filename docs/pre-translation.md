@@ -38,9 +38,10 @@ translations in.
 
 ### 2. Pick your engine (optional)
 
-Default is Google V2 (Free) which needs no API key. For DeepL, OpenAI,
-DeepSeek, Gemini, or other engines requiring authentication, enter your
-API key under **API Key**.
+Default is Google V2 (Free) which needs no API key. Azure is also keyless.
+For DeepL, OpenAI, DeepSeek, Gemini, or other engines requiring
+authentication, enter your API key under **API Key** (the row only appears
+for engines that need one).
 
 <img src="./images/pre-translation/engine.jpg" height="500" alt="Engine picker" />
 
@@ -180,6 +181,30 @@ invalidates them.
 | OpenAI | API key | Translation via chat-completion API. |
 | DeepSeek | API key | Translation via DeepSeek chat API. |
 | Gemini | API key | Translation via Google Gemini API. |
+| Azure | None | Microsoft's Edge-browser translator endpoint. Keyless — see below. |
+
+### Azure
+
+Azure needs **no API key and no region**: pick it in the engine cycler and
+translate. It calls `api-edge.cognitive.microsofttranslator.com`, the
+deployment behind Microsoft Edge's built-in page translator, and
+authenticates with a short-lived bearer token fetched anonymously from
+`edge.microsoft.com/translate/auth` (cached for 8 minutes — normally one
+fetch per chapter, renewed between batches on a chapter long enough to
+outlive it). No credentials of any kind are sent.
+
+This is **not** the paid Azure Translator resource
+(`api.cognitive.microsofttranslator.com`), which would require a
+subscription key plus a region. Neither Edge endpoint is a documented,
+supported API, so Microsoft can change or withdraw them without notice —
+the same durability caveat that applies to the free Google engines.
+
+Azure is one of the engines that batches: a whole batch of paragraphs goes
+out as a single array of text items and comes back as one result per item,
+in order, so it makes far fewer requests per chapter than the per-paragraph
+engines. Chinese targets are sent as `zh-Hans` / `zh-Hant`, Norwegian as
+`nb` and Serbian as `sr-Cyrl`, which are the codes Azure's language list
+uses.
 
 ## Notes
 
@@ -195,7 +220,7 @@ invalidates them.
   server certificate is not verified, matching the firmware's standard
   HTTPS stack. API keys for paid engines (DeepL, OpenAI, DeepSeek,
   Gemini) travel over this connection; treat them as you would any
-  credential on an untrusted network. The free Google engines send only
-  the text being translated.
+  credential on an untrusted network. The free Google engines and Azure
+  send only the text being translated.
 - The first run takes longer than re-runs — chapter layouts re-index after
   translation completes.

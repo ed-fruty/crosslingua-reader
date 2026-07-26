@@ -490,6 +490,8 @@ const char* ChapterTranslatorActivity::getEngineName() const {
       return tr(STR_ENGINE_GOOGLE_V2);
     case CrossPointSettings::ENGINE_GOOGLE_HTML:
       return tr(STR_ENGINE_GOOGLE_HTML);
+    case CrossPointSettings::ENGINE_AZURE:
+      return tr(STR_ENGINE_AZURE);
     default:
       return "Unknown";
   }
