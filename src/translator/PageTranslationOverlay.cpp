@@ -1,6 +1,7 @@
 #include "PageTranslationOverlay.h"
 
 #include <CrossPointSettings.h>
+#include <Epub/ParsedText.h>
 #include <Epub/hyphenation/Hyphenator.h>
 #include <Epub/parsers/ParagraphBoundary.h>
 #include <HalStorage.h>
@@ -469,38 +470,6 @@ static std::string sliceTranslationForPage(const PageTranslationOverlay::Paragra
   return trimmed;
 }
 
-// The paragraph indent the PAGE LAYOUT already baked into this line — never a recomputed or
-// synthesized one. ParsedText::resolveFirstLineIndent() resolves the indent ONCE at layout time
-// (CSS text-indent, or a 3-space-width fallback when Extra Paragraph Spacing is off) and
-// extractLine() seeds the line's first word with it (`xpos = firstLineIndent`, ParsedText.cpp:1315,
-// and 1228 on the bidi-reordered path), so word 0's x IS that indent, in the body font's metrics and
-// already in the section cache (the word arena is serialized verbatim). Two properties fall out of
-// reading it rather than deriving it:
-//   • A paragraph that started on an EARLIER page reaches us as a continuation line, which the
-//     layout resolved with isFirstLine=false => indent 0 => it renders flush, correctly.
-//   • Extra Paragraph Spacing ON (the default) means the layout indents nothing => 0 here too, so
-//     the overlay stops claiming an indent the page never had.
-// Only a naturally-aligned LTR line's word-0 x is an indent: for Center/Right the layout overwrites
-// that x with an alignment offset, and an RTL line is positioned from the right edge (its indent
-// shrinks effectiveWidth instead). Both resolve to 0 — matching resolveFirstLineIndent(), which
-// returns 0 for any non-natural alignment, and matching this overlay, which re-wraps LTR only.
-static int16_t bakedFirstLineIndent(const PageLine& line) {
-  const auto& block = line.getBlock();
-  if (!block || block->wordCount() == 0) return 0;
-  const BlockStyle& style = block->getBlockStyle();
-  if (style.isRtl) return 0;
-  switch (style.alignment) {
-    case CssTextAlign::Justify:
-    case CssTextAlign::Left:
-      return block->wordXpos(0);
-    case CssTextAlign::Center:
-    case CssTextAlign::Right:
-    case CssTextAlign::None:
-      return 0;
-  }
-  return 0;  // unreachable: the switch is exhaustive (-Werror=switch proves it)
-}
-
 void PageTranslationOverlay::collectPageGlyphText(const Page& page, std::string& out) {
   preparePage(page);  // idempotent (pagePrepared guard); render() will find it already done
   size_t need = 0;
@@ -545,7 +514,6 @@ void PageTranslationOverlay::preparePage(const Page& page) {
   // safety-check. Lines of one paragraph are contiguous, so one entry per idx.
   struct ParaText {
     int16_t idx;
-    int16_t indent;  // the layout's own first-line indent, taken from this paragraph's FIRST line here
     std::string text;
   };
   std::vector<ParaText> pageParas;
@@ -554,9 +522,7 @@ void PageTranslationOverlay::preparePage(const Page& page) {
     const auto* line = static_cast<const PageLine*>(el.get());
     const int16_t pIdx = line->paragraphIdx;
     if (pIdx < 0) continue;
-    // A new idx starts a paragraph, so THIS line is the first one of it on this page — the only line
-    // whose x carries an indent (every later line of the same paragraph starts at 0).
-    if (pageParas.empty() || pageParas.back().idx != pIdx) pageParas.push_back({pIdx, bakedFirstLineIndent(*line), ""});
+    if (pageParas.empty() || pageParas.back().idx != pIdx) pageParas.push_back({pIdx, ""});
     // v2 flattened TextBlock word storage: iterate by index (wordCount/wordText),
     // NOT the fork's getWords() container.
     const auto& block = line->getBlock();
@@ -586,7 +552,6 @@ void PageTranslationOverlay::preparePage(const Page& page) {
     }
     if (visiblePara == nullptr) continue;  // image/gap index with no visible text line — nothing to show
     const std::string& visibleText = visiblePara->text;
-    const int16_t indent = visiblePara->indent;
 
     const PageTranslationOverlay::ParagraphPair* pair = nullptr;
     for (const auto& p : pairs) {
@@ -649,17 +614,17 @@ void PageTranslationOverlay::preparePage(const Page& page) {
     }
 
     if (pair == nullptr || pair->translation.empty() || forceSource) {
-      pageParagraphs.push_back({visibleText, indent, false});  // Option C source fallback
+      pageParagraphs.push_back({visibleText, false});  // Option C source fallback
       continue;
     }
 
     const int visibleSentences = countSentences(visibleText);
     std::string shown = sliceTranslationForPage(*pair, visibleText, visibleSentences, isFirst, isLast);
     if (shown.empty()) {
-      pageParagraphs.push_back({visibleText, indent, false});  // defensive: never show a blank translated line
+      pageParagraphs.push_back({visibleText, false});  // defensive: never show a blank translated line
       continue;
     }
-    pageParagraphs.push_back({std::move(shown), indent, true});
+    pageParagraphs.push_back({std::move(shown), true});
     translatedCount++;
   }
 
@@ -734,10 +699,10 @@ namespace {
 // from what's actually drawn.
 struct PageTranslationLine {
   std::string content;  // words joined by single spaces (no trailing hyphen)
-  // Pixel indent for THIS line: the page layout's own first-line paragraph indent, carried on the
-  // paragraph's first line only (0 on every other line, and on the dim marker line). It shifts the
-  // line's start and shrinks its usable width, exactly as it does in the page layout
-  // (extractLine: xpos starts at firstLineIndent, effectivePageWidth = pageWidth - firstLineIndent).
+  // Pixel indent for THIS line: the paragraph's first-line indent, carried on the paragraph's first
+  // line only (0 on every other line, and on the dim marker line). It shifts the line's start and
+  // shrinks its usable width, exactly as it does in the page layout (extractLine: xpos starts at
+  // firstLineIndent, effectivePageWidth = pageWidth - firstLineIndent).
   int16_t indent = 0;
   bool hyphen = false;           // append '-' when drawing (word was hyphenated here)
   bool lastInParagraph = false;  // last line of its paragraph — never justified
@@ -758,7 +723,7 @@ std::vector<std::string> splitWords(const std::string& s) {
 
 // Greedy word-wrap with optional Liang hyphenation (mirrors the reader): when a word overflows the
 // remaining space and hyphenation is on, break it at the longest language-valid point that fits.
-// `firstIndent` is the paragraph's baked first-line indent: it narrows the FIRST line's usable width
+// `firstIndent` is the paragraph's first-line indent: it narrows the FIRST line's usable width
 // (and, at draw time, shifts its start) — the same two effects the page layout applies.
 std::vector<PageTranslationLine> breakParagraph(const GfxRenderer& r, int fontId, const std::string& text, int maxW,
                                                 int firstIndent, int spW, bool hyphenate) {
@@ -912,12 +877,29 @@ void PageTranslationOverlay::render(GfxRenderer& renderer, const Page& page, int
   constexpr int PAD = 10;
   const int maxTextW = viewportWidth - 2 * PAD;
   // Mirror the reader's "Extra Paragraph Spacing" setting: a gap between paragraphs when on,
-  // otherwise paragraphs run flush (the layout's first-line indent, reproduced per paragraph, marks
-  // the boundary instead). HALF a line height, which is exactly what the page layout adds after a
-  // paragraph (ChapterHtmlSlimParser::makePages: `currentPageNextY += lineHeight / 2`) — a full lh
-  // showed a gap twice the page's. Content therefore no longer advances in whole-lh steps, which is
-  // why the draw pass below scrolls to real line tops instead of fixed pixel multiples.
+  // otherwise paragraphs run flush and the first-line indent below marks the boundary instead. HALF
+  // a line height, which is exactly what the page layout adds after a paragraph
+  // (ChapterHtmlSlimParser::makePages: `currentPageNextY += lineHeight / 2`, and the Text Settings
+  // preview's `lineAdvance / 2`) — a full lh showed a gap twice the page's. Content therefore does
+  // not advance in whole-lh steps, which is why the draw pass below scrolls to real line tops
+  // instead of fixed pixel multiples.
   const int paraSpacing = SETTINGS.extraParagraphSpacing ? lh / 2 : 0;
+  // The other half of the same setting, and the ONLY source of the overlay's paragraph indent: the
+  // reader's style-free rule (ParsedText::defaultFirstLineIndent — three space widths when the
+  // spacing is off, none when it is on), measured in the font the overlay actually draws with.
+  //
+  // It is deliberately NOT the indent the page layout baked into this paragraph's first line. That
+  // number is resolveFirstLineIndent()'s output, which mixes in the SOURCE paragraph's CSS
+  // text-indent: on a book that declares `text-indent` (most of them) it reproduces the stylesheet
+  // — 1.5em here, 0 there, per class — and with Extra Paragraph Spacing ON it is 0 for every
+  // paragraph, so the overlay could never show an indent at all. The text on screen here is a
+  // TRANSLATION: it carries no stylesheet, so the setting is the only thing that may decide.
+  //
+  // Uniform across the page for the same reason: every paragraph the overlay draws is presented as
+  // its own block of translated text, so the first one is indented exactly like the rest.
+  int paraIndent =
+      ParsedText::defaultFirstLineIndent(renderer, pageTranslationFontId, SETTINGS.extraParagraphSpacing != 0);
+  if (paraIndent > maxTextW / 2) paraIndent = maxTextW / 2;  // sanity net; never leaves line 0 unusable
 
   // Honor the reader's hyphenation toggle + paragraph alignment. The overlay shows the *translated*
   // text, so route hyphenation through the translation's target-language slot (falls back to
@@ -935,13 +917,7 @@ void PageTranslationOverlay::render(GfxRenderer& renderer, const Page& page, int
   paras.reserve(pageParagraphs.size());
   const char* const marker = tr(STR_NO_TRANSLATION);
   for (const auto& para : pageParagraphs) {
-    // Keep the layout's indent inside the panel: a hanging (negative) CSS indent may reach at most
-    // into the panel's own padding, and a pathological positive one may never eat more than half the
-    // text column (which would leave the first line unusable). Ordinary indents pass untouched.
-    int indent = para.indent;
-    if (indent < -PAD) indent = -PAD;
-    if (indent > maxTextW / 2) indent = maxTextW / 2;
-    auto lines = breakParagraph(renderer, pageTranslationFontId, para.text, maxTextW, indent, spW, hyphenate);
+    auto lines = breakParagraph(renderer, pageTranslationFontId, para.text, maxTextW, paraIndent, spW, hyphenate);
     if (!para.translated) {
       // Option C: the body already holds the SOURCE text; append one short dim
       // marker line so the untranslated gap is visible but unobtrusive.

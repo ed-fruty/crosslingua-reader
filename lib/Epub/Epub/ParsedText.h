@@ -60,6 +60,14 @@ class ParsedText {
         hasRtlWord(false) {}
   ~ParsedText() = default;
 
+  // The reader's STYLE-FREE first-line paragraph indent, in `fontId`'s own metrics: three space
+  // widths when Extra Paragraph Spacing is OFF (the setting trades a gap for an indent), none when
+  // it is ON. This is exactly the branch resolveFirstLineIndent() takes for a block that declares no
+  // CSS text-indent, lifted out so text that carries NO CSS at all can indent by the same rule
+  // instead of re-deriving it — the Page Translation overlay draws translated paragraphs that have
+  // no stylesheet of their own, in a font that may differ from the body's.
+  static int defaultFirstLineIndent(const GfxRenderer& renderer, int fontId, bool extraParagraphSpacing);
+
   void addWord(std::string word, EpdFontFamily::Style fontStyle, bool underline = false, bool attachToPrevious = false);
   // Grow all five parallel token vectors (and rubyTexts, when it is in use) to hold `additionalTokens`
   // more entries in ONE step, instead of letting each double independently from zero. addWord uses it
