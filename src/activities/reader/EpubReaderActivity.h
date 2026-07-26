@@ -35,18 +35,20 @@ class EpubReaderActivity final : public Activity {
   bool forcedRefreshPending = false;
   int cachedSpineIndex = 0;
   // Chapter total captured with the position below, used ONLY as the denominator of the fallback
-  // page-ratio remap (see applyDeferredReposition). Must be a whole-chapter count --
-  // Section::estimatedTotalPages(), never Section::pageCount, which for any chapter the reader has
-  // not read to its end is just the windowed build's watermark (~currentPage + BUILD_WINDOW_AHEAD).
+  // page-ratio remap in render(). Must be a whole-chapter count -- Section::estimatedTotalPages(),
+  // never Section::pageCount, which for any chapter the reader has not read to its end is just the
+  // windowed build's watermark (~currentPage + BUILD_WINDOW_AHEAD).
   int cachedChapterTotalPageCount = 0;
-  // Layout-INDEPENDENT reading anchor captured with the position: the count of <p> elements opened by
-  // the end of the page the reader was on (0 = none available). Unlike a page number or a page ratio
-  // it means the same thing before and after a re-pagination, and it resolves as soon as the build
-  // reaches its paragraph -- so a reposition no longer needs the chapter's final page count, and
-  // therefore no longer needs to block on a whole-chapter re-layout.
+  // Layout-INDEPENDENT reading anchor captured with the position: a 1-based index into the chapter's
+  // <p> elements (0 = none available -- see Section::paragraphAnchorForPage for when that happens,
+  // which is more often than the name suggests). Unlike a page number or a page ratio it means the
+  // same thing before and after a re-pagination, and it resolves as soon as the build reaches its
+  // paragraph -- so an anchored reposition needs neither the chapter's final page count nor a
+  // whole-chapter re-layout. Without it render() falls back to the page ratio.
   uint16_t pendingRepositionParagraph = 0;
-  // The source HTML that anchor was measured over. The bilingual `.translated.html` has its own,
-  // roughly doubled, <p> count, so an anchor is only comparable while the source is unchanged.
+  // The source HTML that anchor was measured over. The bilingual `.translated.html` sidecar adds a
+  // <p lang="xx"> per paragraph, so the count roughly doubles: an anchor is only comparable while
+  // the source is unchanged, and one measured across a flip must be discarded.
   bool pendingRepositionTranslated = false;
   unsigned long lastPageTurnTime = 0UL;
   unsigned long pageTurnDuration = 0UL;
@@ -240,16 +242,12 @@ class EpubReaderActivity final : public Activity {
   bool buildPopupPending = false;
   // Draw the indexing popup mid-build (parser image-probe callback and deadline backstop).
   void showBuildPopup();
-  // FALLBACK reposition for a chapter that re-paginated with no usable paragraph anchor: remap the
-  // saved page by the ratio of the two chapter totals once the real new count is known. Returns true
-  // if currentPage moved. No-op while the section is still building (the count would be a build
-  // watermark) or when the pagination is unchanged. The anchored path in render() is preferred and
-  // consumes the cached count before this can run.
-  bool applyDeferredReposition();
   // Capture the current reading position for a deliberate re-layout, then the caller drops the
-  // Section. Requires a live section and the RenderLock.
+  // Section. Requires a live section and the RenderLock. render() consumes everything this arms
+  // within the single load that follows it -- see the reposition block there.
   void armReposition();
-  // Anchor for the page on screen, or 0 when this page cannot be anchored.
+  // Anchor for the page on screen, or 0 when this page cannot be anchored (page 0, a chapter with
+  // no <p>, or a page deep inside one paragraph -- see Section::paragraphAnchorForPage).
   uint16_t currentParagraphAnchor() const;
   bool saveProgress(int spineIndex, int currentPage, int pageCount, uint16_t paragraphAnchor = 0,
                     bool translatedSource = false);

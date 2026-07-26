@@ -425,16 +425,13 @@ void EpubReaderActivity::loop() {
     // always true.
     // cppcheck-suppress knownConditionTrueFalse
     if (section->isBuilding() && buildTickHeapGate()) {
+      // No reposition backstop here any more: render() resolves every reposition within the load
+      // that armed it (anchor, else page ratio against estimatedTotalPages()), so nothing is left
+      // waiting on this build to finish. A completion that moved the reader's page out from under
+      // them seconds after the page was drawn is not something to restore.
       if (!section->buildSomeMore(BACKGROUND_BUILD_PAGES_PER_TICK)) {
         LOG_ERR("ERS", "Background section build failed");
         section.reset();
-        requestUpdate();
-      } else if (section->isBuildComplete() && applyDeferredReposition()) {
-        // Backstop for the ratio fallback, which is the only reposition needing the chapter's final
-        // page count. render() normally consumes it in the same pass (it forces a full build for
-        // exactly that reason), and the anchored path never needs a count at all -- so this should
-        // no longer fire. Kept as a cheap no-op guard: applyDeferredReposition() returns immediately
-        // when nothing is armed.
         requestUpdate();
       }
     }
@@ -1117,7 +1114,13 @@ bool EpubReaderActivity::launchKOReaderSync() {
 
   // Persist current position so the reader resumes at the right page on return.
   // goToReader() depends on this file, so abort the sync if the write fails.
-  if (!saveProgress(currentSpineIndex, currentPage, totalPages)) {
+  //
+  // With the paragraph anchor: the reader is destroyed and rebuilt around this record, so it is the
+  // only carrier of the position, exactly as for a font change. Sync itself changes no layout input,
+  // so the return is normally a cache HIT that uses the page number as-is -- but if anything did
+  // invalidate the layout meanwhile, the anchor is what keeps the reposition off the page ratio.
+  if (!saveProgress(currentSpineIndex, currentPage, totalPages, currentParagraphAnchor(),
+                    section && section->builtFromTranslatedSource())) {
     LOG_ERR("KOSync", "Aborting sync because current progress could not be saved");
     pendingSyncSaveError = true;
     requestUpdate();
@@ -1161,7 +1164,13 @@ void EpubReaderActivity::launchTranslation(PreTranslationResult kind) {
   // Persist current position so the reader resumes at the right page when the
   // translator relaunches it via goToReader(). goToReader() depends on this file,
   // so abort (and surface the same save-error toast KOSync uses) if the write fails.
-  if (!saveProgress(spineIndex, currentPage, totalPages)) {
+  //
+  // The anchor is recorded against the source it was measured over. Translating this chapter FLIPS
+  // that source (the bilingual sidecar has its own, roughly doubled, <p> count), so on the return
+  // the anchor is correctly refused and the reposition falls back to the page ratio -- against a
+  // chapter that is about twice as long, which is exactly what the ratio handles.
+  if (!saveProgress(spineIndex, currentPage, totalPages, currentParagraphAnchor(),
+                    section && section->builtFromTranslatedSource())) {
     LOG_ERR("PreTr", "Aborting translation because current progress could not be saved");
     pendingSyncSaveError = true;
     requestUpdate();
@@ -1439,9 +1448,16 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     // A cache MISS means the chapter must be re-laid-out, so the saved page number describes a
     // pagination that no longer exists. Prefer the paragraph anchor over the page ratio: it needs no
     // page count at all, so it resolves inside the ordinary windowed build (cost bounded by the
-    // landing page) instead of forcing a whole-chapter one, and it cannot be poisoned by a watermark.
-    // It is comparable only while the source HTML is unchanged -- the bilingual `.translated.html`
-    // has its own, roughly doubled, <p> count. Explicit navigation always wins over a reposition.
+    // landing page) and cannot be poisoned by a build watermark.
+    //
+    // paragraphTarget == 0 -- no usable anchor -- is NOT a rare corner. It covers page 0 and every
+    // chapter that marks its paragraphs with something other than <p> (Section.h's "Reposition
+    // anchors" block has the full list), plus, here, the case where the source HTML itself flipped:
+    // the bilingual `.translated.html` sidecar interleaves a <p lang="xx"> per paragraph, so a
+    // translation downloaded or deleted since the save makes the two counts incomparable. The ratio
+    // fallback below has to be a real, bounded path, not a formality.
+    //
+    // Explicit navigation always wins over a reposition.
     const bool repositionPending = (cachedChapterTotalPageCount > 0 || pendingRepositionParagraph > 0) &&
                                    currentSpineIndex == cachedSpineIndex && !pendingPageJump.has_value() &&
                                    pendingAnchor.empty() && !pendingPercentJump;
@@ -1457,16 +1473,22 @@ void EpubReaderActivity::render(RenderLock&& lock) {
         LOG_DBG("ERS", "Cache not found, building...");
       }
 
-      // Only a landing page derived from the chapter's FINAL page count needs the whole chapter laid
-      // out up front, and exactly two things need that count: a percent jump (percent -> page), and
-      // the reposition's page-ratio FALLBACK, taken when the saved position carries no usable
-      // paragraph anchor (a chapter with no <p> elements, an anchor whose source HTML has flipped, or
-      // a progress.bin written by firmware older than the anchor). Everything else resolves
-      // incrementally: plain reads and resumes need one page, fragment anchors are recorded as their
-      // page is laid out, and an anchored reposition resolves the moment its paragraph is reached --
-      // so the common re-index (font, size, spacing, orientation, display mode) now costs a windowed
-      // build to the landing page instead of a blocking whole-chapter one.
-      const bool needsFullBuild = pendingPercentJump || (repositionPending && paragraphTarget == 0);
+      // A percent jump is the ONLY thing left that must have the chapter's final page count before
+      // it can name a landing page, so it is the only full (blocking, whole-chapter) build. Nothing
+      // else can be: this build runs on the render task with the RenderLock held and the framebuffer
+      // lent away, which on a giant single spine is a multi-minute freeze -- the exact freeze the
+      // windowed build exists to prevent.
+      //
+      // A reposition therefore never forces one, in either of its forms. With a paragraph anchor it
+      // needs no count at all and resolves the moment its paragraph is laid out. Without one it
+      // falls back to the page ratio against estimatedTotalPages(), which extrapolates from the
+      // pages the windowed build has already produced -- an estimate, but the saved denominator it
+      // is divided by is an estimatedTotalPages() reading too, so the ratio is estimate over
+      // estimate either way. Trading exactness for a bounded build is the right side of that trade:
+      // the no-anchor path is reached for whole classes of book (a chapter that marks paragraphs
+      // with <div>, a return from Chapter Translation, a progress.bin from older firmware), and a
+      // blocking whole-chapter re-layout for every one of them is not acceptable.
+      const bool needsFullBuild = pendingPercentJump;
       if (needsFullBuild) {
         GUI.drawPopup(renderer, tr(STR_INDEXING));
         // The popup's own refresh is a plain FAST, so force the page that replaces it onto the HALF
@@ -1633,17 +1655,41 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     // The build loop above already ran until that paragraph was laid out (or the chapter ended), so
     // this resolves without needing the final page count -- which is what lets the whole path use the
     // windowed build. Set only on a cache MISS, and never together with an explicit navigation.
+    bool anchorResolved = false;
     if (paragraphTarget > 0) {
       if (const auto page = section->findPageForParagraphIndex(paragraphTarget)) {
         LOG_DBG("ERS", "Repositioned on paragraph %u: page %d -> %u", paragraphTarget, section->currentPage, *page);
         section->currentPage = *page;
-        cachedChapterTotalPageCount = 0;  // anchored: the ratio fallback must not fire on top of it
+        anchorResolved = true;
       } else {
-        // The chapter no longer contains that paragraph (the book file itself changed). The loop above
-        // ran to build completion looking for it, so the final page count IS known -- leave the cached
-        // count armed and let the ratio fallback below make its best guess.
+        // The build above ran to completion without ever stamping that index, so the paragraph is
+        // not in this chapter at all -- the book file itself changed under the cache. Fall through
+        // to the ratio below rather than leaving the reader on a page number from a dead pagination.
         LOG_DBG("ERS", "Paragraph %u not in section %d; falling back to the page ratio", paragraphTarget,
                 currentSpineIndex);
+      }
+    }
+
+    // Fallback reposition: no usable anchor (see paragraphTarget above), so scale the saved page
+    // number by the ratio of the two chapter totals. Deliberately resolved HERE, inside the load,
+    // rather than deferred until the build finishes:
+    //   * currentPage is still the raw saved page number, measured under the OLD pagination, which
+    //     is the ratio's numerator. Everything below this point clamps it into the NEW page range,
+    //     and clamping first (which happens whenever the chapter got shorter) feeds the ratio an
+    //     already-shortened numerator and loses pages.
+    //   * estimatedTotalPages() answers now -- exactly once the build has finalized, and by
+    //     extrapolation from the pages laid out so far while it has not -- so waiting for the exact
+    //     count would mean forcing the whole-chapter build this path exists to avoid. It would also
+    //     mean the landing page moving under the reader seconds after the page appeared.
+    // The loops below extend the build to whatever page this picks, so a landing beyond the window
+    // costs the same as a deep resume, and the clamp below catches an overshoot past the chapter.
+    if (repositionPending && !anchorResolved) {
+      const int newTotal = section->estimatedTotalPages();
+      const int newPage = ReaderPosition::remapByPageRatio(section->currentPage, cachedChapterTotalPageCount, newTotal);
+      if (newPage != section->currentPage) {
+        LOG_DBG("ERS", "Ratio reposition: page %d of %d -> %d of ~%d", section->currentPage,
+                cachedChapterTotalPageCount, newPage, newTotal);
+        section->currentPage = newPage;
       }
     }
 
@@ -1659,20 +1705,15 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     tooltipOverlay.setTranslatedHtmlPath(section->getTranslatedHtmlPath());
     tooltipOverlay.onPageChanged();
 
-    // Every reposition input belonged to THIS load and is consumed here. The anchor was either
-    // dropped by the cache HIT, landed on above, or found absent from the chapter. The cached chapter
-    // total goes too -- unless this load still owes the ratio fallback, i.e. a reposition with no
-    // usable anchor, which forced the full build above so applyDeferredReposition() can remap against
-    // the final count later in this same render pass.
+    // Every reposition input belonged to THIS load and is fully consumed by it: the cache HIT
+    // dropped them, or the anchor landed, or the ratio above made its guess. Nothing is left armed
+    // for a later render to act on.
     //
     // Leaving either armed is a bug of its own: a reposition armed for spine S that the reader then
     // pages away from used to stay live, so paging BACK into S later remapped a perfectly good page
     // number against a total from before the re-layout.
-    const bool ratioFallbackOwed = repositionPending && paragraphTarget == 0 && cachedChapterTotalPageCount > 0;
     pendingRepositionParagraph = 0;
-    if (!ratioFallbackOwed) {
-      cachedChapterTotalPageCount = 0;
-    }
+    cachedChapterTotalPageCount = 0;
   }
 
   // Extend the build to the requested page if needed (for partials and in-progress builds).
@@ -1717,15 +1758,6 @@ void EpubReaderActivity::render(RenderLock&& lock) {
       }
     }
   }
-
-  // Apply the fallback page-ratio reposition now that the real page count is known (a no-op for a
-  // plain resume, for an anchored reposition -- which consumed the cached count above -- and while
-  // still building, in which case it defers to loop() on completion).
-  //
-  // BEFORE the clamp below, deliberately: currentPage is still the page number saved under the OLD
-  // pagination and is the remap's numerator. Clamping it into the NEW page range first (which happens
-  // whenever the chapter got shorter) fed the ratio an already-shortened numerator and lost pages.
-  applyDeferredReposition();
 
   // The requested page is now as built as it will get. If it still lands past the end,
   // clamp to the last real page: the UINT16_MAX "last page" sentinel from backward chapter
@@ -1882,28 +1914,6 @@ void EpubReaderActivity::armReposition() {
   nextPageNumber = section->currentPage;
   pendingRepositionParagraph = currentParagraphAnchor();
   pendingRepositionTranslated = section->builtFromTranslatedSource();
-}
-
-bool EpubReaderActivity::applyDeferredReposition() {
-  if (cachedChapterTotalPageCount == 0 || !section || section->isBuilding()) {
-    return false;
-  }
-  bool changed = false;
-  // Only remap when the chapter actually re-paginated (e.g. after a settings change). A plain
-  // resume has identical pagination, so section->pageCount == cachedChapterTotalPageCount and
-  // nothing moves. Guarded on !isBuilding() above so pageCount is the real count, not a watermark.
-  if (currentSpineIndex == cachedSpineIndex) {
-    const int newPage =
-        ReaderPosition::remapByPageRatio(section->currentPage, cachedChapterTotalPageCount, section->pageCount);
-    if (newPage != section->currentPage) {
-      LOG_DBG("ERS", "Ratio reposition: page %d of %d -> %d of %d", section->currentPage, cachedChapterTotalPageCount,
-              newPage, section->pageCount);
-      section->currentPage = newPage;
-      changed = true;
-    }
-  }
-  cachedChapterTotalPageCount = 0;  // consumed; don't read cached progress again
-  return changed;
 }
 
 bool EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageCount, uint16_t paragraphAnchor,
