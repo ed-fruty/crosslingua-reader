@@ -127,6 +127,13 @@ is exactly the failure mode the version 39 note below was written about.
   `getLineHeight(annotationFontId)`, which is what lets two type sizes tile edge to
   edge on one page (see the per-line font role bullet under version 38). No sentence
   metadata reaches disk: alignment is fully resolved before the page is written.
+  - **The indent is dropped, not clamped, for a sentence that starts very late.** A
+    first row needs a usable measure — `computeLineBreaks` force-hyphenates any word
+    wider than the width left to it — so a sentence beginning past 3/4 of the measure
+    gets `text-indent = 0` and its row sits at the margin. That is deliberate: a row
+    parked at the 3/4 limit would sit above words belonging to the *previous*
+    sentence and read as their translation, whereas a row at the margin reads as
+    "this whole line". Everything up to 3/4 is anchored exactly.
 
 The per-chapter auto-fallback applies to `Interlinear` too: a chapter with no
 committed translation is laid out and stamped as `Both`

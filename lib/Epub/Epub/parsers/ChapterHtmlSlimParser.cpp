@@ -2127,11 +2127,16 @@ void ChapterHtmlSlimParser::buildAnnotationRows(const InterlinearAnnotation& ann
   // (ParsedText::resolveFirstLineIndent).
   annStyle.alignment = CssTextAlign::Left;
   annStyle.textAlignDefined = true;
-  // HANGING INDENT: row 1 starts exactly at the sentence, continuation rows at the margin. Clamped
-  // so the first row always keeps a usable measure — computeLineBreaks force-hyphenates any word
-  // wider than the width available to it, so a near-zero first-row width would shred every word.
+  // HANGING INDENT: row 1 starts exactly at the sentence, continuation rows at the margin.
+  //
+  // A limit is unavoidable — computeLineBreaks force-hyphenates any word wider than the width left to
+  // it, so a first row squeezed to a near-zero measure would shred every word — but a sentence that
+  // begins past it falls back ALL THE WAY to the margin rather than being parked at the limit. A row
+  // sitting at 3/4 of the measure is not over its own sentence and not at the margin either: it reads
+  // as translating the words it now sits above, which belong to the PREVIOUS sentence. At the margin
+  // it unambiguously means "this whole line". Documented under Version 40 in docs/file-formats.md.
   const int16_t maxIndent = static_cast<int16_t>(measureWidth * 3 / 4);
-  annStyle.textIndent = anchorOffset > 0 ? std::min<int16_t>(anchorOffset, maxIndent) : 0;
+  annStyle.textIndent = (anchorOffset > 0 && anchorOffset <= maxIndent) ? anchorOffset : 0;
   annStyle.textIndentDefined = true;
 
   // extraParagraphSpacing=false is not cosmetic here: resolveFirstLineIndent only returns a POSITIVE
