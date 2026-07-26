@@ -64,7 +64,12 @@ namespace {
 //      unlike the drawing-only shade it IS part of the cache key. Finally, PageLine serializes a
 //      LineFontRole byte after paragraphIdx so a page can mix body and smaller/annotation text;
 //      every line the layout engine emits today writes Body, so a v38 rebuild is byte-equivalent
-//      to v37 apart from the extra zero byte per line.
+//      to v37 apart from the extra zero byte per line. Lastly, a translatedSource bool follows the
+//      PtLayout byte: it records WHICH source HTML the pages were laid out from (the chapter's
+//      .translated.html, or the plain original). The layout byte alone cannot say -- PtLayout::Both
+//      is what an untranslated chapter AND an inline-bilingual chapter both stamp -- so without it
+//      a chapter laid out before its translation arrived stays a cache HIT afterwards and silently
+//      serves untranslated pages in a bilingual mode (and vice versa).
 constexpr uint8_t SECTION_FILE_VERSION = 38;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
@@ -84,11 +89,12 @@ constexpr uint8_t SECTION_FILE_INCOMPLETE_VERSION = 0;
 // Derived so the pairing can't be forgotten: 0xFE for v28, 0xFD for v29, ...
 constexpr uint8_t SECTION_FILE_PARTIAL_VERSION = 0xFE - (SECTION_FILE_VERSION - 28);
 // The second sizeof(int) is the Pre-Translation translationFontId; the extra sizeof(uint8_t) after
-// the two bools is the Pre-Translation PtLayout byte.
-constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) + sizeof(int) + sizeof(int) + sizeof(float) + sizeof(bool) +
-                                 sizeof(uint8_t) + sizeof(uint16_t) + sizeof(uint16_t) + sizeof(uint16_t) +
-                                 sizeof(bool) + sizeof(bool) + sizeof(uint8_t) + sizeof(uint8_t) + sizeof(bool) +
-                                 sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t);
+// the two bools is the Pre-Translation PtLayout byte, and the sizeof(bool) right after it is the
+// translated-source flag.
+constexpr uint32_t HEADER_SIZE =
+    sizeof(uint8_t) + sizeof(int) + sizeof(int) + sizeof(float) + sizeof(bool) + sizeof(uint8_t) + sizeof(uint16_t) +
+    sizeof(uint16_t) + sizeof(uint16_t) + sizeof(bool) + sizeof(bool) + sizeof(uint8_t) + sizeof(bool) +
+    sizeof(uint8_t) + sizeof(bool) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t);
 }  // namespace
 
 // Out-of-line so the unique_ptr<ChapterHtmlSlimParser> in BuildContext can be
@@ -126,7 +132,7 @@ uint32_t Section::onPageComplete(std::unique_ptr<Page> page) {
   return position;
 }
 
-void Section::writeSectionFileHeader(const ReaderRenderSpec& spec) {
+void Section::writeSectionFileHeader(const ReaderRenderSpec& spec, const bool translatedSource) {
   if (!file) {
     LOG_DBG("SCT", "File not open for writing header");
     return;
@@ -136,8 +142,9 @@ void Section::writeSectionFileHeader(const ReaderRenderSpec& spec) {
                                    sizeof(spec.paragraphAlignment) + sizeof(spec.viewportWidth) +
                                    sizeof(spec.viewportHeight) + sizeof(pageCount) + sizeof(spec.hyphenationEnabled) +
                                    sizeof(spec.embeddedStyle) + sizeof(uint8_t) /* PtLayout */ +
-                                   sizeof(spec.imageRendering) + sizeof(spec.focusReadingEnabled) + sizeof(uint32_t) +
-                                   sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t),
+                                   sizeof(translatedSource) + sizeof(spec.imageRendering) +
+                                   sizeof(spec.focusReadingEnabled) + sizeof(uint32_t) + sizeof(uint32_t) +
+                                   sizeof(uint32_t) + sizeof(uint32_t),
                 "Header size mismatch");
   // Written as the incomplete sentinel; finalizeBuild() patches it to
   // SECTION_FILE_VERSION as the last step, committing the file.
@@ -152,6 +159,9 @@ void Section::writeSectionFileHeader(const ReaderRenderSpec& spec) {
   serialization::writePod(file, spec.hyphenationEnabled);
   serialization::writePod(file, spec.embeddedStyle);
   serialization::writePod(file, static_cast<uint8_t>(spec.ptLayout));  // Pre-Translation page layout (cache key)
+  // Which source HTML these pages were laid out from (cache key). The layout byte cannot express
+  // it: Both is stamped both by an untranslated chapter and by an inline-bilingual one.
+  serialization::writePod(file, translatedSource);
   serialization::writePod(file, spec.imageRendering);
   serialization::writePod(file, spec.focusReadingEnabled);
   serialization::writePod(file, pageCount);  // Placeholder for page count (will be initially 0, patched later)
@@ -189,6 +199,7 @@ bool Section::loadSectionFile(const ReaderRenderSpec& spec) {
     bool fileHyphenationEnabled;
     bool fileEmbeddedStyle;
     uint8_t filePtLayout;
+    bool fileTranslatedSource;
     uint8_t fileImageRendering;
     bool fileFocusReadingEnabled;
     serialization::readPod(file, fileFontId);
@@ -201,6 +212,7 @@ bool Section::loadSectionFile(const ReaderRenderSpec& spec) {
     serialization::readPod(file, fileHyphenationEnabled);
     serialization::readPod(file, fileEmbeddedStyle);
     serialization::readPod(file, filePtLayout);
+    serialization::readPod(file, fileTranslatedSource);
     serialization::readPod(file, fileImageRendering);
     serialization::readPod(file, fileFocusReadingEnabled);
 
@@ -208,12 +220,19 @@ bool Section::loadSectionFile(const ReaderRenderSpec& spec) {
     // header stamped with the Both layout by startBuild(), so it must also be looked up under Both
     // -- otherwise a filtering layout never matches the Both-stamped cache and rebuilds on every
     // visit. See effectiveLayout().
+    //
+    // The source flag is the other half of the Pre-Translation key. Both is stamped by an
+    // untranslated chapter AND by an inline-bilingual one, so without this compare a chapter laid
+    // out before its translation was downloaded would stay a cache HIT afterwards and serve
+    // untranslated pages in a bilingual mode (and, symmetrically, a translated cache would survive
+    // the translation being deleted). One SD stat, shared with the layout resolution below.
+    const bool translatedSource = hasTranslatedHtml();
     if (spec.fontId != fileFontId || spec.translationFontId != fileTranslationFontId ||
         spec.lineCompression != fileLineCompression || spec.extraParagraphSpacing != fileExtraParagraphSpacing ||
         spec.paragraphAlignment != fileParagraphAlignment || spec.viewportWidth != fileViewportWidth ||
         spec.viewportHeight != fileViewportHeight || spec.hyphenationEnabled != fileHyphenationEnabled ||
-        spec.embeddedStyle != fileEmbeddedStyle ||
-        static_cast<uint8_t>(effectiveLayout(spec.ptLayout)) != filePtLayout ||
+        spec.embeddedStyle != fileEmbeddedStyle || translatedSource != fileTranslatedSource ||
+        static_cast<uint8_t>(effectiveLayout(spec.ptLayout, translatedSource)) != filePtLayout ||
         spec.imageRendering != fileImageRendering || spec.focusReadingEnabled != fileFocusReadingEnabled) {
       file.close();
       LOG_ERR("SCT", "Deserialization failed: Parameters do not match");
@@ -298,10 +317,13 @@ bool Section::hasTranslatedHtml() const {
   return Storage.exists(getTranslatedHtmlPath().c_str());
 }
 
-PtLayout Section::effectiveLayout(const PtLayout requested) const {
-  // A filtering/pairing layout with no committed translation -> lay out as Both, which on an
-  // untranslated chapter is just the plain original. See the header comment.
-  return (requested != PtLayout::Both && !hasTranslatedHtml()) ? PtLayout::Both : requested;
+PtLayout Section::effectiveLayout(const PtLayout requested, const bool translatedSource) {
+  // With no committed translation there are no translated words to drop, keep or pair, so EVERY
+  // layout degrades to Both -- which on an untranslated chapter is just the plain original. Both is
+  // therefore both the request and the fallback, which is exactly why it says nothing about the
+  // source the pages came from and why the caller pairs this with the translatedSource flag in the
+  // cache key. See the declaration comment in Section.h.
+  return translatedSource ? requested : PtLayout::Both;
 }
 
 bool Section::createSectionFile(const ReaderRenderSpec& spec, const std::function<void()>& popupFn) {
@@ -357,12 +379,12 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   // translated words that do not exist and render a blank chapter. Lay this chapter out as Both so
   // it still renders. This is a layout/cache-key decision only -- the persisted display-mode setting
   // is untouched (per-chapter), and the reader (which owns the user-facing toast) has already decided
-  // whether to notify on entry. usingTranslatedSource == !hasTranslatedHtml() drives the same
-  // downgrade that loadSectionFile() keys on via effectiveLayout().
-  PtLayout effectivePtLayout = spec.ptLayout;
-  if (!usingTranslatedSource && effectivePtLayout != PtLayout::Both) {
+  // whether to notify on entry. The downgrade goes through the SAME effectiveLayout() that
+  // loadSectionFile() keys on, off the same usingTranslatedSource observation that is stamped into
+  // the header, so build and lookup can never disagree.
+  const PtLayout effectivePtLayout = effectiveLayout(spec.ptLayout, usingTranslatedSource);
+  if (effectivePtLayout != spec.ptLayout) {
     LOG_DBG("SCT", "No translation for spine %d; laying out with the Both layout", spineIndex);
-    effectivePtLayout = PtLayout::Both;
   }
   // The header cache-key and the parser both key on the effective (post-fallback) layout.
   ReaderRenderSpec effectiveSpec = spec;
@@ -443,8 +465,9 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
     return false;
   }
   // Header is written with the incomplete-version sentinel; finalizeBuild() commits it. The
-  // effective (post-fallback) translation mode is what actually shaped this layout.
-  writeSectionFileHeader(effectiveSpec);
+  // effective (post-fallback) layout plus the source it was laid out from is what actually shaped
+  // these pages, and is what the next load keys on.
+  writeSectionFileHeader(effectiveSpec, usingTranslatedSource);
 
   auto ctx = makeUniqueNoThrow<BuildContext>();
   if (!ctx) {

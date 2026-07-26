@@ -28,7 +28,9 @@ struct ReaderRenderSpec {
   // instead of a full chapter re-layout. See PtLayout.h and
   // CrossPointSettings::ptLayoutForDisplayMode().
   PtLayout ptLayout = PtLayout::Both;
-  // Pre-Translation: font the TRANSLATED text is laid out in. 0 (and -1) mean "same as fontId".
+  // Pre-Translation: font the TRANSLATED text is laid out in. 0 -- and ONLY 0 -- means "same as
+  // fontId": font ids are signed hashes, so a negative id is a perfectly normal font (see the
+  // UNSET SENTINEL note in PageFontSet.h, which uses the same single-sentinel rule).
   // A distinct font changes word measurement and therefore line breaking, so unlike the drawing-
   // only shade this IS part of the cache key.
   int translationFontId = 0;
