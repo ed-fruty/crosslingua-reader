@@ -295,6 +295,10 @@ bool Section::loadSectionFile(const ReaderRenderSpec& spec) {
     // untranslated pages in a bilingual mode (and, symmetrically, a translated cache would survive
     // the translation being deleted). One SD stat, shared with the layout resolution below.
     const bool translatedSource = hasTranslatedHtml();
+    // Record the source before the key check: on a HIT it is the source these pages came from, and
+    // on a MISS it is the source the rebuild below will use. Either way it is what a caller
+    // recording a reposition anchor needs, without a second SD stat.
+    translatedSource_ = translatedSource;
     const PtLayout layout = effectiveLayout(spec.ptLayout, translatedSource);
     if (spec.fontId != fileFontId || keyedTranslationFontId(spec.translationFontId, layout) != fileTranslationFontId ||
         keyedAnnotationFontId(spec.annotationFontId, layout) != fileAnnotationFontId ||
@@ -444,6 +448,7 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   // Only build from the translated HTML when it exists as a complete, committed file
   // (guaranteed by the atomic ".part" -> rename write); never lay out from a partial.
   const bool usingTranslatedSource = hasTranslatedHtml();
+  translatedSource_ = usingTranslatedSource;
 
   // Per-chapter auto-fallback: a filtering layout with no translated HTML would filter for
   // translated words that do not exist and render a blank chapter. Lay this chapter out as Both so
@@ -1102,6 +1107,51 @@ std::optional<uint16_t> Section::getParagraphIndexForPage(const uint16_t page) c
   uint16_t pIdx;
   serialization::readPod(f, pIdx);
   return pIdx;
+}
+
+std::optional<uint16_t> Section::findParagraphIndexForPage(const uint16_t page) const {
+  if (build_ && page < build_->lut.size()) {
+    return build_->lut[page].paragraphIndex;
+  }
+  // Not laid out by this build (or no build): the committed file may still cover it -- a finalized
+  // section, or a partial from a previous session that a rebuild has not yet caught up to.
+  return getParagraphIndexForPage(page);
+}
+
+std::optional<uint16_t> Section::paragraphAnchorForPage(const uint16_t page) const {
+  const auto here = findParagraphIndexForPage(page);
+  // 0 means no <p> has been opened yet by the end of this page, so there is nothing to anchor to.
+  if (!here || *here == 0) return std::nullopt;
+  if (page == 0) return here;
+  const auto prev = findParagraphIndexForPage(page - 1);
+  // The index must FIRST appear on this page. Otherwise the paragraph started earlier and
+  // findPageForParagraphIndex() would resolve back to that earlier page, moving the reader
+  // backwards even when nothing re-paginated. Reject instead and let the caller fall back.
+  if (!prev || *prev >= *here) return std::nullopt;
+  return here;
+}
+
+std::optional<uint16_t> Section::findPageForParagraphIndex(const uint16_t pIndex) const {
+  if (build_) {
+    // Stamped indices are non-decreasing across pages, so the last entry alone says whether the
+    // paragraph has been reached -- this is polled once per build chunk and must stay cheap.
+    if (build_->lut.empty() || build_->lut.back().paragraphIndex < pIndex) {
+      return std::nullopt;  // not laid out yet: build more and ask again
+    }
+    for (size_t i = 0; i < build_->lut.size(); i++) {
+      if (build_->lut[i].paragraphIndex >= pIndex) return static_cast<uint16_t>(i);
+    }
+    return std::nullopt;
+  }
+  // Strict, unlike getPageForParagraphIndex(), which clamps an index past the end of the chapter
+  // onto the LAST page -- the right answer for the KOSync mapper (a synced position beyond this
+  // chapter belongs at its end) and the wrong one for a reposition, where it would present as the
+  // very teleport-to-the-end this anchor exists to prevent. Range-check first and report "not in
+  // this chapter" instead, leaving the caller on its current page.
+  if (pageCount == 0) return std::nullopt;
+  const auto lastStamped = getParagraphIndexForPage(static_cast<uint16_t>(pageCount - 1));
+  if (!lastStamped || *lastStamped < pIndex) return std::nullopt;
+  return getPageForParagraphIndex(pIndex);
 }
 
 std::optional<uint16_t> Section::getPageForListItemIndex(const uint16_t liIndex) const {

@@ -34,6 +34,7 @@
 #include "PreTranslationSubmenuActivity.h"
 #include "ProgressMapper.h"
 #include "QrDisplayActivity.h"
+#include "ReaderPosition.h"
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
@@ -174,11 +175,15 @@ void EpubReaderActivity::onEnter() {
 
   HalFile f;
   if (Storage.openFileForRead("ERS", epub->getCachePath() + "/progress.bin", f)) {
-    uint8_t data[6];
-    int dataSize = f.read(data, 6);
-    if (dataSize == 4 || dataSize == 6) {
-      currentSpineIndex = data[0] + (data[1] << 8);
-      nextPageNumber = data[2] + (data[3] << 8);
+    uint8_t data[ReaderPosition::RECORD_SIZE_MAX];
+    const int dataSize = f.read(data, sizeof(data));
+    ReaderPosition::Record saved;
+    // Records written by older firmware are shorter and simply leave the newer fields absent: no
+    // paragraph anchor means the reposition falls back to the page-ratio remap that shipped with
+    // that length. It never degrades to page 1 -- the spine and page number are in every version.
+    if (dataSize > 0 && ReaderPosition::decode(data, static_cast<size_t>(dataSize), saved)) {
+      currentSpineIndex = saved.spineIndex;
+      nextPageNumber = saved.pageNumber;
       if (nextPageNumber == UINT16_MAX) {
         // UINT16_MAX is an in-memory navigation sentinel for "open previous
         // chapter on its last page". It should never be treated as persisted
@@ -187,10 +192,11 @@ void EpubReaderActivity::onEnter() {
         nextPageNumber = 0;
       }
       cachedSpineIndex = currentSpineIndex;
-      LOG_DBG("ERS", "Loaded cache: %d, %d", currentSpineIndex, nextPageNumber);
-    }
-    if (dataSize == 6) {
-      cachedChapterTotalPageCount = data[4] + (data[5] << 8);
+      cachedChapterTotalPageCount = saved.pageCount;
+      pendingRepositionParagraph = saved.paragraphAnchor;
+      pendingRepositionTranslated = saved.translatedSource;
+      LOG_DBG("ERS", "Loaded cache: spine=%d page=%d count=%d para=%u", currentSpineIndex, nextPageNumber,
+              cachedChapterTotalPageCount, pendingRepositionParagraph);
     }
   }
   // We may want a better condition to detect if we are opening for the first time.
@@ -415,8 +421,11 @@ void EpubReaderActivity::loop() {
         section.reset();
         requestUpdate();
       } else if (section->isBuildComplete() && applyDeferredReposition()) {
-        // The chapter re-paginated since the saved progress (settings changed): we now know the
-        // real page count, so re-render at the remapped page. No-op for an unchanged resume.
+        // Backstop for the ratio fallback, which is the only reposition needing the chapter's final
+        // page count. render() normally consumes it in the same pass (it forces a full build for
+        // exactly that reason), and the anchored path never needs a count at all -- so this should
+        // no longer fire. Kept as a cheap no-op guard: applyDeferredReposition() returns immediately
+        // when nothing is armed.
         requestUpdate();
       }
     }
@@ -969,13 +978,18 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       {
         RenderLock lock(*this);
         if (epub && section) {
-          uint16_t backupSpine = currentSpineIndex;
-          uint16_t backupPage = section->currentPage;
-          uint16_t backupPageCount = section->pageCount;
+          const uint16_t backupSpine = currentSpineIndex;
+          const uint16_t backupPage = section->currentPage;
+          // Whole-chapter count, not section->pageCount (a build watermark mid-chapter), and the
+          // paragraph anchor -- both read while the section is alive and its tables still on the
+          // card, since clearCache() below deletes them and the reopen has only progress.bin.
+          const uint16_t backupPageCount = section->estimatedTotalPages();
+          const uint16_t backupParagraph = currentParagraphAnchor();
+          const bool backupTranslated = section->builtFromTranslatedSource();
           section.reset();
           epub->clearCache();
           epub->setupCacheDir();
-          if (!saveProgress(backupSpine, backupPage, backupPageCount)) {
+          if (!saveProgress(backupSpine, backupPage, backupPageCount, backupParagraph, backupTranslated)) {
             LOG_ERR("ERS", "Failed to save progress before cache clear");
           }
         }
@@ -1043,8 +1057,8 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
               // same way applyOrientation() does after an orientation change. Preserve the reading
               // position, drop the Section, and let render() rebuild against the new spec --
               // the PtLayout / translationFontId cache key makes the rebuild reuse the right cached
-              // layout (or build it), and applyDeferredReposition() remaps the page once the new page
-              // count is known. Translation Colour is deliberately NOT in this gate: it only moves
+              // layout (or build it), and render() lands on the page carrying the captured paragraph
+              // anchor. Translation Colour is deliberately NOT in this gate: it only moves
               // the renderer's translation gray level, which main.cpp's loop() re-reads from
               // SETTINGS every tick, so it needs no re-layout and no extra wiring here. The two
               // overlay sizes are out for the same reason: renderOverlayFrame() re-reads them per
@@ -1053,16 +1067,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
                   SETTINGS.getInterleavedTranslationFontId() != translationFontIdBeforeSubmenu ||
                   SETTINGS.getInterlinearAnnotationFontId() != annotationFontIdBeforeSubmenu) {
                 RenderLock lock(*this);
-                if (section) {
-                  cachedSpineIndex = currentSpineIndex;
-                  cachedChapterTotalPageCount = section->pageCount;
-                  nextPageNumber = section->currentPage;
-                  // Mark this as a deliberate reposition (not a plain resume): the new mode's layout
-                  // is a different section.bin cache key, so render() must preserve the cached page
-                  // count past its cacheLoaded reset and force a full build, so applyDeferredReposition()
-                  // remaps the page against the final count in both the cache-complete and cache-miss cases.
-                  pendingModeReposition = true;
-                }
+                armReposition();
                 section.reset();
               }
               requestUpdate();
@@ -1183,11 +1188,7 @@ void EpubReaderActivity::applyOrientation(const uint8_t orientation) {
   // Preserve current reading position so we can restore after reflow.
   {
     RenderLock lock(*this);
-    if (section) {
-      cachedSpineIndex = currentSpineIndex;
-      cachedChapterTotalPageCount = section->pageCount;
-      nextPageNumber = section->currentPage;
-    }
+    armReposition();
 
     // Persist the selection so the reader keeps the new orientation on next launch.
     SETTINGS.orientation = orientation;
@@ -1217,11 +1218,7 @@ void EpubReaderActivity::toggleAutoPageTurn(const uint8_t selectedPageTurnOption
   if (statusBarHeight == 0 || statusBarHeight == UITheme::getInstance().getProgressBarHeight()) {
     // Preserve current reading position so we can restore after reflow.
     RenderLock lock(*this);
-    if (section) {
-      cachedSpineIndex = currentSpineIndex;
-      cachedChapterTotalPageCount = section->pageCount;
-      nextPageNumber = section->currentPage;
-    }
+    armReposition();
     section.reset();
   }
 }
@@ -1374,8 +1371,8 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     // translation font while every draw resolves the same line back to the (now Normal) body font --
     // wrong word x-positions, line height and page breaks. So renderSpec is re-resolved immediately
     // below, before section->loadSectionFile() and every build call in this `if (!section)` block, to
-    // match what draw time will use. It does not touch pendingModeReposition (that is only for the
-    // submenu-return relayout), so no reposition machinery fires. Subsequent chapter loads recompute
+    // match what draw time will use. It does not arm a reposition (only the submenu-return relayout
+    // and the persisted position do that), so no reposition machinery fires. Subsequent chapter loads recompute
     // renderSpec from SETTINGS and see PT_NORMAL, gating out further toasts.
     //
     // This is the single, cache-state-independent trigger for every user-facing entry into a chapter:
@@ -1418,20 +1415,31 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     // out the rest -- it re-parses from the top in the background (HTML already cached,
     // pages are deterministic) and finalizes, so the partial machinery retires itself.
     const bool cacheLoaded = section->loadSectionFile(renderSpec);
-    if (cacheLoaded && !pendingModeReposition) {
-      // Matching render params means identical pagination, so the saved page number is valid
-      // as-is: consume any pending settings-change reposition. Without this, a chapter total
-      // saved while the section was still building (i.e. a watermark, not the real count)
-      // would remap the resume page against the finalized count and teleport the reader.
-      //
-      // A mode change is the exception: the new mode's PtLayout may be a different section.bin
-      // cache key, so a cache HIT here can load a DIFFERENTLY paginated layout. Keeping the
-      // pre-switch page count alive lets applyDeferredReposition() remap the old page number onto
-      // the new count -- without this guard a cache-complete re-switch lands on the old raw page
-      // under new pagination. When the two modes share a layout the counts match and the remap is
-      // a no-op, so the guard costs nothing.
+    if (cacheLoaded) {
+      // A HIT means the .bin was laid out under an IDENTICAL cache key, and every layout input is
+      // part of that key (ReaderRenderSpec documents this; a mismatch on any field makes
+      // loadSectionFile delete the file and return false). So the pagination the saved page number
+      // was measured in is exactly the pagination we are about to show: the page number is valid
+      // as-is and every reposition input must be dropped. Repositioning here is what teleported the
+      // reader on a display-mode switch between two modes that share a layout -- the switch is a
+      // pure cache HIT, yet the old code kept a page count that mid-chapter is only a build
+      // watermark and remapped a correct page number against it.
       cachedChapterTotalPageCount = 0;
+      pendingRepositionParagraph = 0;
     }
+    // A cache MISS means the chapter must be re-laid-out, so the saved page number describes a
+    // pagination that no longer exists. Prefer the paragraph anchor over the page ratio: it needs no
+    // page count at all, so it resolves inside the ordinary windowed build (cost bounded by the
+    // landing page) instead of forcing a whole-chapter one, and it cannot be poisoned by a watermark.
+    // It is comparable only while the source HTML is unchanged -- the bilingual `.translated.html`
+    // has its own, roughly doubled, <p> count. Explicit navigation always wins over a reposition.
+    const bool repositionPending = (cachedChapterTotalPageCount > 0 || pendingRepositionParagraph > 0) &&
+                                   currentSpineIndex == cachedSpineIndex && !pendingPageJump.has_value() &&
+                                   pendingAnchor.empty() && !pendingPercentJump;
+    const uint16_t paragraphTarget = (repositionPending && pendingRepositionParagraph > 0 &&
+                                      pendingRepositionTranslated == section->hasTranslatedHtml())
+                                         ? pendingRepositionParagraph
+                                         : 0;
     const bool cacheComplete = cacheLoaded && !section->isPartial();
     if (!cacheComplete) {
       if (section->isPartial()) {
@@ -1440,22 +1448,16 @@ void EpubReaderActivity::render(RenderLock&& lock) {
         LOG_DBG("ERS", "Cache not found, building...");
       }
 
-      // Jumps that need the final pagination or the anchor map -- explicit page jumps,
-      // fragment anchors, percent jumps, and cross-setting progress repositioning -- can't
-      // resolve their landing page until the whole chapter is laid out, so they take the full
-      // (blocking) build with the indexing popup. Everything else -- plain forward reads, resume,
-      // and explicit page jumps -- only needs a specific page, so it builds incrementally to that
-      // page and finishes the rest in loop(). The settings-change reposition (cachedChapterTotal*)
-      // is NOT a full-build trigger: it's deferred to applyDeferredReposition() once the real page
-      // count is known, so it never blocks the first page.
-      // Only a percent jump truly needs the whole chapter up front (percent -> page needs the final
-      // page count). Anchor jumps (TOC / chapter select / footnotes) resolve incrementally below --
-      // the anchor is recorded as its page is laid out, so a chapter-top anchor lands on page 0
-      // without indexing the whole chapter.
-      // A mode-change reposition also needs the whole chapter up front: the windowed build never
-      // finalizes early, so a remap gated on build completion (applyDeferredReposition) would
-      // silently die. Force the full build so the final page count is known in this same render().
-      const bool needsFullBuild = pendingPercentJump || pendingModeReposition;
+      // Only a landing page derived from the chapter's FINAL page count needs the whole chapter laid
+      // out up front, and exactly two things need that count: a percent jump (percent -> page), and
+      // the reposition's page-ratio FALLBACK, taken when the saved position carries no usable
+      // paragraph anchor (a chapter with no <p> elements, an anchor whose source HTML has flipped, or
+      // a progress.bin written by firmware older than the anchor). Everything else resolves
+      // incrementally: plain reads and resumes need one page, fragment anchors are recorded as their
+      // page is laid out, and an anchored reposition resolves the moment its paragraph is reached --
+      // so the common re-index (font, size, spacing, orientation, display mode) now costs a windowed
+      // build to the landing page instead of a blocking whole-chapter one.
+      const bool needsFullBuild = pendingPercentJump || (repositionPending && paragraphTarget == 0);
       if (needsFullBuild) {
         GUI.drawPopup(renderer, tr(STR_INDEXING));
         // The popup's own refresh is a plain FAST, so force the page that replaces it onto the HALF
@@ -1485,6 +1487,12 @@ void EpubReaderActivity::render(RenderLock&& lock) {
         // build in a blink and stay popup-free.
         const int target = pendingPageJump.has_value() ? *pendingPageJump : (nextPageNumber < 0 ? 0 : nextPageNumber);
         const bool anchorJump = !pendingAnchor.empty();
+        // An anchored reposition builds until the saved paragraph is laid out, not until a page
+        // number exists: the landing page under the new pagination is wherever that paragraph now
+        // starts, which may be ahead of or behind the saved page number. `target` (the old page
+        // number) still serves as the popup cost proxy below -- the two are within the ratio by
+        // which the chapter re-paginated.
+        const bool paragraphJump = paragraphTarget > 0;
 
         // Landing well inside a partial: the page (or anchor, via the on-disk map) is already
         // servable, so don't restart the extension build now -- it re-lays out the WHOLE chapter
@@ -1518,7 +1526,9 @@ void EpubReaderActivity::render(RenderLock&& lock) {
             showPopup = !section->findAnchor(pendingAnchor).has_value() &&
                         (translatedBuild || spineBytes > BUILD_POPUP_BYTE_THRESHOLD);
           } else {
-            const bool targetAvailable = target < static_cast<int>(section->pageCount);
+            // A paragraph jump must build to its own landing page even when the saved page number
+            // happens to be inside the pages already available, so it can never count as available.
+            const bool targetAvailable = !paragraphJump && target < static_cast<int>(section->pageCount);
             showPopup =
                 !targetAvailable && (translatedBuild || (spineBytes > BUILD_POPUP_BYTE_THRESHOLD && willInflate) ||
                                      target > BUILD_POPUP_PAGE_THRESHOLD);
@@ -1551,9 +1561,13 @@ void EpubReaderActivity::render(RenderLock&& lock) {
             return;
           }
           while (!section->isBuildComplete() &&
-                 (anchorJump ? !section->findAnchor(pendingAnchor) : static_cast<int>(section->pageCount) <= target)) {
+                 (anchorJump      ? !section->findAnchor(pendingAnchor)
+                  : paragraphJump ? !section->findPageForParagraphIndex(paragraphTarget).has_value()
+                                  : static_cast<int>(section->pageCount) <= target)) {
             // Anchor jump: build until the anchor's page is laid out (usually page 0), checking a
             // partial's on-disk anchor map too so an already-indexed anchor resolves immediately.
+            // Paragraph reposition: build until the saved paragraph has been laid out, which is the
+            // minimum work any correct landing requires and far less than the whole chapter.
             // Otherwise: build until the target page exists. loop() builds the rest behind it.
             if (buildPopupPending && millis() - buildStartMs >= BUILD_POPUP_DEADLINE_MS) {
               // The predictive gates guessed fast but the build blew the silent budget.
@@ -1606,6 +1620,24 @@ void EpubReaderActivity::render(RenderLock&& lock) {
       pendingPercentJump = false;
     }
 
+    // Anchored reposition: land on the page that now carries the paragraph the reader had reached.
+    // The build loop above already ran until that paragraph was laid out (or the chapter ended), so
+    // this resolves without needing the final page count -- which is what lets the whole path use the
+    // windowed build. Set only on a cache MISS, and never together with an explicit navigation.
+    if (paragraphTarget > 0) {
+      if (const auto page = section->findPageForParagraphIndex(paragraphTarget)) {
+        LOG_DBG("ERS", "Repositioned on paragraph %u: page %d -> %u", paragraphTarget, section->currentPage, *page);
+        section->currentPage = *page;
+        cachedChapterTotalPageCount = 0;  // anchored: the ratio fallback must not fire on top of it
+      } else {
+        // The chapter no longer contains that paragraph (the book file itself changed). The loop above
+        // ran to build completion looking for it, so the final page count IS known -- leave the cached
+        // count armed and let the ratio fallback below make its best guess.
+        LOG_DBG("ERS", "Paragraph %u not in section %d; falling back to the page ratio", paragraphTarget,
+                currentSpineIndex);
+      }
+    }
+
     // Page Translation: refresh the overlay's chapter binding now that a new
     // section is loaded. onSectionChanged() clears any prior cached page parse.
     pageTranslationOverlay.setTranslatedHtmlPath(section->getTranslatedHtmlPath());
@@ -1618,11 +1650,20 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     tooltipOverlay.setTranslatedHtmlPath(section->getTranslatedHtmlPath());
     tooltipOverlay.onPageChanged();
 
-    // A mode-change reposition has served its purpose for this load: it kept cachedChapterTotalPageCount
-    // alive past the cacheLoaded reset above and (on a cache miss) forced the full build, so the page
-    // count below is final and applyDeferredReposition() can remap. Clear it so a later plain resume
-    // isn't mistaken for a reposition. cachedChapterTotalPageCount is consumed separately by that remap.
-    pendingModeReposition = false;
+    // Every reposition input belonged to THIS load and is consumed here. The anchor was either
+    // dropped by the cache HIT, landed on above, or found absent from the chapter. The cached chapter
+    // total goes too -- unless this load still owes the ratio fallback, i.e. a reposition with no
+    // usable anchor, which forced the full build above so applyDeferredReposition() can remap against
+    // the final count later in this same render pass.
+    //
+    // Leaving either armed is a bug of its own: a reposition armed for spine S that the reader then
+    // pages away from used to stay live, so paging BACK into S later remapped a perfectly good page
+    // number against a total from before the re-layout.
+    const bool ratioFallbackOwed = repositionPending && paragraphTarget == 0 && cachedChapterTotalPageCount > 0;
+    pendingRepositionParagraph = 0;
+    if (!ratioFallbackOwed) {
+      cachedChapterTotalPageCount = 0;
+    }
   }
 
   // Extend the build to the requested page if needed (for partials and in-progress builds).
@@ -1668,6 +1709,15 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     }
   }
 
+  // Apply the fallback page-ratio reposition now that the real page count is known (a no-op for a
+  // plain resume, for an anchored reposition -- which consumed the cached count above -- and while
+  // still building, in which case it defers to loop() on completion).
+  //
+  // BEFORE the clamp below, deliberately: currentPage is still the page number saved under the OLD
+  // pagination and is the remap's numerator. Clamping it into the NEW page range first (which happens
+  // whenever the chapter got shorter) fed the ratio an already-shortened numerator and lost pages.
+  applyDeferredReposition();
+
   // The requested page is now as built as it will get. If it still lands past the end,
   // clamp to the last real page: the UINT16_MAX "last page" sentinel from backward chapter
   // navigation, an explicit jump beyond a finished chapter, or a stale saved position.
@@ -1677,10 +1727,6 @@ void EpubReaderActivity::render(RenderLock&& lock) {
       section->currentPage >= static_cast<int>(section->pageCount)) {
     section->currentPage = section->pageCount - 1;
   }
-
-  // Apply a deferred settings-change reposition now that the real page count is known (a no-op for
-  // a plain resume / unchanged pagination). If still building, this defers to loop() on completion.
-  applyDeferredReposition();
 
   // Pre-Translation fallback dialog OWNS the screen: draw it as ONE self-contained refresh with no
   // page composited underneath, then return. This is the whole point of the modal -- the old toast
@@ -1762,11 +1808,18 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     lastRenderCompleteMs = millis();
   }
   // Only persist when the position actually changed. render() also runs on menu,
-  // bookmark and screenshot re-renders, and writeAtomic is several FAT ops for 6 bytes.
+  // bookmark and screenshot re-renders, and writeAtomic is several FAT ops for a few bytes.
   // Every real page turn changes currentPage, so progress durability is unaffected.
+  //
+  // The record carries the layout-independent paragraph anchor as well as the page number, so a
+  // reopen whose chapter must be re-laid-out (the font/size change: those settings live outside the
+  // reader, so the reader is destroyed and this file is the only carrier) resumes on the right page.
+  // Building the anchor costs two paragraph-LUT reads -- in RAM while the build is live, two small
+  // SD reads once it is finalized -- against a page turn that already costs an ~1s e-ink refresh.
   if (currentSpineIndex != lastSavedSpineIndex || section->currentPage != lastSavedPage ||
       section->pageCount != lastSavedPageCount) {
-    if (saveProgress(currentSpineIndex, section->currentPage, section->estimatedTotalPages())) {
+    if (saveProgress(currentSpineIndex, section->currentPage, section->estimatedTotalPages(), currentParagraphAnchor(),
+                     section->builtFromTranslatedSource())) {
       lastSavedSpineIndex = currentSpineIndex;
       lastSavedPage = section->currentPage;
       lastSavedPageCount = section->estimatedTotalPages();
@@ -1805,6 +1858,23 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   }
 }
 
+uint16_t EpubReaderActivity::currentParagraphAnchor() const {
+  if (!section || section->currentPage < 0) return 0;
+  return section->paragraphAnchorForPage(static_cast<uint16_t>(section->currentPage)).value_or(0);
+}
+
+void EpubReaderActivity::armReposition() {
+  if (!section) return;
+  cachedSpineIndex = currentSpineIndex;
+  // estimatedTotalPages(), NOT pageCount: mid-chapter the latter is only the windowed build's
+  // watermark (~currentPage + BUILD_WINDOW_AHEAD), and a ratio taken against a watermark is ~1.0,
+  // which threw the reader to the end of the re-laid-out chapter.
+  cachedChapterTotalPageCount = section->estimatedTotalPages();
+  nextPageNumber = section->currentPage;
+  pendingRepositionParagraph = currentParagraphAnchor();
+  pendingRepositionTranslated = section->builtFromTranslatedSource();
+}
+
 bool EpubReaderActivity::applyDeferredReposition() {
   if (cachedChapterTotalPageCount == 0 || !section || section->isBuilding()) {
     return false;
@@ -1812,15 +1882,13 @@ bool EpubReaderActivity::applyDeferredReposition() {
   bool changed = false;
   // Only remap when the chapter actually re-paginated (e.g. after a settings change). A plain
   // resume has identical pagination, so section->pageCount == cachedChapterTotalPageCount and
-  // nothing moves.
-  if (currentSpineIndex == cachedSpineIndex && section->pageCount != cachedChapterTotalPageCount) {
-    const float progress = static_cast<float>(section->currentPage) / static_cast<float>(cachedChapterTotalPageCount);
-    int newPage = static_cast<int>(progress * static_cast<float>(section->pageCount));
-    if (newPage < 0) newPage = 0;
-    if (section->pageCount > 0 && newPage >= static_cast<int>(section->pageCount)) {
-      newPage = section->pageCount - 1;
-    }
+  // nothing moves. Guarded on !isBuilding() above so pageCount is the real count, not a watermark.
+  if (currentSpineIndex == cachedSpineIndex) {
+    const int newPage =
+        ReaderPosition::remapByPageRatio(section->currentPage, cachedChapterTotalPageCount, section->pageCount);
     if (newPage != section->currentPage) {
+      LOG_DBG("ERS", "Ratio reposition: page %d of %d -> %d of %d", section->currentPage, cachedChapterTotalPageCount,
+              newPage, section->pageCount);
       section->currentPage = newPage;
       changed = true;
     }
@@ -1829,8 +1897,9 @@ bool EpubReaderActivity::applyDeferredReposition() {
   return changed;
 }
 
-bool EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageCount) {
-  return EpubReaderUtils::saveProgress(*epub, spineIndex, currentPage, pageCount);
+bool EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageCount, uint16_t paragraphAnchor,
+                                      bool translatedSource) {
+  return EpubReaderUtils::saveProgress(*epub, spineIndex, currentPage, pageCount, paragraphAnchor, translatedSource);
 }
 void EpubReaderActivity::renderOverlayFrame(Page& page, const PageFontSet& fonts, const int orientedMarginTop,
                                             const int orientedMarginRight, const int orientedMarginBottom,

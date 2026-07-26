@@ -83,6 +83,8 @@ class Section {
   // Parse watermark from the partial's trailer, for estimating the total page count.
   uint32_t partialBytesConsumed_ = 0;
   uint32_t partialTotalBytes_ = 0;
+  // Source the available pages were laid out from; see builtFromTranslatedSource().
+  bool translatedSource_ = false;
   bool finalizeBuild();
   // Write the LUTs/anchor map (and, for a partial, the watermark trailer), patch the
   // header, stamp the version byte, and swap the tmp .bin over filePath.
@@ -138,6 +140,11 @@ class Section {
   void suspendBuild();
   // True when a partial file was loaded: pageCount is a watermark, not the chapter total.
   bool isPartial() const { return partial_; }
+  // Which source HTML the pages currently available were laid out from: the bilingual
+  // `.translated.html` sidecar, or the original chapter HTML. Set by both entry points
+  // (loadSectionFile's cache-key check and startBuild), so a caller can record the source a
+  // position was measured against without re-stat'ing the SD card on every page turn.
+  bool builtFromTranslatedSource() const { return translatedSource_; }
 
   // Unified page read: from the active build if it has reached the page, otherwise from
   // the on-disk file (finalized section, or a partial the rebuild hasn't caught up to).
@@ -172,4 +179,31 @@ class Section {
 
   // Look up the synthetic paragraph index for the given rendered page.
   std::optional<uint16_t> getParagraphIndexForPage(uint16_t page) const;
+
+  // --- Reposition anchors ---------------------------------------------------------------------
+  // The paragraph LUT is the only layout-INDEPENDENT handle on a reading position this cache has:
+  // entry[page] is the count of <p> elements opened by the end of that page, a pure function of the
+  // source HTML. It therefore survives every re-layout (font family/size, line and paragraph
+  // spacing, margins, orientation, Pre-Translation layout), unlike a page number or a page ratio.
+  // The three wrappers below extend the on-disk lookups above to a build in PROGRESS, whose pages
+  // exist only in build_->lut -- the state a re-layout is always in, since the cache-key mismatch
+  // that triggered it deleted the committed .bin.
+
+  // Paragraph index stamped on `page`: from the in-progress build's table when it reaches that far,
+  // otherwise from the committed file (finalized section, or a partial that already covers it).
+  std::optional<uint16_t> findParagraphIndexForPage(uint16_t page) const;
+
+  // The anchor to persist for `page`, or nullopt when this page cannot be anchored: the stamped
+  // index must be non-zero (the chapter uses <p> at all) AND must first appear on this page, i.e.
+  // `page` starts a new paragraph. That second condition is what makes the anchor round-trip
+  // EXACTLY back onto `page` under an unchanged layout, and it is what rejects the degenerate
+  // chapter laid out as one enormous paragraph, where every page carries the same index and the
+  // anchor would send the reader to the chapter's first page.
+  std::optional<uint16_t> paragraphAnchorForPage(uint16_t page) const;
+
+  // First page on which paragraph `pIndex` has begun. While a build is running this sees only the
+  // pages laid out so far, so nullopt means "not reached yet -- build more" (the same contract as
+  // findAnchorDuringBuild): a caller can build incrementally toward the landing page instead of
+  // laying out the whole chapter to learn its final page count.
+  std::optional<uint16_t> findPageForParagraphIndex(uint16_t pIndex) const;
 };
