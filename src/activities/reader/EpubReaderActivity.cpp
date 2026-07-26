@@ -1055,6 +1055,13 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
           });
       break;
     }
+    case EpubReaderMenuActivity::MenuAction::AUTO_PAGE_TURN:
+    case EpubReaderMenuActivity::MenuAction::ROTATE_SCREEN:
+      // Adjusted in place inside the menu (an option popup writes MenuResult::orientation /
+      // pageTurnOption and the menu returns early without setting the action), so these never
+      // arrive here as an action. Listed so the switch stays exhaustive (-Werror=switch): a future
+      // menu action added without a handler is then a compile error, not a silent no-op.
+      break;
   }
 }
 

@@ -15,18 +15,28 @@
 
 // UI order. Appending a mode here (and to PRE_TRANSLATION_MODE) is all a new mode needs to appear
 // in every list and cycle.
+//
+// PT_INTERLINEAR is DELIBERATELY ABSENT. The enum value is reserved and its label is translated,
+// but the layout does not exist yet (CrossPointSettings::ptLayoutForDisplayMode maps it to
+// PtLayout::Both), so offering it would let the user select and persist a mode that renders
+// exactly like Normal. TO RE-ADD once the Interlinear layout lands: append
+// `CrossPointSettings::PT_INTERLINEAR` to the table below (last, after PT_MODAL — appending is
+// what keeps the cycle order stable for users), and change the static_assert's `- 3` back to
+// `- 2` together with its message.
 inline constexpr CrossPointSettings::PRE_TRANSLATION_MODE PT_SELECTABLE_MODES[] = {
     CrossPointSettings::PT_NORMAL,        CrossPointSettings::PT_PARAGRAPH,        CrossPointSettings::PT_SIDE_BY_SIDE,
     CrossPointSettings::PT_ORIGINAL_ONLY, CrossPointSettings::PT_TRANSLATION_ONLY, CrossPointSettings::PT_TOOLTIP,
-    CrossPointSettings::PT_MODAL,         CrossPointSettings::PT_INTERLINEAR,
+    CrossPointSettings::PT_MODAL,
 };
 
 inline constexpr size_t PT_SELECTABLE_MODE_COUNT = sizeof(PT_SELECTABLE_MODES) / sizeof(PT_SELECTABLE_MODES[0]);
 
-// Every persisted value is either selectable or one of the two retired holes. A new mode that is
-// added to the enum but forgotten here (or vice versa) fails the build.
-static_assert(PT_SELECTABLE_MODE_COUNT == static_cast<size_t>(CrossPointSettings::PT_MODE_COUNT) - 2,
-              "PT_SELECTABLE_MODES must list every PRE_TRANSLATION_MODE except the two retired holes (1, 2)");
+// Every persisted value is either selectable, one of the two retired holes, or PT_INTERLINEAR
+// (reserved, not yet implemented — see above). A new mode that is added to the enum but forgotten
+// here (or vice versa) fails the build.
+static_assert(PT_SELECTABLE_MODE_COUNT == static_cast<size_t>(CrossPointSettings::PT_MODE_COUNT) - 3,
+              "PT_SELECTABLE_MODES must list every PRE_TRANSLATION_MODE except the two retired holes "
+              "(1, 2) and the not-yet-implemented PT_INTERLINEAR");
 
 // The ONE mode -> label mapping (it replaced three duplicated DISPLAY_MODE_LABELS tables).
 // Deliberately a switch with NO `default:` case: a mode added to PRE_TRANSLATION_MODE without a

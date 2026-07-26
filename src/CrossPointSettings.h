@@ -189,6 +189,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     PT_MODAL = 6,
     PT_TOOLTIP = 7,
     PT_PARAGRAPH = 8,
+    // Reserved, NOT yet selectable: the layout is not implemented, so it is deliberately absent
+    // from PT_SELECTABLE_MODES (see PreTranslationModes.h for how to re-add it).
     PT_INTERLINEAR = 9,
   };
   // LOAD-TIME VALIDITY BOUND ONLY: fromJson() clamps a stored translationDisplayMode >= this to

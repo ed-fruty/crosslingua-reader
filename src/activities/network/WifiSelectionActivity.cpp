@@ -792,7 +792,10 @@ void WifiSelectionActivity::render(RenderLock&&) {
       renderNetworkList(&screen, &metrics);
       break;
     case WifiSelectionState::HIDDEN_SSID_ENTRY:
-      // Transitioning to/from the SSID keyboard subactivity - nothing to draw
+    case WifiSelectionState::PASSWORD_ENTRY:
+      // Transitioning to/from a keyboard subactivity - nothing to draw. Both states are already
+      // filtered by the early return at the top of render(); listed here only so the switch stays
+      // exhaustive (-Werror=switch), which is what makes a future state a compile error.
       break;
     case WifiSelectionState::CONNECTING:
       renderConnecting(&screen, &metrics);

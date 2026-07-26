@@ -72,14 +72,28 @@ EPUBs prepared elsewhere (e.g. Calibre's Polyglot output).
 
 <img src="./images/pre-translation/mode-normal.jpg" height="500" alt="Normal mode" />
 
-### Dark / Light
+### Paragraph by Paragraph
 
-Like Normal, but translated paragraphs are rendered in dark gray (Dark) or
-light gray (Light) to visually distinguish them from the original.
+Like Normal — original and translation alternate paragraph by paragraph —
+but translated paragraphs are drawn in gray so you can tell them apart at a
+glance.
 
-<img src="./images/pre-translation/mode-dark.jpg" height="500" alt="Dark mode" />
+The gray level is a separate stored setting (**Dimmed** or **Dimmed
+Light**), not a mode of its own. It affects drawing only: switching shade
+never re-lays out the chapter.
 
-<img src="./images/pre-translation/mode-light.jpg" height="500" alt="Light mode" />
+<img src="./images/pre-translation/mode-dark.jpg" height="500" alt="Paragraph by Paragraph mode, Dimmed shade" />
+
+*Dimmed shade.*
+
+<img src="./images/pre-translation/mode-light.jpg" height="500" alt="Paragraph by Paragraph mode, Dimmed Light shade" />
+
+*Dimmed Light shade.*
+
+> Earlier builds exposed the two shades as two separate display modes
+> ("Dark" and "Light"). They are now one mode plus a shade setting; an
+> existing setting saved under either old mode is migrated automatically on
+> upgrade.
 
 ### Original Only
 
