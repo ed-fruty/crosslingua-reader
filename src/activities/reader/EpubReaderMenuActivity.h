@@ -27,6 +27,9 @@ class EpubReaderMenuActivity final : public Activity {
     DELETE_CACHE,
     DICTIONARY,
     PRE_TRANSLATION,
+    // Opens the same TextSettingsActivity the Settings screen uses (font family, size,
+    // layout, style + live preview), so the reader never grows a parallel font UI.
+    TEXT_SETTINGS,
   };
 
   explicit EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title,
