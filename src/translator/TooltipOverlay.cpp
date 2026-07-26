@@ -9,7 +9,9 @@
 
 #include <algorithm>
 #include <cstring>
+#include <iterator>
 
+#include "ReaderFontSizes.h"
 #include "TextNormalize.h"
 #include "fontIds.h"
 
@@ -1112,39 +1114,45 @@ void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId,
 // smallest reader size there is nothing smaller, so fall back to the reader font itself. Adapted to
 // v2's font set (NOTOSERIF / NOTOSANS + SD card fonts); the fork's family switch used a different
 // built-in font lineup (Bookerly/EdsLab/Caecilia/GPro).
+//
+// Reader size is a point size since 91900484 (CrossPointSettings::fontPointSize), not a
+// SMALL/MEDIUM/LARGE slot, so "one smaller" means the previous entry in the active family's
+// selectable point sizes rather than an enum decrement. Whenever there is no smaller size this
+// returns getReaderFontId() unchanged, which also keeps renderOverlayFrame's
+// overlayFontId == fontId fast path (one shared prewarm for page + overlay) intact.
+//
+// Runs from the render loop: no allocation, so it walks the built-in array directly instead of
+// building the readerFontPointSizes() vector.
 
 int getTooltipFontId() {
-  if (SETTINGS.fontSize <= CrossPointSettings::SMALL) return SETTINGS.getReaderFontId();
-  const uint8_t sz = SETTINGS.fontSize - 1;
-
-  // SD card font: resolve the smaller size through the same resolver the reader uses.
+  // SD card family: the manager keeps exactly ONE reader-size face loaded and
+  // SdCardFontSystem::resolveFontId() ignores the size argument by design, so there is no smaller
+  // SD size to drop to — SD tooltips render at body size.
   if (SETTINGS.sdFontFamilyName[0] != '\0' && SETTINGS.sdFontIdResolver) {
-    const int id = SETTINGS.sdFontIdResolver(SETTINGS.sdFontResolverCtx, SETTINGS.sdFontFamilyName, sz);
+    const int id =
+        SETTINGS.sdFontIdResolver(SETTINGS.sdFontResolverCtx, SETTINGS.sdFontFamilyName, SETTINGS.fontPointSize);
     if (id != 0) return id;
-    // Fall through to a built-in font if the SD font lacks this size.
+    // Fall through to a built-in font if the SD family has no loaded face.
   }
 
-  switch (SETTINGS.fontFamily) {
-    case CrossPointSettings::NOTOSANS:
-      switch (sz) {
-        case CrossPointSettings::SMALL:
-          return NOTOSANS_12_FONT_ID;
-        case CrossPointSettings::MEDIUM:
-          return NOTOSANS_14_FONT_ID;
-        case CrossPointSettings::LARGE:
-        default:
-          return NOTOSANS_16_FONT_ID;
-      }
-    case CrossPointSettings::NOTOSERIF:
+  // Built-in families ship exactly BUILTIN_READER_POINT_SIZES. Snap first (fontPointSize may still
+  // carry a size only an SD family had), then step one entry down.
+  constexpr size_t kCount = std::size(BUILTIN_READER_POINT_SIZES);
+  const uint8_t body = snapToNearestPointSize(BUILTIN_READER_POINT_SIZES, kCount, SETTINGS.fontPointSize);
+  size_t idx = 0;
+  while (idx < kCount && BUILTIN_READER_POINT_SIZES[idx] != body) idx++;
+  if (idx == 0 || idx >= kCount) return SETTINGS.getReaderFontId();  // already the smallest
+
+  const bool sans = (SETTINGS.fontFamily == CrossPointSettings::NOTOSANS);
+  switch (BUILTIN_READER_POINT_SIZES[idx - 1]) {
+    case 12:
+      return sans ? NOTOSANS_12_FONT_ID : NOTOSERIF_12_FONT_ID;
+    case 16:
+      return sans ? NOTOSANS_16_FONT_ID : NOTOSERIF_16_FONT_ID;
+    case 18:
+      return sans ? NOTOSANS_18_FONT_ID : NOTOSERIF_18_FONT_ID;
+    case 14:
     default:
-      switch (sz) {
-        case CrossPointSettings::SMALL:
-          return NOTOSERIF_12_FONT_ID;
-        case CrossPointSettings::MEDIUM:
-          return NOTOSERIF_14_FONT_ID;
-        case CrossPointSettings::LARGE:
-        default:
-          return NOTOSERIF_16_FONT_ID;
-      }
+      return sans ? NOTOSANS_14_FONT_ID : NOTOSERIF_14_FONT_ID;
   }
 }

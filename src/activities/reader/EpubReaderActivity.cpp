@@ -1896,6 +1896,17 @@ void EpubReaderActivity::renderContents(Page& page, const int orientedMarginTop,
                                         const int orientedMarginBottom, const int orientedMarginLeft) {
   const int fontId = SETTINGS.getReaderFontId();
 
+  // Manual (power-button) refresh latched by handleForcedRefresh() (upstream d7c98adc). Read and
+  // CLEARED here, above the overlay early-return below, so one press is consumed by exactly one
+  // render the way upstream intended. Both paths already service the request through
+  // displayWithRefreshCycle (handleForcedRefresh also set pagesUntilFullRefresh = 1, so the frame
+  // goes out HALF); only the image branch further down bypasses that cadence, so it needs the
+  // captured bool to issue its own clean base pass. Clearing below the early-return would leave the
+  // flag latched for every press made while a Bilingua overlay is open, firing a spurious extra
+  // full-screen HALF_REFRESH on the next image page rendered without an overlay.
+  const bool manualRefreshPending = forcedRefreshPending;
+  forcedRefreshPending = false;
+
   // A translation overlay (PT_TOOLTIP / PT_MODAL) takes the upstream-fork choreography: the page,
   // status bar and overlay are composited into ONE BW frame and refreshed once (FAST, HALF only on
   // the periodic cadence), instead of the image / tiled-grayscale machinery below — a normal-reading
@@ -1971,6 +1982,15 @@ void EpubReaderActivity::renderContents(Page& page, const int orientedMarginTop,
     // Step 2: Re-render with images and display again (images appear clean)
     int16_t imgX, imgY, imgW, imgH;
     if (page.getImageBoundingBox(imgX, imgY, imgW, imgH)) {
+      // Image pages intentionally bypass the regular refresh cadence. Preserve
+      // the manual clean pass before their double-FAST grayscale pipeline.
+      // Wedge-safe under our async choreography: this branch only runs with pageHasImages, which
+      // forces overlapRefresh = false, and every async BW refresh is drained by waitRefreshComplete()
+      // inside the tiled-grayscale block before renderContents returns -- nothing is ever in flight
+      // when this blocking HALF_REFRESH is issued.
+      if (manualRefreshPending) {
+        renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+      }
       renderer.fillRect(imgX + orientedMarginLeft, imgY + orientedMarginTop, imgW, imgH, false);
       renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 

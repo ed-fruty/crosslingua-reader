@@ -6,7 +6,7 @@ All POD fields are written in the ESP32 little-endian representation used by
 
 ## `book.bin`
 
-### Version 7
+### Version 10
 
 `book.bin` stores EPUB metadata plus lookup tables for spine and TOC entries.
 The current firmware writes this version from `BookMetadataCache`.
@@ -18,7 +18,7 @@ import std.mem;
 import std.string;
 import std.core;
 
-#define EXPECTED_VERSION 7
+#define EXPECTED_VERSION 10
 #define MAX_STRING_LENGTH 65535
 
 struct String {
@@ -89,6 +89,35 @@ if (parsedSize != fileSize) {
 ```
 
 ## `section.bin`
+
+### Version 37
+
+Version 37 is the second reconciliation of the two numbering lines. While this
+branch stood at 36, upstream `develop` had advanced its own line to its "v33",
+which bundles two cache-invalidating changes — both kept here:
+
+- **Native `<ruby>` / `<rt>`.** `TextBlock` now serializes a per-word ruby
+  annotation string array immediately after the word arena (see the `TextBlock`
+  pattern below). `<rp>` fallback parentheses are skipped at parse time. The
+  array is written unconditionally — one length-prefixed `String` per word, empty
+  for words without ruby — so every book pays 4 bytes per word even with no ruby
+  present.
+- **Closed-tag block splits.** A closing block tag now starts a fresh text block,
+  so a closed block's style no longer leaks into following bare text. This shifts
+  cached block boundaries for essentially every book.
+
+Version 37 also **renumbers the ruby word-style bit**. Upstream shipped
+`EpdFontFamily::RUBY_CONTINUE` as `64`, which is this branch's `TRANSLATED` bit
+(Pre-Translation). Ruby therefore moves to bit 7 (`128`), and the reservation
+that bit previously carried for the Tooltip display mode is retired — that flag
+was never written nor persisted by any code. The word style byte is now full: a
+further flag requires widening the persisted style (the `TextBlock` arena stores
+`styles[]` as `uint8_t`) plus another version bump.
+
+Because v37 rejects every cache written by either line, no stored style byte is
+ever reinterpreted under the new numbering. The merged format carries the
+Pre-Translation fields (v32–v35), the `ImageBlock` `srcPath` (upstream's "v32")
+**and** the per-word ruby strings (upstream's "v33").
 
 ### Version 36
 
@@ -172,7 +201,7 @@ import std.mem;
 import std.string;
 import std.core;
 
-#define EXPECTED_VERSION 36
+#define EXPECTED_VERSION 37
 #define MAX_STRING_LENGTH 65535
 #define FOOTNOTE_NUMBER_LEN 32
 #define FOOTNOTE_HREF_LEN 96
@@ -204,7 +233,8 @@ enum WordStyle : u8 {
     STRIKETHROUGH = 8,
     SUP = 16,
     SUB = 32,
-    TRANSLATED = 64
+    TRANSLATED = 64,
+    RUBY_CONTINUE = 128
 };
 
 enum TextAlign : u8 {
@@ -248,6 +278,7 @@ struct TextBlock {
             u8 wordFocusBoundary[wordCount] [[comment("UTF-8 byte boundary between bold prefix and suffix")]];
         }
         char text[textBytes] [[comment("All words back to back, each NUL-terminated")]];
+        String rubyText[wordCount] [[comment("v37: per-word ruby annotation, empty when the word has none")]];
     }
 
     BlockStyle blockStyle;

@@ -38,7 +38,22 @@ namespace {
 //      layouts, so v36 supersedes both — the merged format carries the Pre-Translation
 //      fields (v32-v35 above) AND the ImageBlock source href, and the bump forces a
 //      rebuild of any section cached by either line.
-constexpr uint8_t SECTION_FILE_VERSION = 36;
+// v37: Second merge with upstream develop, whose independent numbering had meanwhile
+//      advanced to its own "v33" while this line stood at 36. That upstream v33 bundles
+//      two cache-invalidating changes, both of which the merged format keeps: TextBlock
+//      now serializes a per-word ruby annotation string after the word arena (native
+//      <ruby>/<rt> support, <rp> skipped), and a closing tag now starts a fresh text
+//      block so a closed block's style no longer leaks into following bare text, which
+//      shifts the cached block boundaries. v37 supersedes both numbering lines: the
+//      merged format carries the Pre-Translation fields (v32-v35), the ImageBlock source
+//      href (upstream's "v32") AND the per-word ruby strings (upstream's "v33"), and the
+//      bump forces a rebuild of any section cached by either line. The merge also
+//      renumbers the persisted word style bit for ruby: upstream shipped
+//      EpdFontFamily::RUBY_CONTINUE as 64, which is this line's TRANSLATED bit, so ruby
+//      moves to bit 7 (128) and the never-written PT_TOOLTIP reservation on that bit is
+//      retired. v37 rejects every cache written by either line, so no stored style byte
+//      is ever reinterpreted under the new numbering.
+constexpr uint8_t SECTION_FILE_VERSION = 37;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
