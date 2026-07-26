@@ -417,6 +417,8 @@ STR_PT_TRANSLATION_ONLY: "תרגום בלבד"
 STR_PT_SIDE_BY_SIDE: "זה לצד זה"
 STR_PT_MODAL: "חלון מודלי"
 STR_PT_TOOLTIP: "חלונית"
+STR_PT_PARAGRAPH: "פסקה אחר פסקה"
+STR_PT_INTERLINEAR: "בין-שורתי"
 
 STR_TOOLTIP_BUTTONS: "כפתורי החלונית"
 STR_TOOLTIP_NAV: "ניווט בחלונית"

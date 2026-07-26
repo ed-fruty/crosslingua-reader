@@ -409,6 +409,8 @@ STR_PT_TRANSLATION_ONLY: "Apenas tradução"
 STR_PT_SIDE_BY_SIDE: "Lado a lado"
 STR_PT_MODAL: "Modal"
 STR_PT_TOOLTIP: "Balão"
+STR_PT_PARAGRAPH: "Parágrafo por parágrafo"
+STR_PT_INTERLINEAR: "Interlinear"
 
 STR_TOOLTIP_BUTTONS: "Botões do balão"
 STR_TOOLTIP_NAV: "Navegação do balão"

@@ -409,6 +409,8 @@ STR_PT_TRANSLATION_ONLY: "Только перевод"
 STR_PT_SIDE_BY_SIDE: "Бок о бок"
 STR_PT_MODAL: "Модальный"
 STR_PT_TOOLTIP: "Подсказка"
+STR_PT_PARAGRAPH: "Абзац за абзацем"
+STR_PT_INTERLINEAR: "Межстрочный"
 
 STR_TOOLTIP_BUTTONS: "Кнопки подсказки"
 STR_TOOLTIP_NAV: "Навигация подсказки"

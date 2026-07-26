@@ -12,6 +12,7 @@
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
+#include "PreTranslationModes.h"
 #include "activities/ActivityManager.h"
 #include "activities/ActivityResult.h"
 #include "activities/network/WifiSelectionActivity.h"
@@ -30,18 +31,6 @@ static constexpr uint8_t AUTO_DETECT_SENTINEL = 0xFF;
 // this just gives a heap fragmented by the previous chapter a chance to recover before
 // the next handshake begins.
 static constexpr uint32_t CHAPTER_START_HEAP_WAIT_MS = 12000;
-
-// Display-mode label mapping for the post-success chooser, indexed by
-// CrossPointSettings::translationDisplayMode (PT_NORMAL..PT_TOOLTIP). Mirrors
-// PreTranslationSubmenuActivity::displayModeLabel() exactly; kept as a small local copy
-// rather than extracted to avoid churning the submenu (see task notes). A static_assert
-// guards it against PT_MODE_COUNT drifting out of sync.
-static constexpr StrId DISPLAY_MODE_LABELS[] = {
-    StrId::STR_PT_NORMAL,           StrId::STR_PT_DARK,         StrId::STR_PT_LIGHT, StrId::STR_PT_ORIGINAL_ONLY,
-    StrId::STR_PT_TRANSLATION_ONLY, StrId::STR_PT_SIDE_BY_SIDE, StrId::STR_PT_MODAL, StrId::STR_PT_TOOLTIP,
-};
-static_assert(sizeof(DISPLAY_MODE_LABELS) / sizeof(DISPLAY_MODE_LABELS[0]) == CrossPointSettings::PT_MODE_COUNT,
-              "DISPLAY_MODE_LABELS must cover every translationDisplayMode value");
 
 // ─── epub (re)loading ───────────────────────────────────────────────────────
 
@@ -659,9 +648,7 @@ void BookTranslatorActivity::loop() {
       } else if (chaptersCompleted > 0) {
         // Success with at least one chapter available: offer the display-mode chooser so the
         // user can enable a bilingual mode straight away. Pre-highlight the current mode.
-        displayModeSelection = SETTINGS.translationDisplayMode < CrossPointSettings::PT_MODE_COUNT
-                                   ? SETTINGS.translationDisplayMode
-                                   : CrossPointSettings::PT_NORMAL;
+        displayModeSelection = static_cast<int>(ptSelectableIndex(SETTINGS.translationDisplayMode));
         state = CHOOSE_DISPLAY_MODE;
       } else {
         state = DONE;
@@ -689,18 +676,18 @@ void BookTranslatorActivity::loop() {
   // normal return path so the relaunched reader picks up the mode from settings.
   if (state == CHOOSE_DISPLAY_MODE) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
-      displayModeSelection =
-          (displayModeSelection + CrossPointSettings::PT_MODE_COUNT - 1) % CrossPointSettings::PT_MODE_COUNT;
+      displayModeSelection = (displayModeSelection + static_cast<int>(PT_SELECTABLE_MODE_COUNT) - 1) %
+                             static_cast<int>(PT_SELECTABLE_MODE_COUNT);
       requestUpdate();
       return;
     }
     if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
-      displayModeSelection = (displayModeSelection + 1) % CrossPointSettings::PT_MODE_COUNT;
+      displayModeSelection = (displayModeSelection + 1) % static_cast<int>(PT_SELECTABLE_MODE_COUNT);
       requestUpdate();
       return;
     }
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-      const uint8_t chosen = static_cast<uint8_t>(displayModeSelection);
+      const uint8_t chosen = static_cast<uint8_t>(PT_SELECTABLE_MODES[displayModeSelection]);
       if (SETTINGS.translationDisplayMode != chosen) {  // guard SPIFFS write on no-op selections
         SETTINGS.translationDisplayMode = chosen;
         SETTINGS.saveToFile();
@@ -912,8 +899,8 @@ void BookTranslatorActivity::renderDisplayModeChooser() {
   // Captureless lambda -> no std::function heap allocation; the row string is built from the
   // static StrId table each frame (transient, like the submenu's list).
   GUI.drawList(renderer, Rect{screen.x, contentTop, screen.width, contentHeight},
-               static_cast<int>(CrossPointSettings::PT_MODE_COUNT), displayModeSelection,
-               [](int index) -> std::string { return I18N.get(DISPLAY_MODE_LABELS[index]); });
+               static_cast<int>(PT_SELECTABLE_MODE_COUNT), displayModeSelection,
+               [](int index) -> std::string { return I18N.get(ptModeLabel(PT_SELECTABLE_MODES[index])); });
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

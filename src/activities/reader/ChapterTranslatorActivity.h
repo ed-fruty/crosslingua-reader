@@ -79,8 +79,10 @@ class ChapterTranslatorActivity final : public Activity {
 
   State state = SOURCE_LANG_SELECTION;
 
-  // Cursor into the CHOOSE_DISPLAY_MODE list (0..PT_MODE_COUNT-1). Seeded to the current
-  // SETTINGS.translationDisplayMode when the chooser opens so it starts pre-highlighted.
+  // Cursor into the CHOOSE_DISPLAY_MODE list: an index into PT_SELECTABLE_MODES
+  // (0..PT_SELECTABLE_MODE_COUNT-1), NOT a raw mode value -- the retired holes at 1/2 make the
+  // value range non-contiguous. Seeded from the current SETTINGS.translationDisplayMode via
+  // ptSelectableIndex() when the chooser opens so it starts pre-highlighted.
   int displayModeSelection = 0;
 
   // ─── Translation task ──────────────────────────────────────────────────────

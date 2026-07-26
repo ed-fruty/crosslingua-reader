@@ -386,6 +386,8 @@ STR_PT_TRANSLATION_ONLY: "Tylko tłumaczenie"
 STR_PT_SIDE_BY_SIDE: "Obok siebie"
 STR_PT_MODAL: "Modalny"
 STR_PT_TOOLTIP: "Dymek"
+STR_PT_PARAGRAPH: "Akapit po akapicie"
+STR_PT_INTERLINEAR: "Międzywierszowy"
 
 STR_TOOLTIP_BUTTONS: "Przyciski dymka"
 STR_TOOLTIP_NAV: "Nawigacja w dymku"

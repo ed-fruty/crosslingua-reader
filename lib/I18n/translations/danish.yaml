@@ -329,6 +329,8 @@ STR_PT_TRANSLATION_ONLY: "Kun oversættelse"
 STR_PT_SIDE_BY_SIDE: "Side om side"
 STR_PT_MODAL: "Modal"
 STR_PT_TOOLTIP: "Værktøjstip"
+STR_PT_PARAGRAPH: "Afsnit for afsnit"
+STR_PT_INTERLINEAR: "Interlineær"
 
 STR_TOOLTIP_BUTTONS: "Værktøjstip-knapper"
 STR_TOOLTIP_NAV: "Værktøjstip-navigation"

@@ -172,17 +172,36 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // saves are silently reinterpreted. PT_TOOLTIP is therefore 7 here even though the upstream
   // fork numbered its tooltip mode 6 (its enum ordered TOOLTIP before MODAL); v2 already shipped
   // PT_MODAL = 6, so tooltip appends as 7.
+  //
+  // PERMANENT HOLES: 1 and 2. They were the "Dimmed" / "Dimmed Light" modes, which are now ONE
+  // mode (PT_PARAGRAPH) plus the translationShade colour sub-setting. The two values are retired,
+  // NEVER selectable (they are absent from PT_SELECTABLE_MODES in PreTranslationModes.h) and
+  // migrated to PT_PARAGRAPH + shade at load (see fromJson). They are kept as holes — never
+  // reused, never renumbered — so an old settings.json is migrated rather than reinterpreted.
   enum PRE_TRANSLATION_MODE : uint8_t {
     PT_NORMAL = 0,
-    PT_DARK = 1,
-    PT_LIGHT = 2,
+    PT_LEGACY_DIMMED = 1,        // retired hole -> PT_PARAGRAPH + SHADE_DIMMED
+    PT_LEGACY_DIMMED_LIGHT = 2,  // retired hole -> PT_PARAGRAPH + SHADE_DIMMED_LIGHT
     PT_ORIGINAL_ONLY = 3,
     PT_TRANSLATION_ONLY = 4,
     PT_SIDE_BY_SIDE = 5,
     PT_MODAL = 6,
     PT_TOOLTIP = 7,
-    PT_MODE_COUNT
+    PT_PARAGRAPH = 8,
+    PT_INTERLINEAR = 9,
   };
+  // LOAD-TIME VALIDITY BOUND ONLY: fromJson() clamps a stored translationDisplayMode >= this to
+  // PT_NORMAL. It is deliberately NOT an enumerator and NOT a UI iteration count — the retired
+  // holes at 1 and 2 make the value range non-contiguous, so every UI list and cycle walks
+  // PT_SELECTABLE_MODES instead (src/PreTranslationModes.h).
+  static constexpr uint8_t PT_MODE_COUNT = PT_INTERLINEAR + 1;
+
+  // Pre-Translation: colour of translated text in Paragraph mode (PT_PARAGRAPH). It selects the
+  // renderer's gray level for words carrying the TRANSLATED style bit.
+  // DRAWING ONLY: it never changes word measurement, line breaking or pagination, so it must NOT
+  // enter the section.bin cache key (ReaderRenderSpec) — switching shade stays instant.
+  // VALUE STABILITY: persisted as an integer; 0/1 are fixed — append only, never renumber.
+  enum TRANSLATION_SHADE : uint8_t { SHADE_DIMMED = 0, SHADE_DIMMED_LIGHT = 1, TRANSLATION_SHADE_COUNT };
 
   // Pre-Translation feature: translation backend selection
   // Values match upstream fork (crosspoint-reader) to keep JSON-stored indices stable.
@@ -333,6 +352,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t translationEngine = ENGINE_GOOGLE_V2;
   char translateApiKey[128] = "";
   uint8_t translationDisplayMode = PT_NORMAL;
+  // Paragraph-mode (PT_PARAGRAPH) translated-text colour. Drawing-only; see TRANSLATION_SHADE.
+  uint8_t translationShade = SHADE_DIMMED;
   // Tooltip display mode (PT_TOOLTIP) controls. Ported from the upstream fork.
   // tooltipButtons: which button pair steps through per-sentence tooltips (OVERLAY_BUTTONS).
   //   Default SIDE — the page-turn pair reads as the natural "next sentence" control.

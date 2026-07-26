@@ -111,6 +111,7 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   doc["translationEngine"] = translationEngine;
   doc["translateApiKey"] = translateApiKey;
   doc["translationDisplayMode"] = translationDisplayMode;
+  doc["translationShade"] = translationShade;
   doc["tooltipButtons"] = tooltipButtons;
   doc["tooltipBehavior"] = tooltipBehavior;
   doc["modalButtons"] = modalButtons;
@@ -233,8 +234,23 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   translationEngine = clamp(doc["translationEngine"] | (uint8_t)ENGINE_GOOGLE_V2, (uint8_t)TRANSLATION_ENGINE_COUNT,
                             (uint8_t)ENGINE_GOOGLE_V2);
   copyToField(translateApiKey, doc["translateApiKey"] | "", sizeof(translateApiKey));
-  translationDisplayMode =
-      clamp(doc["translationDisplayMode"] | (uint8_t)PT_NORMAL, (uint8_t)PT_MODE_COUNT, (uint8_t)PT_NORMAL);
+  translationShade =
+      clamp(doc["translationShade"] | (uint8_t)SHADE_DIMMED, (uint8_t)TRANSLATION_SHADE_COUNT, (uint8_t)SHADE_DIMMED);
+  // Display mode, with the retired-hole migration. Values 1 and 2 were the separate "Dimmed" and
+  // "Dimmed Light" modes; they are now ONE mode (PT_PARAGRAPH) plus the translationShade colour
+  // sub-setting, so a stored 1/2 folds into that pair and requests a resave — same needsResave
+  // mechanism as the font-size rescale and the OpenDyslexic family remap above. Anything else out
+  // of range clamps to PT_NORMAL. These two branches are exhaustive over the stored value, and
+  // the migration branch runs FIRST, so translationDisplayMode can never come out of a load
+  // holding a retired hole.
+  const uint8_t storedDisplayMode = doc["translationDisplayMode"] | (uint8_t)PT_NORMAL;
+  if (storedDisplayMode == PT_LEGACY_DIMMED || storedDisplayMode == PT_LEGACY_DIMMED_LIGHT) {
+    translationDisplayMode = PT_PARAGRAPH;
+    translationShade = (storedDisplayMode == PT_LEGACY_DIMMED_LIGHT) ? SHADE_DIMMED_LIGHT : SHADE_DIMMED;
+    needsResave = true;
+  } else {
+    translationDisplayMode = clamp(storedDisplayMode, (uint8_t)PT_MODE_COUNT, (uint8_t)PT_NORMAL);
+  }
   // Tooltip/modal overlay controls: 0/1 selectors clamped to their enum counts. An ABSENT key
   // falls back to the feature default (SIDE buttons, TURN_PAGE nav) rather than 0 — a settings.json
   // written before these defaults changed had no key, so it should adopt the new default too.

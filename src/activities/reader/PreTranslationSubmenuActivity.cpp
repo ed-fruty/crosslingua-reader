@@ -13,6 +13,7 @@
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
+#include "PreTranslationModes.h"
 #include "activities/ActivityResult.h"
 #include "activities/reader/ReaderUtils.h"
 #include "activities/translator/LanguagePickerActivity.h"
@@ -165,8 +166,9 @@ void PreTranslationSubmenuActivity::loop() {
 void PreTranslationSubmenuActivity::onActionSelected(Action a) {
   switch (a) {
     case Action::CYCLE_DISPLAY_MODE: {
-      const uint8_t newMode =
-          static_cast<uint8_t>((SETTINGS.translationDisplayMode + 1) % CrossPointSettings::PT_MODE_COUNT);
+      // Cycle through PT_SELECTABLE_MODES, not the raw value range: values 1 and 2 are retired
+      // holes and must stay unreachable.
+      const uint8_t newMode = ptNextSelectableMode(SETTINGS.translationDisplayMode);
       // Switching to any translation-display mode while no translated.html exists for
       // the current chapter would render a blank page; reject the change with a
       // toast and keep the mode at Normal.
@@ -322,13 +324,9 @@ void PreTranslationSubmenuActivity::onActionSelected(Action a) {
 // ─── value labels ─────────────────────────────────────────────────────────────
 
 const char* PreTranslationSubmenuActivity::displayModeLabel() const {
-  static const StrId labels[] = {
-      StrId::STR_PT_NORMAL,           StrId::STR_PT_DARK,         StrId::STR_PT_LIGHT, StrId::STR_PT_ORIGINAL_ONLY,
-      StrId::STR_PT_TRANSLATION_ONLY, StrId::STR_PT_SIDE_BY_SIDE, StrId::STR_PT_MODAL, StrId::STR_PT_TOOLTIP,
-  };
   const uint8_t mode = SETTINGS.translationDisplayMode;
-  if (mode >= sizeof(labels) / sizeof(labels[0])) return I18N.get(StrId::STR_PT_NORMAL);
-  return I18N.get(labels[mode]);
+  if (mode >= CrossPointSettings::PT_MODE_COUNT) return I18N.get(StrId::STR_PT_NORMAL);
+  return I18N.get(ptModeLabel(static_cast<CrossPointSettings::PRE_TRANSLATION_MODE>(mode)));
 }
 
 const char* PreTranslationSubmenuActivity::tooltipButtonsLabel() const {

@@ -407,6 +407,8 @@ STR_PT_TRANSLATION_ONLY: "Nur Übersetzung"
 STR_PT_SIDE_BY_SIDE: "Nebeneinander"
 STR_PT_MODAL: "Modal"
 STR_PT_TOOLTIP: "Tooltip"
+STR_PT_PARAGRAPH: "Absatz für Absatz"
+STR_PT_INTERLINEAR: "Interlinear"
 
 STR_TOOLTIP_BUTTONS: "Tooltip-Tasten"
 STR_TOOLTIP_NAV: "Tooltip-Navigation"

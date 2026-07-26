@@ -400,6 +400,8 @@ STR_PT_TRANSLATION_ONLY: "Kun oversettelse"
 STR_PT_SIDE_BY_SIDE: "Side ved side"
 STR_PT_MODAL: "Modal"
 STR_PT_TOOLTIP: "Verktøytips"
+STR_PT_PARAGRAPH: "Avsnitt for avsnitt"
+STR_PT_INTERLINEAR: "Interlineær"
 
 STR_TOOLTIP_BUTTONS: "Verktøytips-knapper"
 STR_TOOLTIP_NAV: "Verktøytips-navigasjon"

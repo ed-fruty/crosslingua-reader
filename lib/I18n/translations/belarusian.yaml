@@ -326,6 +326,8 @@ STR_PT_TRANSLATION_ONLY: "Толькі пераклад"
 STR_PT_SIDE_BY_SIDE: "Побач"
 STR_PT_MODAL: "Мадальны"
 STR_PT_TOOLTIP: "Падказка"
+STR_PT_PARAGRAPH: "Абзац за абзацам"
+STR_PT_INTERLINEAR: "Міжрадковы"
 
 STR_TOOLTIP_BUTTONS: "Кнопкі падказкі"
 STR_TOOLTIP_NAV: "Навігацыя падказкі"

@@ -438,6 +438,8 @@ STR_PT_TRANSLATION_ONLY: "Solo traducción"
 STR_PT_SIDE_BY_SIDE: "Lado a lado"
 STR_PT_MODAL: "Modal"
 STR_PT_TOOLTIP: "Burbuja"
+STR_PT_PARAGRAPH: "Párrafo a párrafo"
+STR_PT_INTERLINEAR: "Interlineal"
 
 STR_TOOLTIP_BUTTONS: "Botones de la burbuja"
 STR_TOOLTIP_NAV: "Navegación de la burbuja"
