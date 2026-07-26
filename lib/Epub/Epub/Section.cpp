@@ -125,9 +125,15 @@ constexpr uint32_t HEADER_SIZE =
 //
 // Keyed off the EFFECTIVE (post-fallback) layout, not the requested one, and applied to the header
 // write, the lookup AND the id handed to the parser, so key and layout can never disagree: a chapter
-// with no committed translation is laid out as Both even in Tooltip mode, keeps the real id, and so
-// stays a cache hit for the inline modes that share that layout (it has no translated block to lay
-// out in that font either way).
+// with no committed translation is laid out as Both even in Tooltip mode (Section::effectiveLayout),
+// and keyedTranslationFontId keeps the real id for it exactly as it would for an actually-translated
+// chapter. That is NOT a don't-care: ChapterHtmlSlimParser::currentBlockIsTranslated is a lang=
+// mismatch against the book's primary language, not "this chapter has a committed Pre-Translation" --
+// so the chapter's OWN original HTML can carry lang-tagged blocks (a foreign epigraph, a quoted
+// phrase) that currentLineRole() still tags LineFontRole::Translation under Both and lays out in this
+// font. Zeroing the id here for an untranslated chapter would let a later change to it (e.g. the
+// Interleaved mode's Smaller Translation Size) silently keep serving those blocks from a stale cache
+// at the wrong size instead of invalidating it.
 constexpr int keyedTranslationFontId(const int translationFontId, const PtLayout effectiveLayout) {
   return effectiveLayout == PtLayout::Both ? translationFontId : 0;
 }

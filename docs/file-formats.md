@@ -129,34 +129,44 @@ one field:
   `0 = Both`, `1 = OriginalOnly`, `2 = TranslationOnly`, `3 = SideBySide` (see
   `lib/Epub/Epub/PtLayout.h`). Several display modes produce byte-identical
   pages and now share one cache entry: Normal / Interleaved / Interlinear all map
-  to `Both` (Interleaved differs only in the *gray level* translated words are
-  drawn at, which never moves a glyph), and Original Only / Page Translation /
-  Tooltip all map to `OriginalOnly` (the overlay modes composite their
-  translation at view time, so their main flow is original-only). Switching
-  between two modes that share a layout is therefore a cache hit instead of a
-  full chapter re-layout.
+  to `Both`, and Original Only / Page Translation / Tooltip all map to
+  `OriginalOnly` (the overlay modes composite their translation at view time, so
+  their main flow is original-only). Switching between two modes that share a
+  layout is a cache hit only when `translationFontId` (below) also matches:
+  Normal and Interleaved share `Both`, but Interleaved can lay its translated
+  words out in a smaller font than Normal's, so the two are a cache hit only
+  while Interleaved's own Translation Size is "Same".
   The byte occupies the same header slot as the old mode byte but is *not* the
   same value space, so v37 files must be rejected rather than reinterpreted.
 - **`translationFontId`** is added as an `s32` immediately after `fontId`. It is
   the font translated text is laid out in (`0` = same as the body font),
   resolved from the *Interleaved* mode's own size setting; the Tooltip and Page
   Translation sizes are separate settings, composited at view time, and never
-  reach this field. Unlike the drawing-only shade, a distinct font changes word
-  measurement and hence line breaking, so it belongs in the cache key. It is
-  stamped as `0` whenever
-  the (effective) layout is `OriginalOnly`: that layout drops every translated
-  word, so no line in the resulting pages was measured in the translation font
-  and no value of it could move a line break. The lookup normalizes the same
-  way, so the two can never disagree.
+  reach this field. A distinct font changes word measurement and hence line
+  breaking, so it belongs in the cache key. It is stamped as `0` whenever the
+  (effective) layout is anything other than `Both` — `OriginalOnly`,
+  `TranslationOnly`, or `SideBySide`: `OriginalOnly` drops every translated word,
+  and `TranslationOnly` / `SideBySide` keep them but always lay them out in the
+  body font by design, so in all three no line is ever measured in the
+  translation font. Under `Both` the real id is always kept, including for a
+  chapter with no committed translation — `Section::effectiveLayout` maps that
+  case to `Both` too, and the chapter's own original HTML can still contain a
+  block whose `lang=` differs from the book's language (see per-line font role,
+  below), which IS laid out in this font when it is non-zero. The lookup
+  normalizes the same way, so the two can never disagree.
 - **Per-line font role.** `PageLine` serializes a `LineFontRole` byte
   (`0 = Body`, `1 = Translation`, `2 = Annotation`) immediately after
   `paragraphIdx`, so one page can mix the body font with smaller translated or
   annotation text. The role is chosen at layout time, which is also when the
   line was measured, so a cached page always redraws in the font it was
   measured with. The renderer resolves the role through a `PageFontSet`
-  supplied by the app (`lib/Epub` stores roles, never font ids). Every line the
-  layout engine emits today is `Body`, so a v38 page is a v37 page plus one
-  zero byte per line.
+  supplied by the app (`lib/Epub` stores roles, never font ids). A line is
+  tagged `Translation` only under the `Both` layout, and only when its
+  enclosing block is translated (a `lang=` mismatch against the book's primary
+  language — the same block-level flag per-block hyphenation already uses) and
+  `translationFontId` is non-zero (every mode but Interleaved stamps `0`, so
+  their pages are all-`Body`, unaffected by this bullet). `Annotation` is
+  defined but not yet emitted by the layout engine.
 
 The per-chapter auto-fallback keys on the layout too: a chapter with no
 committed translation is laid out and stamped as `Both`, which for an
