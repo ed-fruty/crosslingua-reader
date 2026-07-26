@@ -63,6 +63,9 @@ void FontCacheManager::resetStats() {
 bool FontCacheManager::isScanning() const { return scanMode_ == ScanMode::Scanning; }
 
 void FontCacheManager::recordText(const char* text, int fontId, EpdFontFamily::Style style) {
+  // Once the scan has locked onto a font id, text drawn in another font must not enlarge this
+  // font's prewarm set -- it would waste cache space warming glyphs this scan will never use.
+  if (scanFontId_ >= 0 && fontId != scanFontId_) return;
   scanText_ += text;
   if (scanFontId_ < 0) scanFontId_ = fontId;
   const uint8_t baseStyle = static_cast<uint8_t>(style) & 0x03;
