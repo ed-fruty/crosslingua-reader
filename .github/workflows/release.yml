@@ -35,6 +35,29 @@ jobs:
       - name: Build CrossPoint
         run: pio run -e gh_release
 
+      # EdsLab is too large to embed in the app slot, so it rides along with
+      # the firmware release as a drop-onto-the-SD-card zip instead. The other
+      # SD families are published separately by release-fonts.yml.
+      - name: Install font tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y libfreetype6-dev
+          pip install freetype-py fonttools pyyaml
+
+      - name: Build EdsLab SD card font
+        run: python3 lib/EpdFont/scripts/build-sd-fonts.py --only EdsLab --clean
+
+      - name: Package EdsLab for the SD card
+        run: |
+          # Lay the zip out so extracting it at the SD card root yields
+          # /fonts/EdsLab/*.cpfont, one of the two roots SdCardFontRegistry
+          # scans. The visible root is used rather than /.fonts so the folder
+          # is not invisible in the user's file manager after extraction.
+          mkdir -p dist/sdcard/fonts/EdsLab
+          cp lib/EpdFont/scripts/output/EdsLab/*.cpfont dist/sdcard/fonts/EdsLab/
+          cp lib/EpdFont/builtinFonts/source/EdsLab/LICENSE.txt dist/sdcard/fonts/EdsLab/
+          (cd dist/sdcard && zip -r ../EdsLab-sdcard-font.zip fonts)
+          ls -l dist/
+
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -45,3 +68,4 @@ jobs:
             .pio/build/gh_release/firmware.elf
             .pio/build/gh_release/firmware.map
             .pio/build/gh_release/partitions.bin
+            dist/EdsLab-sdcard-font.zip
