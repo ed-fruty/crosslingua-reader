@@ -53,7 +53,13 @@ void TranslatingHtmlRewriter::writeRaw(const std::string& s) {
 std::vector<std::string> TranslatingHtmlRewriter::splitByDoubleLF(const std::string& s) {
   std::vector<std::string> parts;
   size_t start = 0;
-  while (start < s.size()) {
+  // N separators always yield N+1 pieces, including a trailing EMPTY piece when the
+  // string ends with a separator. The old `while (start < s.size())` form dropped that
+  // last piece, so a batch whose final paragraph translated to "" came back one piece
+  // short — harmless while the write-out loop tolerated a short reply, but the exact
+  // count check in flushBatch() now depends on the piece count faithfully reflecting
+  // the separator count, so it would have sunk every such batch.
+  while (true) {
     size_t pos = s.find("\n\n", start);
     if (pos == std::string::npos) {
       parts.push_back(s.substr(start));
@@ -135,12 +141,50 @@ void TranslatingHtmlRewriter::flushBlock(const char* endTagName) {
   writeOut(endTagName, strlen(endTagName));
   writeOut(">\n", 2);
 
-  // Trim block text for translation
+  // Trim block text for translation, and collapse every internal newline run to a
+  // single '\n'.
+  //
+  // The collapse is load-bearing, not cosmetics: "\n\n" is the separator flushBatch()
+  // uses to merge paragraphs into one request and to split the reply back apart, and
+  // the reply is written back POSITIONALLY. blockText is raw XML character data
+  // (onChars appends it verbatim), so a single block can easily contain "\n\n" of its
+  // own — a blank line in the pretty-printed XHTML source, or simply
+  // `<p>line\n<br/>\nline</p>`, where the two onChars callbacks around the <br/>
+  // concatenate to "line\n" + "\nline". Trimming only the ENDS left that inside the
+  // text, so one such paragraph made splitByDoubleLF() produce more pieces than
+  // paragraphs sent and shifted every later translation in the batch by one.
+  //
+  // Fixed here, at the single point where trimmedText is produced, rather than in
+  // flushBatch(): this is the one string that feeds the batch merge, the individual
+  // (non-merged) calls, and the "translation == original" skip comparison, so the
+  // invariant "no trimmedText ever contains \n\n" holds for every engine and every
+  // path at once. It cannot regress the other engines — the only change they see is a
+  // paragraph-internal blank line arriving as a single line break, which removes a
+  // FALSE paragraph separator that the batch prompt explicitly tells the model to
+  // preserve (and which also made translateOpenAICompat's `text.find("\n\n")` treat a
+  // lone paragraph as a batch).
   const std::string trimmed = [&] {
-    size_t s = blockText.find_first_not_of(" \t\n\r");
+    const size_t s = blockText.find_first_not_of(" \t\n\r");
     if (s == std::string::npos) return std::string{};
-    size_t e = blockText.find_last_not_of(" \t\n\r");
-    return blockText.substr(s, e - s + 1);
+    const size_t e = blockText.find_last_not_of(" \t\n\r");
+    std::string collapsed;
+    collapsed.reserve(e - s + 1);  // one allocation; the result can only shrink
+    for (size_t i = s; i <= e; i++) {
+      const char c = blockText[i];
+      if (c != '\n' && c != '\r') {
+        collapsed += c;
+        continue;
+      }
+      // Start of a line-break run: emit exactly one '\n' and swallow the rest of the
+      // run (further newlines plus any indentation whitespace between them).
+      collapsed += '\n';
+      while (i + 1 <= e) {
+        const char next = blockText[i + 1];
+        if (next != '\n' && next != '\r' && next != ' ' && next != '\t') break;
+        i++;
+      }
+    }
+    return collapsed;
   }();
 
   // Create batch entry: move pendingHtml into htmlBefore, store trimmedText
@@ -246,8 +290,27 @@ void TranslatingHtmlRewriter::flushBatch() {
           break;
         }
       }
-      if (ok && !translated.empty()) {
+      bool batchUsable = ok && !translated.empty();
+      if (batchUsable) {
         translations = splitByDoubleLF(translated);
+        // Exactly-N or drop the batch. The write-out loop below is POSITIONAL, so a
+        // reply that splits into a different number of pieces than we sent does not
+        // just lose one paragraph — every piece after the discrepancy lands on the
+        // WRONG paragraph, and that corruption is written straight into the book's
+        // XHTML where the reader cannot tell it is wrong. An untranslated paragraph is
+        // visibly untranslated and can be retried, so it is the strictly safer failure.
+        // (This is the same rule parseAzureResponse already enforces on the JSON side,
+        // now applied uniformly to every batching engine.) Checked here rather than in
+        // the write-out loop so the individual-call path — which fills `translations`
+        // itself and may legitimately stop short on cancel — is unaffected.
+        if (translations.size() != translatableIndices.size()) {
+          LOG_ERR("HtmlRW", "Batch reply split into %u pieces for %u paragraphs; dropping batch",
+                  (unsigned)translations.size(), (unsigned)translatableIndices.size());
+          translations.clear();
+          batchUsable = false;
+        }
+      }
+      if (batchUsable) {
         consecutiveFailures = 0;
         LOG_DBG("HtmlRW", "Batch: sent %u paragraphs, got %u back, response %.120s",
                 (unsigned)translatableIndices.size(), (unsigned)translations.size(), translated.c_str());
@@ -319,17 +382,17 @@ void TranslatingHtmlRewriter::flushBatch() {
     writeRaw(batch[i].htmlBefore);
 
     if (!batch[i].trimmedText.empty()) {
-      // Find this entry's position in translatableIndices
+      // Positional pickup. `translations` now holds either exactly one entry per
+      // translatable paragraph or fewer (a dropped batch leaves it empty; the
+      // individual path stops short on cancel/abort) — never more, since the batch
+      // path above rejects a mismatched split outright. A missing entry simply leaves
+      // the paragraph untranslated. The old "merge the excess into the last
+      // paragraph" salvage is gone with it: it papered over exactly the split
+      // mismatch that now fails the batch, while silently misattributing every piece
+      // in between whenever the extra separator came from the MIDDLE of the reply.
       std::string thisTranslation;
       if (tIdx < translations.size()) {
         thisTranslation = std::move(translations[tIdx]);
-        // If this is the last translatable entry and there are excess translations, merge them
-        if (tIdx == translatableIndices.size() - 1 && translations.size() > translatableIndices.size()) {
-          for (size_t extra = translatableIndices.size(); extra < translations.size(); extra++) {
-            thisTranslation += "\n";
-            thisTranslation += translations[extra];
-          }
-        }
       }
       tIdx++;
 
