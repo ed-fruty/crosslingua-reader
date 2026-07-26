@@ -55,4 +55,26 @@ struct ReaderRenderSpec {
   // the layout engine. nullptr disables annotation emission (the source paragraph then lays out
   // exactly as under Original Only). See lib/Epub/Epub/InterlinearAnnotation.h.
   InterlinearPairFn interlinearPairFn = nullptr;
+
+  // True when a chapter laid out under `other` can be served under this spec without a
+  // re-layout, i.e. both specs key the SAME section.bin. Compares every VALUE field and
+  // deliberately omits interlinearPairFn, the one field documented above as not a cache
+  // key. Lives here, next to the fields, so a new keyed field has exactly one place to be
+  // added rather than a second list in a caller.
+  //
+  // Slightly STRICTER than Section's on-disk header check, which first normalizes the two
+  // translation font ids for the effective layout (keyedTranslationFontId /
+  // keyedAnnotationFontId): this can therefore report a difference where the on-disk key
+  // is identical. That direction is safe -- it costs at most one redundant re-resolve that
+  // hits the cache with unchanged pagination -- while the reverse would silently serve
+  // pages measured with the wrong font.
+  bool layoutEquals(const ReaderRenderSpec& other) const {
+    return fontId == other.fontId && lineCompression == other.lineCompression &&
+           extraParagraphSpacing == other.extraParagraphSpacing && paragraphAlignment == other.paragraphAlignment &&
+           viewportWidth == other.viewportWidth && viewportHeight == other.viewportHeight &&
+           hyphenationEnabled == other.hyphenationEnabled && embeddedStyle == other.embeddedStyle &&
+           imageRendering == other.imageRendering && focusReadingEnabled == other.focusReadingEnabled &&
+           ptLayout == other.ptLayout && translationFontId == other.translationFontId &&
+           annotationFontId == other.annotationFontId;
+  }
 };
