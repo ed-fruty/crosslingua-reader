@@ -111,6 +111,32 @@ SentenceSplitResult splitSentences(const char* const* words, int wordCount) {
   return result;
 }
 
+SentenceSplitResult splitSentencesByParagraph(const char* const* words, const int wordCount, const uint16_t* runStarts,
+                                              const int runCount) {
+  if (runStarts == nullptr || runCount <= 0) return splitSentences(words, wordCount);
+
+  SentenceSplitResult result;
+  if (wordCount <= 0) return result;
+
+  // Walk the run boundaries in order and split each [cur, next) window on its own, offsetting the
+  // spans back into the caller's word array. `r == runCount` closes the final run at wordCount, so a
+  // table that does not start at 0 still has its head split, and a trailing run is never dropped.
+  int cur = 0;
+  for (int r = 0; r <= runCount && result.count < MAX_SENTENCES; r++) {
+    int next = (r < runCount) ? static_cast<int>(runStarts[r]) : wordCount;
+    if (next > wordCount) next = wordCount;
+    if (next <= cur) continue;  // empty run (a line whose block carried no words) — nothing to split
+    const SentenceSplitResult runSplit = splitSentences(words + cur, next - cur);
+    for (int s = 0; s < runSplit.count && result.count < MAX_SENTENCES; s++) {
+      result.spans[result.count].startWord = static_cast<uint16_t>(runSplit.spans[s].startWord + cur);
+      result.spans[result.count].endWord = static_cast<uint16_t>(runSplit.spans[s].endWord + cur);
+      result.count++;
+    }
+    cur = next;
+  }
+  return result;
+}
+
 // ── Char-offset sentence helpers (over the shared textnorm fold) ──────────────
 
 // UTF-8 byte length of the code point whose lead byte is b (1..4; 1 if invalid).

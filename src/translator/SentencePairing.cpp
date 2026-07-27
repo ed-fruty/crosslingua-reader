@@ -49,8 +49,17 @@ bool splitSentencePair(const char* const* origWords, const int origWordCount, co
   return scratch.origSplits.count > 0 && scratch.transSplits.count > 0;
 }
 
-void mergeJunkSentences(SentenceSplitResult& splits, const char* const* words) {
+void mergeJunkSentences(SentenceSplitResult& splits, const char* const* words, const uint16_t* runStarts,
+                        const int runCount) {
+  const auto beginsAParagraph = [&](const uint16_t word) {
+    if (runStarts == nullptr) return false;
+    for (int r = 0; r < runCount; r++) {
+      if (runStarts[r] == word) return true;
+    }
+    return false;
+  };
   for (int i = splits.count - 1; i > 0; i--) {
+    if (beginsAParagraph(splits.spans[i].startWord)) continue;  // never fold across a paragraph edge
     const std::string key = sentenceKey(words, splits.spans[i].startWord, splits.spans[i].endWord);
     if (key.empty() || (key.size() <= 2 && splits.spans[i].endWord - splits.spans[i].startWord <= 3)) {
       // Merge into the previous sentence: extend its endWord, then close the hole.

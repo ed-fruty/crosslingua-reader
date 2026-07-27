@@ -568,25 +568,46 @@ void TooltipOverlay::preparePage(const Page& page) {
   sentenceTranslations.clear();
   stepCount = 0;  // stays 0 on any early return below (no paragraph indices / empty index)
 
-  // 1. Collect original words from page. v2 flattened TextBlock word storage: iterate by index
-  //    (wordCount/wordText), NOT the fork's getWords() container. wordText(i) returns a
-  //    NUL-terminated pointer into the block's arena, stable for the block's (and page's) lifetime,
-  //    which spans every render() call between page changes.
+  // 1. Collect original words from page, REMEMBERING WHERE EACH PARAGRAPH STARTS. v2 flattened
+  //    TextBlock word storage: iterate by index (wordCount/wordText), NOT the fork's getWords()
+  //    container. wordText(i) returns a NUL-terminated pointer into the block's arena, stable for
+  //    the block's (and page's) lifetime, which spans every render() call between page changes.
+  //
+  //    The paragraph runs are not decoration: step 3 builds the index one entry per PARAGRAPH pair,
+  //    so the page side has to be cut at the same places or the two sides count differently. Lines
+  //    of one paragraph are contiguous and carry its index (PageLine::paragraphIdx, serialized with
+  //    the page), so a change of index opens a new run — the same grouping PageTranslationOverlay
+  //    does. An old cache leaves every index at -1, which collapses to a single run and reproduces
+  //    the previous flat behaviour rather than mis-cutting.
+  //
+  //    More than MAX_SENTENCES runs cannot produce distinguishable sentences anyway (every run
+  //    yields at least one, and the split budget is MAX_SENTENCES), so the table is capped there.
+  uint16_t paraRunStarts[MAX_SENTENCES];
+  int paraRunCount = 0;
+  int16_t lastParagraphIdx = -1;
+  bool haveRun = false;  // the first line always opens a run, whatever its index
   for (const auto& el : page.elements) {
     if (el->getTag() != TAG_PageLine) continue;
     const auto* line = static_cast<const PageLine*>(el.get());
+    if (!haveRun || line->paragraphIdx != lastParagraphIdx) {
+      haveRun = true;
+      if (paraRunCount < MAX_SENTENCES) paraRunStarts[paraRunCount++] = static_cast<uint16_t>(origWordCount);
+      lastParagraphIdx = line->paragraphIdx;
+    }
     const auto& block = line->getBlock();
     for (uint16_t i = 0; i < block->wordCount(); i++) {
       if (origWordCount < MAX_WORDS) origWordPtrs[origWordCount++] = block->wordText(i);
     }
   }
 
-  // 2. Split into sentences, then merge any "empty" sentences (dots, fragments)
-  //    into the previous sentence so the user doesn't click through junk. Shared with
-  //    PtLayout::Interlinear, which must not give a stray "." an annotation row either.
-  splits = splitSentences(origWordPtrs, origWordCount);
-  mergeJunkSentences(splits, origWordPtrs);
-  LOG_DBG("TIP", "Page: %d words, %d sentences (after merge)", origWordCount, splits.count);
+  // 2. Split into sentences — never across a paragraph edge — then merge any "empty" sentences
+  //    (dots, fragments) into the previous sentence so the user doesn't click through junk. The
+  //    merge gets the same run table: it folds BACKWARDS, so without it a junk-only paragraph (a
+  //    bare numeral heading) would swallow the paragraph before it and undo the split.
+  splits = splitSentencesByParagraph(origWordPtrs, origWordCount, paraRunStarts, paraRunCount);
+  mergeJunkSentences(splits, origWordPtrs, paraRunStarts, paraRunCount);
+  LOG_DBG("TIP", "Page: %d words, %d paragraphs, %d sentences (after merge)", origWordCount, paraRunCount,
+          splits.count);
 
   // 3. Parse HTML and build sentence index in one pass (memory-efficient). Restrict to the
   //    paragraph range this page shows — otherwise the index holds the whole chapter's

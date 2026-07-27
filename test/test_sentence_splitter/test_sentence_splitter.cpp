@@ -417,6 +417,116 @@ void test_mergeJunkSentences_folds_stray_dot(void) {
   TEST_ASSERT_EQUAL(4, splits.spans[0].endWord);
 }
 
+// ── Paragraph-aware page splitting ───────────────────────────────────────────
+//
+// These cover the shape that made PT_TOOLTIP mis-map from the first sentence of a chapter: the
+// tooltip builds its key -> translation index one entry per PARAGRAPH pair, but built the PAGE side
+// by flattening every PageLine's words into one array and splitting it on punctuation alone. A
+// paragraph that ends without a terminator — a heading, a stat line, a list row — was therefore
+// glued to the paragraph after it, so the page had fewer "sentences" than the index had entries and
+// the prefix matcher resolved the glued sentence to the SHORT key (the heading), orphaning the real
+// first sentence's translation. 6.4% of the sample book's 4886 original paragraphs end without a
+// terminator, and 41 of its 49 chapters open with one, which is why it was visible immediately.
+//
+// The word arrays below are the real text of that book's first two chapters.
+
+// "Preface" (an <h1>, no terminator) followed by the chapter's first prose paragraph. Flat splitting
+// makes them ONE sentence; run-aware splitting keeps the heading its own.
+void test_splitSentencesByParagraph_terminatorless_heading_is_its_own_sentence(void) {
+  const WordArray src({"Preface", "Hey,", "Matt", "the", "author", "guy", "here.", "A", "quick", "note."});
+  const uint16_t runStarts[] = {0, 1};  // paragraph 0 = the heading, paragraph 1 = the prose
+
+  // The bug, pinned: punctuation-only splitting swallows the heading.
+  const SentenceSplitResult flat = splitSentences(src.data(), src.count());
+  TEST_ASSERT_EQUAL(2, flat.count);
+  TEST_ASSERT_EQUAL(0, flat.spans[0].startWord);
+  TEST_ASSERT_EQUAL(7, flat.spans[0].endWord);  // "Preface … here." — two paragraphs, one sentence
+
+  const SentenceSplitResult r = splitSentencesByParagraph(src.data(), src.count(), runStarts, 2);
+  TEST_ASSERT_EQUAL(3, r.count);
+  TEST_ASSERT_EQUAL(0, r.spans[0].startWord);
+  TEST_ASSERT_EQUAL(1, r.spans[0].endWord);  // "Preface"
+  TEST_ASSERT_EQUAL(1, r.spans[1].startWord);
+  TEST_ASSERT_EQUAL(7, r.spans[1].endWord);  // "Hey, Matt the author guy here."
+  TEST_ASSERT_EQUAL(7, r.spans[2].startWord);
+  TEST_ASSERT_EQUAL(10, r.spans[2].endWord);  // "A quick note."
+}
+
+// Chapter 1's stat block: four consecutive paragraphs, only the last of which ends in a terminator.
+// Flat splitting collapses all four into one step showing only the first line's translation.
+void test_splitSentencesByParagraph_terminatorless_stat_lines_stay_separate(void) {
+  const WordArray src(
+      {"Views:", "43.1", "Quadrillion", "Followers:", "677", "Trillion", "Leaderboard", "rank:", "6", "Red", "Line."});
+  const uint16_t runStarts[] = {0, 3, 6, 9};
+
+  const SentenceSplitResult flat = splitSentences(src.data(), src.count());
+  TEST_ASSERT_EQUAL(1, flat.count);  // "43.1" does not end a token, so nothing breaks until "Line."
+
+  const SentenceSplitResult r = splitSentencesByParagraph(src.data(), src.count(), runStarts, 4);
+  TEST_ASSERT_EQUAL(4, r.count);
+  TEST_ASSERT_EQUAL(3, r.spans[1].startWord);
+  TEST_ASSERT_EQUAL(6, r.spans[1].endWord);
+  TEST_ASSERT_EQUAL(9, r.spans[3].startWord);
+  TEST_ASSERT_EQUAL(11, r.spans[3].endWord);
+}
+
+// A run boundary ADDS breaks; it never removes the punctuation ones inside a paragraph.
+void test_splitSentencesByParagraph_still_splits_inside_a_run(void) {
+  const WordArray src({"One.", "Two.", "Three", "four."});
+  const uint16_t runStarts[] = {0, 2};
+  const SentenceSplitResult r = splitSentencesByParagraph(src.data(), src.count(), runStarts, 2);
+  TEST_ASSERT_EQUAL(3, r.count);
+  TEST_ASSERT_EQUAL(0, r.spans[0].startWord);
+  TEST_ASSERT_EQUAL(1, r.spans[0].endWord);  // "One."
+  TEST_ASSERT_EQUAL(1, r.spans[1].startWord);
+  TEST_ASSERT_EQUAL(2, r.spans[1].endWord);  // "Two."
+  TEST_ASSERT_EQUAL(2, r.spans[2].startWord);
+  TEST_ASSERT_EQUAL(4, r.spans[2].endWord);  // "Three four."
+}
+
+// No run table (old cache: every line's paragraphIdx is -1) must behave exactly like splitSentences,
+// so a stale section.bin degrades to the previous behaviour instead of losing sentences.
+void test_splitSentencesByParagraph_without_runs_matches_plain_split(void) {
+  const WordArray src({"Preface", "Hey.", "There."});
+  const SentenceSplitResult flat = splitSentences(src.data(), src.count());
+  const SentenceSplitResult r = splitSentencesByParagraph(src.data(), src.count(), nullptr, 0);
+  TEST_ASSERT_EQUAL(flat.count, r.count);
+  for (int i = 0; i < flat.count; i++) {
+    TEST_ASSERT_EQUAL(flat.spans[i].startWord, r.spans[i].startWord);
+    TEST_ASSERT_EQUAL(flat.spans[i].endWord, r.spans[i].endWord);
+  }
+}
+
+// An empty run (a PageLine whose block carries no words) must not emit a zero-width sentence.
+void test_splitSentencesByParagraph_empty_run_emits_nothing(void) {
+  const WordArray src({"Alpha.", "Beta."});
+  const uint16_t runStarts[] = {0, 1, 1};
+  const SentenceSplitResult r = splitSentencesByParagraph(src.data(), src.count(), runStarts, 3);
+  TEST_ASSERT_EQUAL(2, r.count);
+  TEST_ASSERT_EQUAL(0, r.spans[0].startWord);
+  TEST_ASSERT_EQUAL(1, r.spans[0].endWord);
+  TEST_ASSERT_EQUAL(1, r.spans[1].startWord);
+  TEST_ASSERT_EQUAL(2, r.spans[1].endWord);
+}
+
+// The junk merge folds backwards, so on its own it would undo the split above: a paragraph whose
+// whole text is junk (a bare numeral heading, a stray dot) would swallow the previous paragraph.
+void test_mergeJunkSentences_does_not_merge_across_a_paragraph_boundary(void) {
+  const WordArray src({"Real", "sentence", "here.", "."});
+  const uint16_t runStarts[] = {0, 3};  // the stray "." is its OWN paragraph
+  SentenceSplitResult splits = splitSentencesByParagraph(src.data(), src.count(), runStarts, 2);
+  TEST_ASSERT_EQUAL(2, splits.count);
+  mergeJunkSentences(splits, src.data(), runStarts, 2);
+  TEST_ASSERT_EQUAL(2, splits.count);
+  TEST_ASSERT_EQUAL(3, splits.spans[1].startWord);
+  TEST_ASSERT_EQUAL(4, splits.spans[1].endWord);
+
+  // Same words, same junk — but inside ONE paragraph it still folds (unchanged behaviour).
+  SentenceSplitResult inOne = splitSentences(src.data(), src.count());
+  mergeJunkSentences(inOne, src.data(), runStarts, 1);
+  TEST_ASSERT_EQUAL(1, inOne.count);
+}
+
 // Nothing to align: an empty side is reported by splitSentencePair, never by a bogus mapping.
 void test_splitSentencePair_empty_side_rejected(void) {
   const WordArray src({"Hello", "world."});
@@ -470,6 +580,13 @@ int main(int /*argc*/, char** /*argv*/) {
   RUN_TEST(test_groupSpanSteps_empty_span_emits_nothing);
   RUN_TEST(test_mergeJunkSentences_folds_stray_dot);
   RUN_TEST(test_splitSentencePair_empty_side_rejected);
+
+  RUN_TEST(test_splitSentencesByParagraph_terminatorless_heading_is_its_own_sentence);
+  RUN_TEST(test_splitSentencesByParagraph_terminatorless_stat_lines_stay_separate);
+  RUN_TEST(test_splitSentencesByParagraph_still_splits_inside_a_run);
+  RUN_TEST(test_splitSentencesByParagraph_without_runs_matches_plain_split);
+  RUN_TEST(test_splitSentencesByParagraph_empty_run_emits_nothing);
+  RUN_TEST(test_mergeJunkSentences_does_not_merge_across_a_paragraph_boundary);
 
   RUN_TEST(test_trimToSentences_first2);
   RUN_TEST(test_trimToSentences_more_than_exists);
