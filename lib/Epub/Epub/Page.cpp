@@ -34,7 +34,7 @@ bool PageLine::serialize(HalFile& file) {
   if (!block->serialize(file)) return false;
   // Pre-Translation: paragraph index (section-cache version bump forces a full re-read).
   serialization::writePod(file, paragraphIdx);
-  // v38: per-line font role, one byte after paragraphIdx.
+  // Per-line font role, one byte after paragraphIdx.
   serialization::writePod(file, static_cast<uint8_t>(fontRole));
   return true;
 }
@@ -55,8 +55,8 @@ std::unique_ptr<PageLine> PageLine::deserialize(HalFile& file) {
   int16_t paragraphIdx = -1;
   serialization::readPod(file, paragraphIdx);
 
-  // v38: font role byte. Always present -- the version bump rejects every pre-v38 file at the
-  // header check, so PageLine::deserialize only ever runs on v38+ pages. An unknown value would
+  // Font role byte. Always present -- the version check rejects every file written before the role
+  // existed, so PageLine::deserialize only ever runs on pages that have it. An unknown value would
   // mean a corrupt file; clamp to Body rather than index a font set out of range.
   uint8_t roleByte = 0;
   serialization::readPod(file, roleByte);

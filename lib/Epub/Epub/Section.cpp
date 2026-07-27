@@ -13,131 +13,132 @@
 #include "parsers/ChapterHtmlSlimParser.h"
 
 namespace {
-// v28: text decoration bits now include line-through in serialized wordStyles.
-// v29: TextBlock word data stored as one flat arena (offset table + NUL-terminated
-// text blob) instead of length-prefixed strings and per-field arrays.
-// v30: Arabic shaping changed both drawing and measurement (getTextAdvanceX now
-//      measures the shaped visual text); cached word positions from v29 no longer
-//      match what drawText renders.
-// v31: word continuation preserved when splitting CJK text on MAX_WORD_SIZE.
-// v32: Pre-Translation — translationMode byte added to the header (cache key), and a
-//      per-line paragraphIdx + per-page paragraph range added to Page serialization.
-// v33: Per-block hyphenation language. Translated blocks (lang= differing from the book
-//      language) now hyphenate with their own script's rules instead of the book-wide one,
-//      so a bilingual (e.g. en->uk) book's translated text finally breaks. Hyphenated splits
-//      are baked into the serialized pages, so sections cached under v32 (English-only splits
-//      on Cyrillic text) must be regenerated.
-// v35: Side by Side (translationMode 5) now lays original and translation into two half-width
-//      columns (renderSideBySide) instead of full-width sequential blocks. The Page/PageLine
-//      binary structure is unchanged — columns reuse the existing per-line xPos field — but a
-//      mode-5 section cached under v34 carries an identical header key (translationMode still 5)
-//      and would otherwise be served with the old single-column layout, so the version bump is
-//      the only thing that forces those sections to rebuild.
-// v36: Merge with upstream develop, which independently numbered its own "v32":
-//      ImageBlock serializes the book-internal source href after the cache path
-//      (lazy extraction: images are header-probed at build time and extracted on
-//      first render). The two lines used 32..35 for different, mutually unreadable
-//      layouts, so v36 supersedes both — the merged format carries the Pre-Translation
-//      fields (v32-v35 above) AND the ImageBlock source href, and the bump forces a
-//      rebuild of any section cached by either line.
-// v37: Second merge with upstream develop, whose independent numbering had meanwhile
-//      advanced to its own "v33" while this line stood at 36. That upstream v33 bundles
-//      two cache-invalidating changes, both of which the merged format keeps: TextBlock
-//      now serializes a per-word ruby annotation string after the word arena (native
-//      <ruby>/<rt> support, <rp> skipped), and a closing tag now starts a fresh text
-//      block so a closed block's style no longer leaks into following bare text, which
-//      shifts the cached block boundaries. v37 supersedes both numbering lines: the
-//      merged format carries the Pre-Translation fields (v32-v35), the ImageBlock source
-//      href (upstream's "v32") AND the per-word ruby strings (upstream's "v33"), and the
-//      bump forces a rebuild of any section cached by either line. The merge also
-//      renumbers the persisted word style bit for ruby: upstream shipped
-//      EpdFontFamily::RUBY_CONTINUE as 64, which is this line's TRANSLATED bit, so ruby
-//      moves to bit 7 (128) and the never-written PT_TOOLTIP reservation on that bit is
-//      retired. v37 rejects every cache written by either line, so no stored style byte
-//      is ever reinterpreted under the new numbering.
-// v38: The header no longer stores the raw Pre-Translation display mode. It stores the LAYOUT that
-//      mode implies (PtLayout: Both / OriginalOnly / TranslationOnly / SideBySide), so modes whose
-//      pages are byte-identical -- Normal vs Interleaved (a gray level, drawn not laid out),
-//      Original Only vs Page Translation vs Tooltip (overlays composited at view time) -- now share
-//      one cache entry and switching between them is instant instead of a full chapter re-layout.
-//      The byte occupies the same header slot as the old mode byte but means something different,
-//      so v37 files must be rejected rather than reinterpreted. v38 also adds a translationFontId int to the header:
-//      laying translated text out in its own font changes word measurement and line breaking, so
-//      unlike the drawing-only shade it IS part of the cache key. Finally, PageLine serializes a
-//      LineFontRole byte after paragraphIdx so a page can mix body and smaller/annotation text;
-//      every line the layout engine emits today writes Body, so a v38 rebuild is byte-equivalent
-//      to v37 apart from the extra zero byte per line.
-// v39: A translatedSource bool follows the PtLayout byte: it records WHICH source HTML the pages
-//      were laid out from (the chapter's .translated.html, or the plain original). The layout byte
-//      alone cannot say -- PtLayout::Both is what an untranslated chapter AND an inline-bilingual
-//      chapter both stamp -- so without it a chapter laid out before its translation arrived stays
-//      a cache HIT afterwards and silently serves untranslated pages in a bilingual mode (and vice
-//      versa).
-//      WHY THIS IS ITS OWN VERSION AND NOT PART OF v38: two different header layouts were written
-//      under the number 38 during development -- first without the translatedSource byte, then with
-//      it. The byte sits in the MIDDLE of the header, so a 38 written by the earlier layout passes
-//      the version gate and then every field after the PtLayout byte is read shifted by one. The
-//      mismatch check usually catches that as a stale key and rebuilds, but it is not guaranteed to
-//      (the shifted bytes can compare equal), and the pageCount / LUT offsets that follow are read
-//      before any such check can help. v38 was therefore never a stable, released layout: nothing
-//      may claim to read it, and 39 exists so the shorter layout is rejected on its version alone.
-// v40: PtLayout gains a fifth value, Interlinear = 4 (the Interlinear display mode no longer shares
-//      Both -- it now emits a small LineFontRole::Annotation row above the source line each
-//      sentence starts on, so its pages genuinely differ). PtLayout.h states the rule: the byte is
-//      part of the cache key, so adding a value needs a version bump on its own.
-//      v40 ALSO grows the header by an annotationFontId int, written immediately after
-//      translationFontId. It is a real LAYOUT input -- it decides both how an annotation row wraps
-//      and how tall it is -- so it is keyed exactly as translationFontId is, via
-//      keyedAnnotationFontId(). Either change alone would force this bump; the mid-header insertion
-//      makes it mandatory, for precisely the reason the v39 note above spells out (every field after
-//      it would be read shifted, and the pageCount / LUT offsets are consumed before the
-//      parameter-mismatch check can save you).
-// v41: TWO independent cache-invalidating changes landed under this one number, developed on
-//      separate branches that each bumped v40 -> v41 for their own reason. Both are in the format
-//      described here; neither description alone is complete. (1) is a pure LAYOUT change that
-//      touches no bytes, (2) INSERTS a byte mid-header -- so the combined v41 header is NOT
-//      byte-compatible with v40 and a v40 file is not structurally decodable as v41.
-//      (1) PtLayout::Interlinear changes its LINE BREAKING: a source sentence now always starts a
-//          new line and its translation rows sit squarely above that line -- at the same x the line
-//          itself starts, i.e. the block's inset plus its alignment plus, on the paragraph's first
-//          line only, its first-line indent -- instead of the source breaking as under OriginalOnly
-//          with each row anchored at the x of the sentence's first WORD. It also feeds the sentence
-//          pairing the focus-MERGED word stream rather than the raw token array, so Focus Reading no
-//          longer moves a sentence boundary. Nothing is added, removed or reordered for this change:
-//          every per-page and per-line structure is byte-identical to v40. The bump is mandatory
-//          anyway, because the version is the CACHE KEY and the pages it keys are no longer the same
-//          pages -- a device holding v40 entries would otherwise keep serving the old jumbled layout
-//          forever, since no other keyed parameter changed.
-//      (2) The translatedSource byte CHANGES ITS MEANING, the language comparison that feeds it
-//          changed too, and a second bool (embeddedTranslation) is inserted right after it. Per the
-//          v39 note, that mid-header insertion is what makes rejecting v40 mandatory rather than
-//          merely correct -- every field after it would otherwise be read shifted.
-//          (a) translatedSource used to mean "laid out from the `.translated.html` sidecar". It now
-//              means "laid out from content CONTAINING TRANSLATIONS", which is also true of a
-//              chapter whose own XHTML embeds them (a Calibre-plugin bilingual book: `<p lang="uk">`
-//              beside the `lang="en">` original, no sidecar). Such a chapter used to stamp false and
-//              be forced to PtLayout::Both -- it now stamps true and lays out under the real
-//              filtering/pairing layout, so its v40 pages are the WRONG pages for the same key.
-//          (b) ChapterHtmlSlimParser's "is this block translated" test moved from a raw strcmp
-//              against the book language to translationdetect::isTranslatedLangTag (primary subtag,
-//              ASCII case-insensitive). A chapter with `lang="en-GB"` blocks in an `en` book used to
-//              lay them out as translated text and no longer does, which changes line breaking. That
-//              alone can leave the stamped byte unchanged (any other foreign block keeps it true),
-//              so the version is what invalidates it.
-//          (c) The new `embeddedTranslation` bool follows translatedSource. It is NOT a cache key;
-//              it is a memo of the half of (a) that is IMMUTABLE for a given book file, so a load
-//              can recompute translatedSource as `hasTranslatedSidecar() || embeddedTranslation` --
-//              one SD stat -- rather than SAX-scanning the chapter HTML on every chapter load, which
-//              would have taxed even readers who never enable a translation mode.
-//          The invariant v39 introduced is unchanged and now simply covers more ground: a chapter
-//          cached while it had no translation must never be served once it has one, and vice versa.
-//          Both transitions still invalidate -- a downloaded/deleted sidecar flips the byte exactly
-//          as before, and an embedded translation is baked into the chapter HTML, so a book that
-//          gains one is a different file with a different cache dir.
-//      Either change alone invalidates every cached chapter of every book for EVERY layout, not just
-//      Interlinear -- the next open of each book pays one background re-layout. Unavoidable: the key
-//      is a single version number.
-constexpr uint8_t SECTION_FILE_VERSION = 41;
+// SECTION FILE FORMAT VERSION
+//
+// READ THIS BEFORE COMPARING THE NUMBER TO ANYTHING OUTSIDE THIS FORK.
+// This fork's format at version 33 is NOT upstream develop's format at version 33. The number
+// collides; the layout does not. Our header carries four fields upstream's does not have at all --
+// translationFontId, annotationFontId, the PtLayout byte, and the translatedSource /
+// embeddedTranslation pair -- so an upstream-written .bin and one of ours are mutually
+// unreadable while both stamping 33. The version byte is therefore only meaningful WITHIN this
+// fork: it is a cache key for our own files, never a compatibility claim against upstream. Nothing
+// may treat "33" as a portable format identifier, and no cross-fork cache sharing is possible or
+// intended. (The .crosspoint cache is device-local and rebuilt on demand, so this costs a
+// re-layout, not correctness -- but only as long as nobody tries to make the number mean more than
+// it does.)
+//
+// WHY 33 AND NOT 41. This line ran 33 -> 41 across internal iterations that were never released.
+// Numbers 34 through 41 are local-only history: no build carrying them left this fork, so no user
+// has a cache stamped with them that anyone else needs to interoperate with, and keeping a private
+// counter drifting further from upstream's bought nothing. They are collapsed back into 33, which
+// is the value upstream develop currently has. Everything those iterations added to the format is
+// still here -- see "THE FORMAT AT 33" below -- only the counter was rewound.
+//
+// The rewind itself invalidates every cache on any device that ran a 34..41 build: those files
+// stamp 34..41, this firmware accepts only 33 (or the partial sentinel), so they are rejected as an
+// unknown version and rebuilt once, per book, in the background. That is expected and wanted.
+//
+// THE NEXT GENUINE FORMAT CHANGE TAKES THIS TO 34. Do not reuse 33 for a new layout, and do not
+// "resume" at 42.
+//
+// ---------------------------------------------------------------------------------------------
+// THE FORMAT AT 33
+//
+// The header, in write order (see writeSectionFileHeader; loadSectionFile reads it back in exactly
+// this order, and HEADER_SIZE below is the sum):
+//   version:uint8, fontId:int, translationFontId:int, annotationFontId:int, lineCompression:float,
+//   extraParagraphSpacing:bool, paragraphAlignment:uint8, viewportWidth:uint16,
+//   viewportHeight:uint16, hyphenationEnabled:bool, embeddedStyle:bool, ptLayout:uint8,
+//   translatedSource:bool, embeddedTranslation:bool, imageRendering:uint8,
+//   focusReadingEnabled:bool, pageCount:uint16, then four uint32 LUT offsets.
+// Every field except embeddedTranslation is part of the cache key.
+//
+// The substantive properties this format has accumulated, and why each one is load-bearing:
+//
+// * Word/text serialization. wordStyles carry a line-through bit. TextBlock stores its words as one
+//   flat arena (offset table + NUL-terminated blob) rather than length-prefixed strings and
+//   per-field arrays. CJK text split on MAX_WORD_SIZE preserves word continuation. Arabic text is
+//   measured as SHAPED visual text (getTextAdvanceX), so cached word positions match what drawText
+//   actually renders. TextBlock also serializes a per-word ruby annotation string after the word
+//   arena (native <ruby>/<rt>, <rp> skipped), and a closing tag starts a fresh text block so a
+//   closed block's style cannot leak into following bare text. The persisted ruby style bit is 128
+//   (bit 7); 64 is this line's TRANSLATED bit, which is why ruby could not keep upstream's value.
+// * Images. ImageBlock serializes the book-internal source href after the cache path: images are
+//   header-probed at build time and extracted lazily on first render.
+// * Pages and lines. Each line carries a paragraphIdx and a LineFontRole byte, and each page a
+//   paragraph range, so a page can mix body text with smaller annotation text and a reposition
+//   anchor can be resolved without re-parsing.
+// * Hyphenation is per block, not per book. A translated block (lang= differing from the book
+//   language) hyphenates with its own script's rules, so a bilingual en->uk book's translated text
+//   breaks correctly. Hyphenated splits are baked into the serialized pages, which is why changing
+//   this rule is always a format change.
+// * Pre-Translation stores the LAYOUT, not the display mode. The header holds a PtLayout byte
+//   (Both / OriginalOnly / TranslationOnly / SideBySide / Interlinear) rather than the raw user
+//   mode, so modes whose pages are byte-identical -- Normal vs Interleaved (a gray level, drawn not
+//   laid out), Original Only vs Page Translation vs Tooltip (overlays composited at view time) --
+//   share one cache entry and switching between them is instant. PtLayout.h states the rule: the
+//   byte is part of the cache key, so adding a value to the enum is itself a format change.
+//   - SideBySide lays original and translation into two half-width columns (renderSideBySide),
+//     reusing the existing per-line xPos field rather than adding structure.
+//   - Interlinear emits a small LineFontRole::Annotation row above the source line each sentence
+//     starts on. A source sentence ALWAYS starts a new line: sentence starts are resolved before
+//     line breaking and fed in as hard constraints, not discovered afterwards over the already
+//     broken word array. Each row sits at the same x the source line starts at -- the block's inset,
+//     plus its alignment, plus (on the paragraph's first line only) its first-line indent. The
+//     pairing runs over the focus-MERGED word stream rather than the raw token array, so Focus
+//     Reading -- which stores each word as a bold prefix plus a regular tail -- cannot move a
+//     sentence boundary.
+// * Fonts used for translated and annotation text are keyed. translationFontId and annotationFontId
+//   are real layout inputs: they decide how translated text and annotation rows measure, wrap and
+//   how tall they are. Both are keyed conditionally, via keyedTranslationFontId() /
+//   keyedAnnotationFontId(), so a font that cannot reach the page under the current layout does not
+//   pointlessly invalidate the cache. loadSectionFile normalizes the lookup the same way.
+// * translatedSource records whether the HTML these pages were laid out from CONTAINED
+//   TRANSLATIONS -- from either source: a reader-produced `.translated.html` sidecar, or
+//   translations embedded in the chapter's own XHTML (a Calibre-plugin bilingual book interleaves
+//   `<p lang="uk">` after each `lang="en"` original; there is no sidecar and no marker attribute).
+//   The PtLayout byte cannot express this: Both is stamped both by an untranslated chapter and by
+//   one that simply requested Normal. Without the flag, a chapter laid out before its translation
+//   arrived would stay a cache HIT afterwards and silently serve untranslated pages in a bilingual
+//   mode -- and, symmetrically, a translated cache would survive the translation being deleted.
+//   The language comparison behind it is translationdetect::isTranslatedLangTag: primary subtag,
+//   ASCII case-insensitive, with `-` and `_` both ending the subtag, so `uk-UA` in an `en` book is
+//   translated while `en-GB` is not. That predicate is shared with ChapterHtmlSlimParser, so the
+//   gate that enables a bilingual layout and the engine that renders it can never disagree.
+// * embeddedTranslation is the ONLY field that is not a cache key. It memoizes the half of
+//   translatedSource that is IMMUTABLE for a given book file -- "the chapter's own XHTML embeds
+//   translated blocks" -- so a load can recompute translatedSource as
+//   `hasTranslatedSidecar() || embeddedTranslation`, one SD stat, instead of SAX-scanning the
+//   chapter HTML on every chapter load. Without it that scan would tax every reader, including
+//   those who never enable a translation mode. It is stamped false by a build that read the
+//   SIDECAR, which never looked at the chapter HTML and so does not know; that state is
+//   recognisable as `translatedSource == true && embeddedTranslation == false`, and a load seeing
+//   it with the sidecar now gone treats the answer as unknown rather than memoizing a value that
+//   could understate the truth.
+//
+// ---------------------------------------------------------------------------------------------
+// TWO RULES THIS HISTORY PAID FOR
+//
+// 1. NEVER change the byte layout without changing the number, even if a mismatch check "would
+//    catch it". Two different header layouts were once written under the number 38 during
+//    development -- first without translatedSource, then with it. That byte sits in the MIDDLE of
+//    the header, so the earlier layout passes the version gate and then every field after the
+//    PtLayout byte is read shifted by one. The parameter-mismatch check usually catches that as a
+//    stale key and rebuilds, but it is NOT guaranteed to (shifted bytes can compare equal), and the
+//    pageCount and LUT offsets that follow are consumed BEFORE any such check can help. Any
+//    mid-header insertion makes a bump mandatory rather than merely correct.
+// 2. A pure layout change with no byte change still needs a bump, because the version IS the cache
+//    key and nothing else in the key moved. A device holding the old entries would otherwise serve
+//    the old pages forever. Note this invalidates every cached chapter of every book for EVERY
+//    layout, not just the one that changed -- the key is a single number, so the blast radius is
+//    always total. That is the accepted cost: one background re-layout per book on next open.
+//
+// The invariant behind translatedSource is the sharpest case of rule 1: a chapter cached while it
+// had no translation must never be served once it has one, and vice versa. Both transitions
+// invalidate -- a downloaded or deleted sidecar flips the byte, and an embedded translation is
+// baked into the chapter HTML, so a book that gains one is a different file with a different cache
+// directory.
+constexpr uint8_t SECTION_FILE_VERSION = 33;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
@@ -153,17 +154,23 @@ constexpr uint8_t SECTION_FILE_INCOMPLETE_VERSION = 0;
 // MUST change in lockstep with SECTION_FILE_VERSION: the sentinel IS the partial's
 // format version, so a stale-format partial otherwise passes the header check and
 // only fails (noisily, via the block-decode error path) when a page is loaded.
-// Derived so the pairing can't be forgotten: 0xFE for v28, 0xFD for v29, ... 0xF1 for v41.
+// Derived so the pairing can't be forgotten: 0xFE for v28, 0xFD for v29, ... 0xF9 for v33.
+// The derivation walks DOWN as the version walks up, so rewinding the version walks it back up:
+// the 33 -> 41 iterations put it at 0xF1, and collapsing back to 33 returns it to 0xF9. A partial
+// left on a card by one of those builds carries 0xF1..0xF8, which is neither 33 nor 0xF9, so it is
+// rejected as an unknown version and rebuilt -- the same one-off invalidation the rewind costs
+// finalized files.
 constexpr uint8_t SECTION_FILE_PARTIAL_VERSION = 0xFE - (SECTION_FILE_VERSION - 28);
 // The derivation only stays a distinct sentinel while the two ranges have not met; assert it rather
-// than trusting a future bump to notice.
+// than trusting a future bump to notice. At 33 the sentinel is 0xF9 (249): comfortably above the
+// version, and nothing but a version past 0xF9-28 = 221 could ever close the gap.
 static_assert(SECTION_FILE_PARTIAL_VERSION > SECTION_FILE_VERSION &&
                   SECTION_FILE_PARTIAL_VERSION != SECTION_FILE_INCOMPLETE_VERSION,
               "Partial sentinel collides with a real version");
-// The second sizeof(int) is the Pre-Translation translationFontId and the third (v40) is the
+// The second sizeof(int) is the Pre-Translation translationFontId and the third is the
 // annotationFontId; the extra sizeof(uint8_t) after the two bools is the Pre-Translation PtLayout
 // byte, the sizeof(bool) right after it is the translated-source flag, and the sizeof(bool) after
-// THAT (v41) is the embedded-translation memo.
+// THAT is the embedded-translation memo.
 constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) + sizeof(int) + sizeof(int) + sizeof(int) + sizeof(float) +
                                  sizeof(bool) + sizeof(uint8_t) + sizeof(uint16_t) + sizeof(uint16_t) +
                                  sizeof(uint16_t) + sizeof(bool) + sizeof(bool) + sizeof(uint8_t) + sizeof(bool) +
@@ -265,7 +272,7 @@ void Section::writeSectionFileHeader(const ReaderRenderSpec& spec, const bool tr
   serialization::writePod(file, SECTION_FILE_INCOMPLETE_VERSION);
   serialization::writePod(file, spec.fontId);
   serialization::writePod(file, spec.translationFontId);  // Pre-Translation translated-text font (cache key)
-  // v40: Pre-Translation annotation-row font (cache key). Non-zero only under PtLayout::Interlinear.
+  // Pre-Translation annotation-row font (cache key). Non-zero only under PtLayout::Interlinear.
   serialization::writePod(file, spec.annotationFontId);
   serialization::writePod(file, spec.lineCompression);
   serialization::writePod(file, spec.extraParagraphSpacing);
@@ -279,7 +286,7 @@ void Section::writeSectionFileHeader(const ReaderRenderSpec& spec, const bool tr
   // byte cannot express it: Both is stamped both by an untranslated chapter and by one that simply
   // requested Normal.
   serialization::writePod(file, translatedSource);
-  // v41, NOT a cache key -- a memo, so the next load can recompute translatedSource without
+  // NOT a cache key -- a memo, so the next load can recompute translatedSource without
   // re-scanning the chapter HTML. It records the half of the answer that is IMMUTABLE for a given
   // book file: "the chapter's own XHTML embeds translated blocks". The other half (a sidecar) is one
   // SD stat, so `translatedSource == hasTranslatedSidecar() || embeddedTranslation` costs a stat
@@ -333,7 +340,7 @@ bool Section::loadSectionFile(const ReaderRenderSpec& spec) {
     bool fileFocusReadingEnabled;
     serialization::readPod(file, fileFontId);
     serialization::readPod(file, fileTranslationFontId);
-    serialization::readPod(file, fileAnnotationFontId);  // v40
+    serialization::readPod(file, fileAnnotationFontId);
     serialization::readPod(file, fileLineCompression);
     serialization::readPod(file, fileExtraParagraphSpacing);
     serialization::readPod(file, fileParagraphAlignment);
@@ -343,7 +350,7 @@ bool Section::loadSectionFile(const ReaderRenderSpec& spec) {
     serialization::readPod(file, fileEmbeddedStyle);
     serialization::readPod(file, filePtLayout);
     serialization::readPod(file, fileTranslatedSource);
-    serialization::readPod(file, fileEmbeddedTranslation);  // v41
+    serialization::readPod(file, fileEmbeddedTranslation);
     serialization::readPod(file, fileImageRendering);
     serialization::readPod(file, fileFocusReadingEnabled);
 

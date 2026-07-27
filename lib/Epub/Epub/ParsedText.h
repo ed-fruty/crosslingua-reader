@@ -45,7 +45,7 @@ class ParsedText {
   // forced break on a continuation could never be honoured — bounding the DP by it would leave no
   // legal line at all and collapse the paragraph into the single-word fallback. Such an entry is
   // ignored here instead, and the sentence degrades to "annotation above the line that CONTAINS its
-  // start", i.e. exactly the pre-v41 behaviour, for that one sentence.
+  // start", i.e. exactly the earlier behaviour, for that one sentence.
   bool isForcedBreakAt(size_t idx) const;
   // Smallest achievable forced index strictly greater than `i`, or words.size() when there is none.
   // A line starting at `i` may not extend to or past it.

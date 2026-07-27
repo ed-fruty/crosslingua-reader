@@ -90,28 +90,101 @@ if (parsedSize != fileSize) {
 
 ## `section.bin`
 
-### Version 41
+### Version 33 — current
 
-Version 41 bundles **two independent** cache-invalidating changes, developed on separate
-branches that each bumped 40 → 41 for their own reason. Both are in the format described
-here; neither half alone describes it.
+> **This 33 is not upstream's 33.** The number collides with upstream `develop`'s
+> current version; the layout does not. This fork's header carries four fields
+> upstream's has no concept of — `translationFontId`, `annotationFontId`, the
+> `PtLayout` byte, and the `translatedSource` / `embeddedTranslation` pair — so an
+> upstream-written `.bin` and one of ours are mutually unreadable while both stamp
+> `33`. The version byte is a cache key **within this fork only**, never a
+> portable format identifier and never a compatibility claim. No cross-fork cache
+> sharing is possible or intended.
+>
+> **The next genuine format change takes this to 34.** Do not reuse 33 for a new
+> layout, and do not "resume" at 42.
 
-1. **Interlinear line breaking** (below) — a pure layout change that touches **no bytes**.
-2. **`translatedSource` widens and `embeddedTranslation` is added** (below) — this one
-   **inserts a byte mid-header**.
+#### Why the number went backwards
 
-Because of (2), a version 40 file is **not** structurally decodable as version 41: every
-field after `translatedSource` would be read shifted. Per the version 39 note below, that
-makes rejecting v40 mandatory rather than merely correct.
+This line ran 33 → 41 across internal iterations that were never released. Numbers
+34 through 41 are local-only history: no build carrying them left the fork, so no
+user has a cache stamped with them that anyone needs to interoperate with, and a
+private counter drifting further from upstream's bought nothing. They are collapsed
+back into 33, the value upstream `develop` currently has. **Everything those
+iterations added to the format is still here** — the sections below are the merged
+result, not a rollback. Only the counter was rewound.
 
-#### 41 (1) — Interlinear line breaking
+The rewind invalidates every cache on any device that ran a 34–41 build: those files
+stamp 34–41, this firmware accepts only 33 (or the partial sentinel), so they are
+rejected as an unknown version and rebuilt once per book in the background. That is
+expected. The partial sentinel moves with the version by the same derivation
+(`0xFE - (version - 28)`), so it returns from `0xF1` to `0xF9` and stale partials are
+rejected on the same grounds.
 
-This half changes no bytes: the header, the page records, the line records and every LUT
-are laid out exactly as in version 40. It would still have forced a bump on its own,
-because the version number *is* the cache key, and under `PtLayout::Interlinear` the pages
-it keys are no longer the same pages:
+#### Header layout
 
-- **A source sentence now always begins a new line.** Sentence starts are resolved
+Each file in `sections/*.bin` stores one laid-out spine section. The header is also
+the cache-busting key: if any layout-affecting field differs from the current reader
+settings, the section is discarded and rebuilt. In write order:
+
+| Field | Type | Cache key |
+|---|---|---|
+| `version` | `u8` | yes |
+| `fontId` | `s32` | yes |
+| `translationFontId` | `s32` | yes (normalized) |
+| `annotationFontId` | `s32` | yes (normalized) |
+| `lineCompression` | `float` | yes |
+| `extraParagraphSpacing` | `bool` | yes |
+| `paragraphAlignment` | `u8` | yes |
+| `viewportWidth` | `u16` | yes |
+| `viewportHeight` | `u16` | yes |
+| `hyphenationEnabled` | `bool` | yes |
+| `embeddedStyle` | `bool` | yes |
+| `ptLayout` | `u8` | yes |
+| `translatedSource` | `bool` | yes |
+| `embeddedTranslation` | `bool` | **no** — memo only |
+| `imageRendering` | `u8` | yes |
+| `focusReadingEnabled` | `bool` | yes |
+| `pageCount` | `u16` | — |
+| four LUT offsets | `u32` × 4 | — |
+
+`embeddedTranslation` is the only field that is not part of the key.
+
+#### Pre-Translation: the header stores a layout, not a display mode
+
+The Pre-Translation byte holds the `PtLayout` a display mode *implies*, not the raw
+mode: `0 = Both`, `1 = OriginalOnly`, `2 = TranslationOnly`, `3 = SideBySide`,
+`4 = Interlinear` (see `lib/Epub/Epub/PtLayout.h`). Several display modes produce
+byte-identical pages and share one cache entry: Normal and Interleaved both map to
+`Both`, and Original Only / Page Translation / Tooltip all map to `OriginalOnly` (the
+overlay modes composite their translation at view time, so their main flow is
+original-only). Switching between two modes that share a layout is a cache hit only
+when `translationFontId` also matches: Normal and Interleaved share `Both`, but
+Interleaved can lay its translated words out in a smaller font, so the two are a hit
+only while Interleaved's own Translation Size is "Same".
+
+Because the byte is part of the cache key, **adding a value to the enum is itself a
+format change**.
+
+The per-chapter auto-fallback keys on the layout: a chapter with no translation in
+its source is laid out and stamped as `Both`, which for an untranslated chapter is
+simply the plain original (`Section::effectiveLayout`). "No translation" spans both
+sources — neither a `.translated.html` sidecar nor translations embedded in the
+chapter's own XHTML. So an Interlinear cache entry only exists for a chapter that
+actually has a translation.
+
+#### Interlinear line breaking
+
+Interlinear has a layout of its own and cannot share a cache entry with Normal or
+Interleaved. Each sentence's translation is emitted as its own
+`LineFontRole::Annotation` row directly *above* the source line that sentence starts
+on. An annotation row is an ordinary `PageLine` — nothing new is serialized per line
+or per page — stamped with the original paragraph's index just as its source line is,
+with height `getLineHeight(annotationFontId)`, which is what lets two type sizes tile
+edge to edge on one page. No sentence metadata reaches disk: alignment is fully
+resolved before the page is written.
+
+- **A source sentence always begins a new line.** Sentence starts are resolved
   *before* line breaking and fed into it as hard constraints
   (`ParsedText::setForcedLineBreaks`), instead of being discovered afterwards over the
   already-broken word array. A sentence that wraps flows normally onto the lines below
@@ -120,7 +193,7 @@ it keys are no longer the same pages:
   "at the left margin": that is only the same thing for a left-aligned or justified
   paragraph whose sentence is not the first. Three things place the row, all taken from
   the *source* block so the two cannot drift:
-  - the block's left inset (unchanged — `emitInterlinearRow`);
+  - the block's left inset (`emitInterlinearRow`);
   - the block's **alignment**. A `text-align:center` epigraph or a `text-align:right`
     verse block gets centred / right-aligned rows, so the pair shares a centre line or
     a right edge. `Justify` degrades to left, which is where a justified line starts
@@ -135,301 +208,182 @@ it keys are no longer the same pages:
     annotation rows on the body's own rule: indent when extra paragraph spacing is
     off, no indent (and a paragraph gap instead) when it is on.
 
-  The version 40 hanging indent — first row inset to the x of the sentence's first
-  *word*, continuation rows falling back to the margin, indent dropped entirely past
-  3/4 of the measure — **is gone**, and the two version 40 bullets describing it below
-  are superseded. That scheme produced several row-sets stacked over one line while
-  neighbouring lines carried none, and parked a shard of translation against the right
-  margin whenever a sentence started late.
+  An earlier iteration used a hanging indent — first row inset to the x of the
+  sentence's first *word*, continuation rows falling back to the margin, indent dropped
+  entirely past 3/4 of the measure. That scheme produced several row-sets stacked over
+  one line while neighbouring lines carried none, and parked a shard of translation
+  against the right margin whenever a sentence started late. It is gone: the row's
+  `text-indent` is now always `0`.
 - **The pairing reads WORDS, not tokens.** `ParsedText` does not always store one token
   per word: with Focus Reading on, every word is a bold prefix plus a regular tail
   ("Ok" is `"O"` + `"k"`), and `extractLine` concatenates the tail back before a line
-  leaves the layout engine. Version 40 paired over post-layout lines and so saw whole
-  words for free; version 41 pairs *before* layout and must merge them itself
+  leaves the layout engine. Pairing runs *before* layout and so must merge them itself
   (`buildMergedWordStream`). Without that, `"Ok."` keys as `"O k"` (3 bytes) instead of
   `"Ok"` (2), clears the junk-sentence test, and takes an annotation row and a forced
   line break that the Tooltip overlay — which reads laid-out page words — does not give
   it. The two consumers `src/translator/SentencePairing.h` promises a single answer to
   would then disagree, and only when the setting is on. Annotation indices come back in
   merged-word space and are mapped to token indices before anything else uses them.
-- **The last line of every sentence is not justified.** It is now usually short, since
-  the following sentence no longer fills it; stretching it to the full measure would
-  open gaping word gaps. This reuses the rule the paragraph's own last line already had
+- **The last line of every sentence is not justified.** It is usually short, since the
+  following sentence no longer fills it; stretching it to the full measure would open
+  gaping word gaps. This reuses the rule the paragraph's own last line already had
   (`ParsedText::extractLine`).
 - **A sentence whose translation is empty produces no row and no forced break**, and
   simply continues on the previous sentence's last line — there is no row that could be
   mispaired, and the next translated sentence still starts a line of its own.
 - **A sentence opening on a continuation token** (one glued to the word before it) is
-  the one case the constraint cannot honour: no line breaker may break there. That
-  sentence keeps the version 40 placement — its rows sit above the line that *contains*
-  its start — but at the margin, not anchored.
-- **RTL is unchanged.** An RTL source paragraph is still not annotated at all — which is
-  also what keeps the inherited alignment above safe, since a right-aligned *source* is
-  only ever an LTR block with explicit `text-align:right`. An RTL *target* still lays
-  its rows out at the full measure on their own natural margin (flush right): the
-  RTL-flip in `extractLine` fires only on the left branch, so an inherited `Center` or
-  `Right` survives it (and both are already correct for an RTL row), while a left row
-  flips to flush right and takes no indent, as before.
+  the one case the constraint cannot honour: no line breaker may break there. Its rows
+  sit above the line that *contains* its start, at the margin.
+- **RTL.** An RTL source paragraph is not annotated at all — `extractLine` permutes a
+  line into visual order whenever the block resolves RTL *or* contains any RTL word, so
+  a source paragraph that is RTL, or that merely carries an inline Hebrew/Arabic run,
+  lays out as plain unannotated source. This is also what keeps the inherited alignment
+  above safe, since a right-aligned *source* is only ever an LTR block with explicit
+  `text-align:right`. An RTL *target* lays its rows out at the full measure on their own
+  natural margin (flush right): the RTL-flip in `extractLine` fires only on the left
+  branch, so an inherited `Center` or `Right` survives it (both are already correct for
+  an RTL row), while a left row flips to flush right and takes no indent.
 
 Page cost rises accordingly: each sentence ends with roughly half a line of white
-space, so Interlinear is now about **+70% pages versus Normal** at the 14pt portrait
-default (was ~+40%), and more for dialogue-heavy prose.
+space, so Interlinear runs about **+70% pages versus Normal** at the 14pt portrait
+default, and more for dialogue-heavy prose.
 
-#### 41 (2) — embedded translations
+#### `translationFontId` and `annotationFontId`
 
-This half changes the *meaning* of the `translatedSource` byte, changes the layout
-engine's "is this block translated" test with it, and inserts one new `bool` after it.
-The first two alter the pages a given key produces; the third shifts every field that
-follows — the reason a v40 file cannot be decoded as v41 at all.
+Both are `s32`, written immediately after `fontId`, and both are genuine layout
+inputs conditionally normalized to `0` so a font that cannot reach the page under the
+current layout does not pointlessly invalidate the cache. The lookup normalizes
+identically (`Section::keyedTranslationFontId` / `keyedAnnotationFontId`, applied at
+the header write, the lookup compare and the id handed to the parser), so key and
+layout can never disagree.
 
-- **`translatedSource` now means "laid out from content that CONTAINS translations"**,
-  not "laid out from the `.translated.html` sidecar". A book translated by a Calibre
-  plugin has no sidecar at all: its translated paragraphs are embedded in the chapter's
-  own XHTML (`<p lang="uk">` beside the `lang="en"` original). Such a chapter used to
-  stamp `false`, which forced `Section::effectiveLayout` to degrade every display mode
-  to `Both`; it now stamps `true` and lays out under the real filtering/pairing layout.
-  Its v40 pages are therefore the wrong pages for the same key.
-- **The language comparison moved to `translationdetect::isTranslatedLangTag`**
+- **`translationFontId`** is the font translated text is laid out in (`0` = same as
+  the body font), resolved from the *Interleaved* mode's own size setting; the Tooltip
+  and Page Translation sizes are separate settings, composited at view time, and never
+  reach this field. A distinct font changes word measurement and hence line breaking.
+  It is stamped `0` for every layout other than `Both`: `OriginalOnly` drops every
+  translated word, and `TranslationOnly` / `SideBySide` keep them but lay them out in
+  the body font by design, so in all three no line is ever measured in it. Under `Both`
+  the real id is always kept, including for a chapter with no translation —
+  `Section::effectiveLayout` maps that case to `Both` too, and the chapter's own HTML
+  can still contain a block whose `lang=` differs from the book's language, which IS
+  laid out in this font when it is non-zero.
+- **`annotationFontId`** is the font the small annotation rows are laid out in (`0` =
+  same as the body font), from `CrossPointSettings::getInterlinearAnnotationFontId()`.
+  It decides both how an annotation row wraps and how tall it is. It is stamped `0`
+  whenever the effective layout is anything other than `Interlinear`, since no other
+  layout emits an annotation row. Without that normalization, an annotation-size
+  setting would invalidate every cached chapter of every mode. `0` is also the graceful
+  answer when the annotation face cannot cover the selected target script: the rows
+  still appear above their sentences, at body size.
+
+#### Per-line font role
+
+`PageLine` serializes a `LineFontRole` byte (`0 = Body`, `1 = Translation`,
+`2 = Annotation`) immediately after `paragraphIdx`, so one page can mix the body font
+with smaller translated or annotation text. The role is chosen at layout time, which is
+also when the line was measured, so a cached page always redraws in the font it was
+measured with. The renderer resolves the role through a `PageFontSet` supplied by the
+app (`lib/Epub` stores roles, never font ids). A line is tagged `Translation` only
+under the `Both` layout, and only when its enclosing block is translated and
+`translationFontId` is non-zero (every mode but Interleaved stamps `0`, so their pages
+are all-`Body`). `Annotation` is emitted under the `Interlinear` layout only.
+
+#### `translatedSource` and `embeddedTranslation`
+
+- **`translatedSource`** is a 1-byte `bool` immediately after the `PtLayout` byte. It
+  records whether the HTML these pages were laid out from **contained translations** —
+  from *either* source: a reader-produced `.translated.html` sidecar, or translations
+  embedded in the chapter's own XHTML. A book translated by a Calibre plugin has no
+  sidecar at all: its translated paragraphs are embedded in the chapter's own XHTML
+  (`<p lang="uk">` beside the `lang="en"` original), with no marker attribute — the
+  language tag is the whole signal. The layout byte cannot express this: `Both` is
+  stamped both by an untranslated chapter and by one that simply requested Normal. So
+  without this flag a chapter laid out before its translation was downloaded would stay
+  a cache **hit** afterwards and silently serve untranslated pages in a bilingual mode,
+  and symmetrically a translated cache would survive the translation being deleted.
+- **The language comparison** is `translationdetect::isTranslatedLangTag`
   (`lib/Epub/Epub/TranslationDetection.h`): primary subtag, ASCII case-insensitive,
-  with `-` and `_` both ending the subtag. A chapter carrying `lang="en-GB"` blocks in
-  an `en` book used to lay them out as translated text and no longer does, which changes
-  line breaking. That alone can leave the stamped byte unchanged (any other foreign block
-  keeps it `true`), so the version is what invalidates those files.
-- **`embeddedTranslation`** is added as a 1-byte `bool` immediately after
-  `translatedSource`. It is **not** part of the cache key. It records only the half of
-  `translatedSource` that is *immutable for a given book file* — "the chapter's own XHTML
-  embeds translated blocks" — so a load can recompute `translatedSource` as
-  `hasTranslatedSidecar() || embeddedTranslation`, one SD stat, instead of SAX-scanning the
-  chapter HTML on every chapter load (a cost that would fall on every reader, including
-  those who never enable a translation mode). A build that read the *sidecar* never looked at
-  the chapter HTML and stamps `false` without knowing; that state is recognisable as
-  `translatedSource == true && embeddedTranslation == false`, and a load that sees it with the
-  sidecar now gone treats the answer as unknown — it forces the (required) rebuild and lets the
-  rebuild re-scan, rather than memoizing a value that could understate the truth.
+  with `-` and `_` both ending the subtag, so `uk-UA` in an `en` book is translated
+  while `en-GB` is not. It is never class, style, colour or `dir` — those are one
+  plugin's presentation choices. A book with no `<dc:language>` answers "not
+  translated", which degrades to `PtLayout::Both` and renders the full text. The
+  predicate is shared with `ChapterHtmlSlimParser`, so the gate that enables a bilingual
+  layout and the engine that renders it can never disagree.
+- **`embeddedTranslation`** is a 1-byte `bool` immediately after `translatedSource`,
+  and is **not** part of the cache key. It records only the half of `translatedSource`
+  that is *immutable for a given book file* — "the chapter's own XHTML embeds translated
+  blocks" — so a load can recompute `translatedSource` as
+  `hasTranslatedSidecar() || embeddedTranslation`, one SD stat, instead of SAX-scanning
+  the chapter HTML on every chapter load (a cost that would fall on every reader,
+  including those who never enable a translation mode). A build that read the *sidecar*
+  never looked at the chapter HTML and stamps `false` without knowing; that state is
+  recognisable as `translatedSource == true && embeddedTranslation == false`, and a load
+  that sees it with the sidecar now gone treats the answer as unknown — it forces the
+  (required) rebuild and lets the rebuild re-scan, rather than memoizing a value that
+  could understate the truth.
 
-The invariant version 39 introduced is unchanged and now covers more ground: a chapter
-cached while it had no translation must never be served once it has one, and vice versa.
-Both transitions still invalidate — a downloaded or deleted sidecar flips the byte exactly
-as before, and an embedded translation is baked into the chapter HTML, so a book that
-gains one is a different file with a different cache directory.
+The invariant: a chapter cached while it had no translation must never be served once
+it has one, and vice versa. Both transitions invalidate — a downloaded or deleted
+sidecar flips the byte, and an embedded translation is baked into the chapter HTML, so
+a book that gains one is a different file with a different cache directory.
 
-### Version 40
+#### Ruby, block splits and the word style byte
 
-Version 40 adds a fifth `PtLayout` value and one header field. Either change alone
-would force the bump; together they also shift every field after the new one, which
-is exactly the failure mode the version 39 note below was written about.
+- **Native `<ruby>` / `<rt>`.** `TextBlock` serializes a per-word ruby annotation string
+  array immediately after the word arena (see the `TextBlock` pattern below). `<rp>`
+  fallback parentheses are skipped at parse time. The array is written unconditionally —
+  one length-prefixed `String` per word, empty for words without ruby — so every book
+  pays 4 bytes per word even with no ruby present.
+- **Closed-tag block splits.** A closing block tag starts a fresh text block, so a
+  closed block's style does not leak into following bare text.
+- **The ruby word-style bit is 128 (bit 7),** not upstream's `64`: `64` is this fork's
+  `TRANSLATED` bit (Pre-Translation). The reservation bit 7 previously carried for the
+  Tooltip display mode is retired — that flag was never written nor persisted. The word
+  style byte is now **full**: a further flag requires widening the persisted style (the
+  `TextBlock` arena stores `styles[]` as `uint8_t`) plus a version bump.
 
-- **`PtLayout` gains `4 = Interlinear`.** The Interlinear display mode no longer maps
-  to `Both`: it now has a layout of its own, so its pages genuinely differ and cannot
-  share a cache entry with Normal or Interleaved. The source flows full-width and
-  breaks exactly as it does under Original Only, and each sentence's translation is
-  emitted as its own `LineFontRole::Annotation` row directly *above* the source line
-  that sentence starts on. Because the byte is part of the cache key, adding a value
-  to it requires a version bump on its own (`lib/Epub/Epub/PtLayout.h`).
-- **`annotationFontId`** is added as an `s32` immediately after `translationFontId`.
-  It is the font the small annotation rows are laid out in (`0` = same as the body
-  font), resolved from `CrossPointSettings::getInterlinearAnnotationFontId()`. It is a
-  genuine layout input — it decides both how an annotation row wraps and how tall the
-  row is — so it belongs in the cache key for the same reason `translationFontId`
-  does, and it is normalized the same way: stamped as `0` whenever the (effective)
-  layout is anything other than `Interlinear`, since no other layout emits an
-  annotation row and therefore no line under `Both` / `OriginalOnly` /
-  `TranslationOnly` / `SideBySide` is ever measured in it. Without that
-  normalization, a future annotation-size setting would invalidate every cached
-  chapter of every mode. The lookup normalizes identically
-  (`Section::keyedAnnotationFontId`, applied at the header write, the lookup compare
-  and the id handed to the parser), so key and layout can never disagree. `0` is also
-  the graceful answer when the annotation face cannot cover the selected target
-  script: the rows still appear above their sentences, at body size.
-- **`LineFontRole::Annotation` is now actually emitted.** An annotation row is an
-  ordinary `PageLine` — nothing new is serialized per line or per page. It is
-  left-aligned, laid out at the *full* text measure with a hanging indent (the first
-  row's text-indent is the x of the sentence start, so continuation rows fall back to
-  the margin — **superseded by version 41, which always uses `text-indent = 0`**),
-  placed at `xPos` = the block's left inset, and stamped with the
-  original paragraph's index just as its source line is. Its height is
-  `getLineHeight(annotationFontId)`, which is what lets two type sizes tile edge to
-  edge on one page (see the per-line font role bullet under version 38). No sentence
-  metadata reaches disk: alignment is fully resolved before the page is written.
-  - **The indent is dropped, not clamped, for a sentence that starts very late.**
-    *(Superseded by version 41: there is no indent at all.)* A
-    first row needs a usable measure — `computeLineBreaks` force-hyphenates any word
-    wider than the width left to it — so a sentence beginning past 3/4 of the measure
-    gets `text-indent = 0` and its row sits at the margin. That is deliberate: a row
-    parked at the 3/4 limit would sit above words belonging to the *previous*
-    sentence and read as their translation, whereas a row at the margin reads as
-    "this whole line". Everything up to 3/4 is anchored exactly.
-  - **An RTL source paragraph is not annotated at all, and an RTL target is not
-    anchored.** *(Version 41: the second half is moot — nothing is anchored any more.)*
-    `extractLine` permutes a line into visual order whenever the block
-    resolves RTL *or* contains any RTL word, and the anchoring reads flat post-layout
-    word indices — so a source paragraph that is RTL, or that merely carries an inline
-    Hebrew/Arabic run, lays out as plain unannotated source. In the other direction, a
-    *target* language written right-to-left produces rows that resolve RTL themselves;
-    those get no `text-indent` (the engine only honours one on a naturally aligned
-    block) and are laid out at the full measure on their own natural margin, i.e.
-    flush right. Anchoring them would need an end-side first-line inset, which
-    `BlockStyle` cannot express, so v1 does not attempt it.
+#### Lazy image extraction
 
-The per-chapter auto-fallback applies to `Interlinear` too: a chapter with no
-committed translation is laid out and stamped as `Both`
-(`Section::effectiveLayout`), so an Interlinear cache entry only exists for a
-chapter that actually has a translation.
+`ImageBlock` serializes the book-internal source href (`srcPath`) after the cache path,
+so images are header-probed at build time and extracted from the EPUB on first render.
 
-### Version 39
+#### Side by Side
 
-Version 39 adds one field to the version 38 header:
+Side-by-Side lays original and translation paragraphs into two half-width columns
+instead of full-width sequential blocks. The two columns are emitted as lockstep
+`PageLine` rows — the left line at `xPos = 0` and the right line at `xPos = rightColX`,
+both sharing one `yPos` — reusing the existing per-line `xPos` field, so no new fields
+are added. An inline "not translated" marker is laid out after originals that have no
+paired translation. See [Side by Side](./pre-translation.md#side-by-side).
 
-- **`translatedSource`** is added as a 1-byte `bool` immediately after the
-  `PtLayout` byte. It records *which source HTML* the pages were laid out from:
-  `true` = the chapter's `.translated.html` sidecar, `false` = the plain
-  original chapter HTML. (Version 41 widens this to "content containing
-  translations, from either source" — see above.) The layout byte cannot express
-  this — `Both` is what an untranslated chapter stamps *and* what a chapter that
-  simply requested Normal stamps — so
-  without it a chapter laid out before its translation was downloaded would stay
-  a cache **hit** afterwards and silently serve untranslated pages in a
-  bilingual mode (and, symmetrically, a translated cache would survive the
-  translation being deleted). Both halves are compared on load.
+#### Two rules this history paid for
 
-The per-chapter auto-fallback keys on the layout too: a chapter with no
-committed translation is laid out and stamped as `Both`, which for an
-untranslated chapter is simply the plain original (see
-`Section::effectiveLayout`) — and its `translatedSource` is `false`, so the
-entry stops matching the moment a translation lands.
+1. **Never change the byte layout without changing the number, even if a mismatch check
+   "would catch it".** Two different header layouts were once written under the number
+   38 during development — first without `translatedSource`, then with it. That byte
+   sits in the *middle* of the header, so the earlier layout passes a version-38 gate
+   and then every field after the `PtLayout` byte is read shifted by one, including the
+   `pageCount` and LUT offsets, which are consumed *before* the parameter-mismatch check
+   could reject the entry. The check usually catches it, but it is not guaranteed to —
+   shifted bytes can compare equal. **Version 38 was never a stable layout and nothing
+   may claim to read it.** Any mid-header insertion makes a bump mandatory rather than
+   merely correct.
+2. **A pure layout change with no byte change still needs a bump,** because the version
+   *is* the cache key and nothing else in the key moved. A device holding the old
+   entries would otherwise serve the old pages forever. Note this invalidates every
+   cached chapter of every book for *every* layout, not just the one that changed — the
+   key is a single number, so the blast radius is always total. That is the accepted
+   cost: one background re-layout per book on next open.
 
-**Version 38 was never a stable layout and nothing may claim to read it.** The
-`translatedSource` byte was originally added *within* 38, so two different header
-layouts exist under that number: the earlier one without the byte, the later one
-with it. Because the byte sits in the middle of the header, an early-layout 38
-passes a version-38 gate and then every field after the `PtLayout` byte is read
-shifted by one — including the `pageCount` and LUT offsets, which are consumed
-before the parameter-mismatch check could reject the entry. Version 39 exists so
-that the shorter layout is rejected on its version number alone.
+### Earlier history — the fork's original 28–33 numbering
 
-### Version 38
+> **The "version 33" in this section is a different format from the version 33
+> above.** It is the fork's *original* 33 (per-block hyphenation), long superseded.
+> The number was reused when 34–41 were collapsed; these notes are kept for
+> archaeology only and describe formats no current firmware reads.
 
-Version 38 changes what the Pre-Translation byte in the header *means*, and adds
-one field:
-
-- **The header stores a layout, not a display mode.** The byte that held the raw
-  `translationDisplayMode` now holds the `PtLayout` that mode implies:
-  `0 = Both`, `1 = OriginalOnly`, `2 = TranslationOnly`, `3 = SideBySide` (see
-  `lib/Epub/Epub/PtLayout.h`; version 40 adds `4 = Interlinear`). Several display
-  modes produce byte-identical pages and now share one cache entry: Normal and
-  Interleaved both map to `Both` (Interlinear did too until version 40 gave it its
-  own value), and Original Only / Page Translation / Tooltip all map to
-  `OriginalOnly` (the overlay modes composite their translation at view time, so
-  their main flow is original-only). Switching between two modes that share a
-  layout is a cache hit only when `translationFontId` (below) also matches:
-  Normal and Interleaved share `Both`, but Interleaved can lay its translated
-  words out in a smaller font than Normal's, so the two are a cache hit only
-  while Interleaved's own Translation Size is "Same".
-  The byte occupies the same header slot as the old mode byte but is *not* the
-  same value space, so v37 files must be rejected rather than reinterpreted.
-- **`translationFontId`** is added as an `s32` immediately after `fontId`. It is
-  the font translated text is laid out in (`0` = same as the body font),
-  resolved from the *Interleaved* mode's own size setting; the Tooltip and Page
-  Translation sizes are separate settings, composited at view time, and never
-  reach this field. A distinct font changes word measurement and hence line
-  breaking, so it belongs in the cache key. It is stamped as `0` whenever the
-  (effective) layout is anything other than `Both` — `OriginalOnly`,
-  `TranslationOnly`, or `SideBySide`: `OriginalOnly` drops every translated word,
-  and `TranslationOnly` / `SideBySide` keep them but always lay them out in the
-  body font by design, so in all three no line is ever measured in the
-  translation font. Under `Both` the real id is always kept, including for a
-  chapter with no committed translation — `Section::effectiveLayout` maps that
-  case to `Both` too, and the chapter's own original HTML can still contain a
-  block whose `lang=` differs from the book's language (see per-line font role,
-  below), which IS laid out in this font when it is non-zero. The lookup
-  normalizes the same way, so the two can never disagree.
-- **Per-line font role.** `PageLine` serializes a `LineFontRole` byte
-  (`0 = Body`, `1 = Translation`, `2 = Annotation`) immediately after
-  `paragraphIdx`, so one page can mix the body font with smaller translated or
-  annotation text. The role is chosen at layout time, which is also when the
-  line was measured, so a cached page always redraws in the font it was
-  measured with. The renderer resolves the role through a `PageFontSet`
-  supplied by the app (`lib/Epub` stores roles, never font ids). A line is
-  tagged `Translation` only under the `Both` layout, and only when its
-  enclosing block is translated (a `lang=` mismatch against the book's primary
-  language — the same block-level flag per-block hyphenation already uses) and
-  `translationFontId` is non-zero (every mode but Interleaved stamps `0`, so
-  their pages are all-`Body`, unaffected by this bullet). `Annotation` was
-  reserved here and is emitted from version 40 on, under the `Interlinear`
-  layout only.
-
-The per-chapter auto-fallback keys on the layout too: a chapter with no
-translation in its source is laid out and stamped as `Both`, which for an
-untranslated chapter is simply the plain original (see
-`Section::effectiveLayout`). "No translation" spans both sources from version 41
-on — neither a `.translated.html` sidecar nor translations embedded in the
-chapter's own XHTML.
-
-### Version 37
-
-Version 37 is the second reconciliation of the two numbering lines. While this
-branch stood at 36, upstream `develop` had advanced its own line to its "v33",
-which bundles two cache-invalidating changes — both kept here:
-
-- **Native `<ruby>` / `<rt>`.** `TextBlock` now serializes a per-word ruby
-  annotation string array immediately after the word arena (see the `TextBlock`
-  pattern below). `<rp>` fallback parentheses are skipped at parse time. The
-  array is written unconditionally — one length-prefixed `String` per word, empty
-  for words without ruby — so every book pays 4 bytes per word even with no ruby
-  present.
-- **Closed-tag block splits.** A closing block tag now starts a fresh text block,
-  so a closed block's style no longer leaks into following bare text. This shifts
-  cached block boundaries for essentially every book.
-
-Version 37 also **renumbers the ruby word-style bit**. Upstream shipped
-`EpdFontFamily::RUBY_CONTINUE` as `64`, which is this branch's `TRANSLATED` bit
-(Pre-Translation). Ruby therefore moves to bit 7 (`128`), and the reservation
-that bit previously carried for the Tooltip display mode is retired — that flag
-was never written nor persisted by any code. The word style byte is now full: a
-further flag requires widening the persisted style (the `TextBlock` arena stores
-`styles[]` as `uint8_t`) plus another version bump.
-
-Because v37 rejects every cache written by either line, no stored style byte is
-ever reinterpreted under the new numbering. The merged format carries the
-Pre-Translation fields (v32–v35), the `ImageBlock` `srcPath` (upstream's "v32")
-**and** the per-word ruby strings (upstream's "v33").
-
-### Version 36
-
-Version 36 reconciles two lines that had independently numbered their own
-formats: this branch used 32–35 for the Pre-Translation fields (below), while
-upstream `develop` used its own "v32" for lazy image extraction — `ImageBlock`
-now serializes the book-internal source href (`srcPath`) after the cache path,
-so images are header-probed at build time and extracted from the EPUB on first
-render. The two "v32+" layouts are mutually unreadable, so v36 supersedes both:
-the merged format carries the Pre-Translation fields **and** the `srcPath`
-string, and the bump forces a rebuild of sections cached by either line.
-
-### Version 35
-
-Version 35 is binary-identical to version 34 in structure; it was bumped because
-Side-by-Side mode (`translationMode == 5`) now lays out original and translation
-paragraphs into two half-width columns instead of full-width sequential blocks.
-The two columns are emitted as lockstep `PageLine` rows — the left line at
-`xPos = 0` and the right line at `xPos = rightColX`, both sharing one `yPos` —
-reusing the existing per-line `xPos` field, so no new fields are added. A mode-5
-section cached under v34 carries an identical header cache key (`translationMode`
-is still `5`) and would otherwise be served with the old single-column layout, so
-the version bump is what forces those sections to rebuild. See
-[Side by Side](./pre-translation.md#side-by-side).
-
-### Version 34
-
-Version 34 is binary-identical to version 33 in layout; it was bumped because
-Side-by-Side mode now lays out an inline "not translated" marker after
-originals that have no paired translation, changing the cached line content
-for bilingual sections built by earlier versions.
-
-### Version 33
-
-Each file in `sections/*.bin` stores one laid-out spine section. The header is
-also the cache-busting key: if any layout-affecting setting differs from the
-current reader settings, the section is discarded and rebuilt.
+#### Original version 33
 
 Version 33 is binary-identical to version 32 in layout; it was bumped because
 per-block hyphenation changed the cached line breaks. Translated blocks (a
@@ -469,14 +423,17 @@ superscript, and subscript. The format also includes:
   on-disk order mirrors the in-RAM arena so the firmware reads a whole block
   payload with a single allocation and a single SD read
 
-ImHex pattern:
+### ImHex pattern
+
+Describes the **current** format (version 33 as defined above, not the original 33
+in the archaeology section).
 
 ```c++
 import std.mem;
 import std.string;
 import std.core;
 
-#define EXPECTED_VERSION 41
+#define EXPECTED_VERSION 33
 #define MAX_STRING_LENGTH 65535
 #define FOOTNOTE_NUMBER_LEN 32
 #define FOOTNOTE_HREF_LEN 96
@@ -561,7 +518,7 @@ struct TextBlock {
             u8 wordFocusBoundary[wordCount] [[comment("UTF-8 byte boundary between bold prefix and suffix")]];
         }
         char text[textBytes] [[comment("All words back to back, each NUL-terminated")]];
-        String rubyText[wordCount] [[comment("v37: per-word ruby annotation, empty when the word has none")]];
+        String rubyText[wordCount] [[comment("Per-word ruby annotation, empty when the word has none")]];
     }
 
     BlockStyle blockStyle;
@@ -569,7 +526,7 @@ struct TextBlock {
 
 struct ImageBlock {
     String imagePath;
-    String srcPath [[comment("v36: book-internal source href; extracted on first render")]];
+    String srcPath [[comment("Book-internal source href; extracted on first render")]];
     s16 width;
     s16 height;
 };
@@ -585,7 +542,7 @@ struct PageLine {
     s16 yPos;
     TextBlock block;
     s16 paragraphIdx [[comment("Pre-Translation: source paragraph index; -1 = unset")]];
-    LineFontRole fontRole [[comment("v38: which role's font this line draws in")]];
+    LineFontRole fontRole [[comment("Which role's font this line draws in")]];
 };
 
 struct PageImage {
@@ -652,8 +609,8 @@ struct SectionBin {
     }
 
     s32 fontId;
-    s32 translationFontId [[comment("v38: font translated text is laid out in; 0 = same as fontId")]];
-    s32 annotationFontId [[comment("v40: font the Interlinear annotation rows are laid out in; 0 = same as fontId; non-zero only under PtLayout::Interlinear")]];
+    s32 translationFontId [[comment("Font translated text is laid out in; 0 = same as fontId")]];
+    s32 annotationFontId [[comment("Font the Interlinear annotation rows are laid out in; 0 = same as fontId; non-zero only under PtLayout::Interlinear")]];
     float lineCompression;
     bool extraParagraphSpacing;
     u8 paragraphAlignment;
@@ -661,9 +618,9 @@ struct SectionBin {
     u16 viewportHeight;
     bool hyphenationEnabled;
     bool embeddedStyle;
-    PtLayout ptLayout [[comment("v38: Pre-Translation page layout (NOT the display mode); part of the cache key")]];
-    bool translatedSource [[comment("v41: laid out from content containing translations - a .translated.html sidecar OR translations embedded in the chapter's own XHTML (v39-v40: sidecar only); part of the cache key")]];
-    bool embeddedTranslation [[comment("v41: the chapter's own XHTML embeds translated blocks; a memo, NOT a cache key - lets a load recompute translatedSource with one sidecar stat instead of re-scanning the HTML. False also means 'this build read the sidecar and never looked'")]];
+    PtLayout ptLayout [[comment("Pre-Translation page layout (NOT the display mode); part of the cache key")]];
+    bool translatedSource [[comment("Laid out from content containing translations - a .translated.html sidecar OR translations embedded in the chapter's own XHTML; part of the cache key")]];
+    bool embeddedTranslation [[comment("The chapter's own XHTML embeds translated blocks; a memo, NOT a cache key - lets a load recompute translatedSource with one sidecar stat instead of re-scanning the HTML. False also means 'this build read the sidecar and never looked'")]];
     u8 imageRendering;
     bool focusReadingEnabled;
 
@@ -736,7 +693,7 @@ clean, complete write has finished. Consequences:
   `hasTranslatedSidecar()` is true, never from a `.part`.
 - That sidecar check answers "which file does the build parse", **not** "does this chapter
   have a translation". The latter is `Section::hasTranslation()`, which is also true for a
-  chapter whose translations are embedded in its own XHTML (see version 41 above); it is
+  chapter whose translations are embedded in its own XHTML (see version 33 above); it is
   what gates the display-mode fallback and what is stamped as `translatedSource`.
 - A leftover `.part` from an interrupted run is transient; `Section::clearCache()`
   reclaims it on the next `.bin` invalidation, while the completed final file is
@@ -753,9 +710,9 @@ when its paired translation arrives, lays both out at `colWidth` and emits them 
 `PageLine` rows: the left and right lines of each row share one `yPos`, and `yPos` advances
 one line-height per row (see [Side by Side](./pre-translation.md#side-by-side)). This rides
 entirely on the existing per-line `xPos` field, so the serialized `Page`/`PageLine` structure
-is unchanged; the layout difference is what forced the `SECTION_FILE_VERSION` bump to v35
-(the header cache key was identical across that change, since the Pre-Translation header byte
-kept the same value).
+is unchanged; the layout difference on its own is what forced a `SECTION_FILE_VERSION` bump
+when it landed (the header cache key was identical across that change, since the
+Pre-Translation header byte kept the same value).
 
 An original paragraph that has no paired translation renders full-width, with a short,
 dimmed `tr(STR_NO_TRANSLATION)` marker appended inline after its source text so the gap is

@@ -2348,9 +2348,9 @@ void ChapterHtmlSlimParser::buildAnnotationRows(const InterlinearAnnotation& ann
   // off, no indent (and a paragraph gap instead) when it is on.
   //
   // Nothing else is anchored: within a line the row starts where the source line starts, which is
-  // only legible because the sentence is guaranteed to start that line (setForcedLineBreaks). Up to
-  // v40 the indent was the sentence's x offset INSIDE its line, which put a fragment of translation
-  // out at the right margin whenever a sentence began late; see docs/file-formats.md.
+  // only legible because the sentence is guaranteed to start that line (setForcedLineBreaks). The
+  // earlier scheme made the indent the sentence's x offset INSIDE its line, which put a fragment of
+  // translation out at the right margin whenever a sentence began late; see docs/file-formats.md.
   //
   // textIndentDefined MUST stay true. With it false and extraParagraphSpacing false,
   // resolveFirstLineIndent falls through to its three-space default and every annotation's first row
@@ -2464,7 +2464,7 @@ void ChapterHtmlSlimParser::emitInterlinearRow(const std::shared_ptr<TextBlock>&
 //
 // The sentence-per-line rule is what makes the pairing legible, and it is why the pairing must run
 // BEFORE layout: the sentence starts are fed into line breaking as hard constraints
-// (ParsedText::setForcedLineBreaks) instead of being discovered afterwards. Up to v40 the source
+// (ParsedText::setForcedLineBreaks) instead of being discovered afterwards. Previously the source
 // broke with no knowledge of sentences and the row was anchored at the x offset of the sentence's
 // first word, which stacked several rows over one line, left other lines bare, and pushed a
 // translation fragment out to the right margin whenever a sentence started late.
@@ -2624,7 +2624,7 @@ void ChapterHtmlSlimParser::renderInterlinear(std::unique_ptr<ParsedText> origBl
     // own line. It stays a loop because an UNACHIEVABLE forced break (a sentence opening on a
     // continuation token, which no line breaker can honour) is reported against the line that merely
     // contains it, so two annotations can still land on one line; that sentence degrades to the
-    // pre-v41 behaviour, minus the misleading x anchor. Annotation blocks carry no ruby, so their own
+    // earlier behaviour, minus the misleading x anchor. Annotation blocks carry no ruby, so their own
     // shift is zero and their pitch is just the 8pt line height.
     //
     // `<=` and not `==` only matters on one degraded path: extractLine DROPS a line whose TextBlock

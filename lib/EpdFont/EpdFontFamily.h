@@ -22,8 +22,8 @@ class EpdFontFamily {
                           // (ParsedText), persisted in the section.bin word style byte, read by TextBlock and
                           // ChapterHtmlSlimParser to keep ruby groups together. Upstream introduced this as 64,
                           // which collides with TRANSLATED on this line; renumbered to bit 7 in the section.bin
-                          // v37 merge (v37 rejects every cache written by either line, so no stored style byte
-                          // is ever reinterpreted under the new numbering). Bit 7 had been reserved for the
+                          // upstream merge (which rejects every cache written by either line, so no stored style
+                          // byte is ever reinterpreted under the new numbering). Bit 7 had been reserved for the
                           // Tooltip display mode (PT_TOOLTIP), but that flag was never set nor persisted
                           // anywhere -- the tooltip renders the page original-only and surfaces translations
                           // through an at-view popup -- so the reservation is retired in favor of ruby. The
