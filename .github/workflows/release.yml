@@ -2,7 +2,10 @@ name: Compile Release
 on:
   push:
     tags:
-      - '*'
+      - 'v*'
+
+permissions:
+  contents: write
 
 jobs:
   build-release:
@@ -66,6 +69,23 @@ jobs:
         with:
           name: CrossLingua-${{ github.ref_name }}
           path: |
+            .pio/build/gh_release/bootloader.bin
+            .pio/build/gh_release/firmware.bin
+            .pio/build/gh_release/firmware.elf
+            .pio/build/gh_release/firmware.map
+            .pio/build/gh_release/partitions.bin
+            dist/EdsLab-sdcard-font.zip
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: CrossLingua ${{ github.ref_name }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          make_latest: true
+          fail_on_unmatched_files: true
+          files: |
             .pio/build/gh_release/bootloader.bin
             .pio/build/gh_release/firmware.bin
             .pio/build/gh_release/firmware.elf
