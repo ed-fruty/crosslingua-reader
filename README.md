@@ -126,13 +126,18 @@ sentence stepping, choose whether the control **loops on the page** or
 **turns the page and continues**, and set translation text to the **Same** or
 a **Smaller** size.
 
-<p align="center">
-  <img src="./docs/images/crosslingua/tooltip-landscape.jpg" width="640" alt="CrossLingua Tooltip mode"/>
-</p>
-
-<p align="center">
-  <img src="./docs/images/crosslingua/tooltip-portrait.jpg" width="420" alt="CrossLingua Tooltip mode in portrait orientation"/>
-</p>
+<table>
+  <tr>
+    <td align="center">
+      <img src="./docs/images/crosslingua/tooltip-landscape.jpg" alt="CrossLingua Tooltip mode in landscape orientation"/><br/>
+      <sub>Tooltip in landscape orientation.</sub>
+    </td>
+    <td align="center">
+      <img src="./docs/images/crosslingua/tooltip-portrait.jpg" alt="CrossLingua Tooltip mode in portrait orientation"/><br/>
+      <sub>Tooltip in portrait orientation.</sub>
+    </td>
+  </tr>
+</table>
 
 ### Page Translation
 
