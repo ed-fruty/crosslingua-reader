@@ -139,28 +139,31 @@ enum class BootResume : uint8_t {
 static bool deepSleepInProgress = false;
 
 // Pre-Translation: map the display mode + shade sub-setting to the renderer's 3-level gray value
-// for words carrying the per-word EpdFontFamily::TRANSLATED bit. Interleaved dims translated text
-// and the shade picks how far (SHADE_DIMMED->1, SHADE_DIMMED_LIGHT->2).
+// for words carrying the per-word EpdFontFamily::TRANSLATED bit. INTERLEAVED, and only Interleaved,
+// dims translated text this way, and the shade picks how far (SHADE_DIMMED->1,
+// SHADE_DIMMED_LIGHT->2). Every other mode draws in normal black (0), including the overlay modes
+// which render original-only in the main flow.
 //
-// Side by Side returns a FIXED 1 for exactly one piece of text: the "not translated" marker that
-// appendSideBySideNoTranslationMarkerIfUnpaired appends, word by word, to an unpaired original.
-// That marker is the one thing in this mode whose colour cannot come from a line role — it shares
-// its line with the source text it annotates — so the per-word bit is its only vehicle, and it was
-// rendering SOLID BLACK because this function answered 0 for the mode, contradicting both its own
-// "dim marker" comment and the fork behaviour it ports. It is deliberately NOT the Side by Side
-// colour sub-setting: the marker is editorial furniture that must stay visibly secondary even when
-// the user sets the translation column to Black. Nothing else in a Side by Side page takes this
-// value — the translation column carries the bit too, but its LineFontRole::Translation ink
-// overrides the bit on every glyph (GfxRenderer::ForcedInkScope), including with Black. The one
-// exception is a section.bin cached by a build older than that role tag: its translation column is
-// stored as Body, takes no ink, and so picks this value up until the chapter is next re-laid out.
+// SIDE BY SIDE MUST STAY 0, and the reason is worth keeping: this value is MODE-wide, while the
+// TRANSLATED bit it gates is per-word and is set on far more than the translated column. Under
+// Side by Side a non-zero answer here leaks onto, at least:
+//   * a stale section.bin — the translation column only became LineFontRole::Translation in this
+//     release and the colour is deliberately NOT in the cache key, so every chapter cached before
+//     it is stored as Body, takes no role ink, and falls through to this value;
+//   * the SOURCE column of any book whose own markup carries an inline foreign-language run
+//     (<i lang="la"> inside an untagged <p>), which startElement tags TRANSLATED word by word —
+//     colouring the source column is the one thing this feature must never do;
+//   * an unpaired translation paragraph (makePagesTableMode's full-width fallback) and the
+//     mid-block soft-flush escape, both of which emit Body lines full of TRANSLATED words.
+// None of those is reachable by a line role, so none of them can be excluded here. The mode's
+// colour therefore comes from ONE place only — PageFontSet's per-role ink, applied at the line
+// boundary — and this function stays out of it. The "not translated" marker, the one piece of text
+// that genuinely wanted a per-word vehicle, is set apart by ITALICS instead; see
+// appendSideBySideNoTranslationMarkerIfUnpaired().
 //
-// Every other mode draws in normal black (0), including the overlay modes which render
-// original-only in the main flow. The shade is DRAWING-only, which is why it is read here (every
-// tick) and not in the section cache key. constexpr keeps this a compile-time lookup with zero
-// runtime/flash overhead.
+// The shade is DRAWING-only, which is why it is read here (every tick) and not in the section cache
+// key. constexpr keeps this a compile-time lookup with zero runtime/flash overhead.
 static constexpr uint8_t modeToGray(uint8_t mode, uint8_t shade) {
-  if (mode == CrossPointSettings::PT_SIDE_BY_SIDE) return 1;
   return (mode != CrossPointSettings::PT_INTERLEAVED) ? 0 : (shade == CrossPointSettings::SHADE_DIMMED_LIGHT) ? 2 : 1;
 }
 

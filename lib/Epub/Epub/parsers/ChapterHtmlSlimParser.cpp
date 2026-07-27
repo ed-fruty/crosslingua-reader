@@ -291,8 +291,14 @@ bool ChapterHtmlSlimParser::wordIsFiltered() const {
 //                  pairing), so nothing that reaches THIS function is tagged. The paired path does
 //                  tag its translation column LineFontRole::Translation, but for COLOUR, not for a
 //                  font — the translation slot is 0 under this mode, so the role resolves back to
-//                  the body font (see renderSideBySide). Only the soft-flush escape reaches here
-//                  under SideBySide, and it is main-flow text: Body.
+//                  the body font (see renderSideBySide). Two paths reach here under SideBySide and
+//                  both are main-flow text, hence Body: the soft-flush escape, and the full-width
+//                  fallback makePagesTableMode takes for a translation with no original to pair
+//                  with. KNOWN GAP, benign: translated text arriving either way is outside the
+//                  Translation Colour row's reach and draws black like the source. Black is the
+//                  row's own default, so it is never a colour the user did not pick; tagging these
+//                  Translation would close it (the font resolves to Body either way) at the cost of
+//                  making a rare fallback path carry a role its comment says it must not.
 //   Interlinear    the translated text does NOT flow inline at all: renderInterlinear re-emits it
 //                  into its own small rows tagged LineFontRole::Annotation, which resolve through the
 //                  annotation slot instead. Source lines therefore stay Body. The translated block
@@ -1786,7 +1792,7 @@ bool ChapterHtmlSlimParser::finishParse() {
     // Pre-Translation: flush the trailing outermost block through the pairing builder that owns this
     // layout. A trailing original is buffered (not laid out) there, so drain any block still buffered
     // — the last original of the chapter — full-width via flushBufferedOriginal (which appends the
-    // dim "not translated" marker under SideBySide only; Interlinear just shows the source).
+    // italic "not translated" marker under SideBySide only; Interlinear just shows the source).
     if (ptLayout == PtLayout::SideBySide || ptLayout == PtLayout::Interlinear) {
       if (ptLayout == PtLayout::SideBySide) {
         makePagesTableMode();
@@ -2006,7 +2012,7 @@ void ChapterHtmlSlimParser::makePagesTableMode() {
     }
   } else {
     // Original paragraph: if a previous original is still buffered it never got a translation,
-    // so lay it out full-width (with the dim marker) before buffering this one for pairing.
+    // so lay it out full-width (with the italic marker) before buffering this one for pairing.
     if (bufferedOriginalBlock) {
       flushBufferedOriginal();
     }
@@ -2023,7 +2029,7 @@ void ChapterHtmlSlimParser::makePagesTableMode() {
 }
 
 // Pre-Translation (SideBySide, mode 5): lay out a buffered original that never received a paired
-// translation. It renders full-width (via makePages) with the dim "not translated" marker inline.
+// translation. It renders full-width (via makePages) with the italic "not translated" marker inline.
 void ChapterHtmlSlimParser::flushBufferedOriginal() {
   if (!bufferedOriginalBlock) return;
 
@@ -2222,20 +2228,29 @@ void ChapterHtmlSlimParser::appendSideBySideNoTranslationMarkerIfUnpaired() {
   if (currentBlockParagraphIdx < 0) return;
   if (!currentTextBlock || currentTextBlock->isEmpty()) return;
 
-  // Option C (unpaired original): append a short dim "not translated" marker inline after the
-  // source text so the gap is visible but unobtrusive. RAM-cheap: a few extra addWord() calls on
-  // the block already being flushed, no new buffers. Dimming uses the same per-word vehicle as
-  // translated text in v2 — the EpdFontFamily::TRANSLATED style bit, which the renderer maps to
-  // the configured translation gray level (see GfxRenderer renderChar*). This is v2's equivalent
-  // of the fork's grayLevel=1 marker, and it is why modeToGray() (src/main.cpp) answers a fixed 1
-  // under this mode: the marker shares its LINE with the source text, so a line role cannot reach
-  // it and the per-word bit is the only vehicle it has.
+  // Option C (unpaired original): append a short "not translated" marker inline after the source
+  // text so the gap is visible but unobtrusive. RAM-cheap: a few extra addWord() calls on the block
+  // already being flushed, no new buffers.
+  //
+  // ITALICS, not a gray level. The fork dimmed this marker and v2 first copied that by tagging it
+  // EpdFontFamily::TRANSLATED, the per-word bit the renderer maps through modeToGray(). That does
+  // not work here, in either direction:
+  //   * the bit is a MODE-wide switch. Turning it on for Side by Side also greys the source column
+  //     of any book with inline lang= runs, every unpaired translation paragraph, the soft-flush
+  //     escape, and the translation column of every chapter cached before it had a line role — see
+  //     the leak list on modeToGray() in src/main.cpp. The marker cannot be singled out.
+  //   * a LINE role, the vehicle the two Translation Colour sub-settings use, cannot reach it
+  //     either: the marker deliberately shares its line with the source text it annotates.
+  // Italic is per-word, is set nowhere else on this path, needs no grayscale pass (so it survives
+  // Text Anti-Aliasing being off, which grey does not), and reads as editorial furniture in every
+  // colour setting. EpdFontFamily::getFont() falls back to the regular face when a family ships no
+  // italic, which is exactly the old appearance rather than a wrong one.
   const char* marker = tr(STR_NO_TRANSLATION);
   std::string markerWord;
   for (const char* p = marker;; ++p) {
     if (*p == ' ' || *p == '\0') {
       if (!markerWord.empty()) {
-        currentTextBlock->addWord(markerWord, EpdFontFamily::TRANSLATED);
+        currentTextBlock->addWord(markerWord, EpdFontFamily::ITALIC);
         markerWord.clear();
       }
       if (*p == '\0') break;

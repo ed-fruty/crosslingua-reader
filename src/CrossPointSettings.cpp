@@ -478,8 +478,9 @@ bool CrossPointSettings::interlinearAnnotationScriptSupported() const {
 }
 
 uint8_t CrossPointSettings::getInterlinearAnnotationInk() const {
-  // Interlinear only. Under every other mode the annotation slot is unused (or, for the SideBySide
-  // "not translated" marker, is deliberately left to the per-word path), so inherit.
+  // Interlinear only; no other mode emits a LineFontRole::Annotation line, so inherit. (Side by
+  // Side's "not translated" marker is editorial furniture too, but it is inline WORDS on a source
+  // line, not an annotation line -- it is set apart by italics, not by ink.)
   if (translationDisplayMode != PT_INTERLINEAR) return PageFontSet::INK_INHERIT;
   return interlinearAnnotationShade;  // LINGUA_* values ARE the renderer's ink levels
 }
@@ -490,6 +491,10 @@ uint8_t CrossPointSettings::getSideBySideTranslationInk() const {
   // colours them through the per-word TRANSLATED bit and its own translationShade; handing it an
   // ink here would override that path and silently take over Interleaved's colour row.
   if (translationDisplayMode != PT_SIDE_BY_SIDE) return PageFontSet::INK_INHERIT;
+  // Reaches the PAIRED translation column and nothing else, because that is the only thing tagged
+  // LineFontRole::Translation under this layout. Translated text that escapes the pairing -- an
+  // unpaired translation paragraph, or a block big enough to trip the mid-block soft flush -- is
+  // main-flow Body and stays black; see currentLineRole() in ChapterHtmlSlimParser.
   return sideBySideTranslationShade;
 }
 

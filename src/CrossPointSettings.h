@@ -222,9 +222,17 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // the text is separated by position, so Black is meaningful and is the default.
   //
   // The VALUES ARE the renderer's ink levels (0/1/2), so the resolvers below hand them straight to
-  // PageFontSet without a mapping table.
+  // PageFontSet without a mapping table. That coupling is append-safe for PERSISTENCE but not for
+  // RENDERING: renderCharImpl's chain tests 0, 1 and 2 explicitly and has no else, so a fourth
+  // enumerator would draw nothing at all rather than degrade. A new shade needs a renderer level
+  // first.
   // DRAWING ONLY: applied per-line at render time through LineFontRole, never a layout input, so it
   // must NOT enter ReaderRenderSpec, section.bin or the reader's re-layout gate.
+  // NEEDS THE GRAYSCALE PASSES: levels 1 and 2 are painted by the LSB/MSB plane passes, which
+  // renderContents() runs only when Text Anti-Aliasing is on (needsTextGrayscale). With it off all
+  // three levels take the same BW full-coverage fallback and the row has NO visible effect — not a
+  // degradation to black, an exact no-op. Pre-existing for Interleaved's shade; deliberately not
+  // guarded in the UI, because the setting is still correct and applies the moment AA is turned on.
   // VALUE STABILITY: persisted as an integer; append only, never renumber.
   enum LINGUA_SHADE : uint8_t {
     LINGUA_BLACK = 0,

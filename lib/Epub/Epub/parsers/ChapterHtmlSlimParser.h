@@ -237,14 +237,16 @@ class ChapterHtmlSlimParser {
   // and colWidth+gapWidth respectively). The arguments are source-then-translation, NOT
   // left-then-right — the footnote drain and the block style follow the source stream, so passing
   // them the other way round would attribute the source's footnotes to the translation.
-  // flushBufferedOriginal lays an unpaired original full-width with the dim "not translated" marker.
+  // flushBufferedOriginal lays an unpaired original full-width with the italic "not translated"
+  // marker.
   void makePagesTableMode();
   void flushBufferedOriginal();
   void renderSideBySide(std::unique_ptr<ParsedText> sourceBlock, std::unique_ptr<ParsedText> transBlock);
   // Pre-Translation (PtLayout::SideBySide): if the outermost block currently held in
   // currentTextBlock is an ORIGINAL paragraph with no translation paired to it, append a
-  // short dim "not translated" marker inline after its source text before it lays out, so
-  // the missing translation is visible but unobtrusive. No-op outside SideBySide mode.
+  // short ITALIC "not translated" marker inline after its source text before it lays out, so
+  // the missing translation is visible but unobtrusive. Italic rather than a gray level because no
+  // per-word gray vehicle can be confined to this marker; see the body. No-op outside SideBySide.
   void appendSideBySideNoTranslationMarkerIfUnpaired();
   // Pre-Translation (PtLayout::Interlinear). Same buffering shape as SideBySide --
   // makePagesInterlinearMode holds an original until its translation arrives -- but the pair is
