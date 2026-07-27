@@ -639,10 +639,26 @@ void TooltipOverlay::preparePage(const Page& page) {
     while (!nk.empty() && nk.back() == ' ') nk.pop_back();
   }
 
+  // The page sentences that carry matchable text, in order. A sentence whose key is EMPTY has none:
+  // sentenceKey drops single-character punctuation words, so a scene-break ornament paragraph ("*",
+  // "◆") keys to nothing. Cutting the page at paragraph edges now keeps such a paragraph as a page
+  // sentence of its own instead of folding it into a neighbour, so it has to be excluded from the
+  // gap fill as well as from the match — otherwise it inherits a NEIGHBOUR's translation and becomes
+  // a navigation step that underlines a stray glyph. Left unfilled, its translation stays empty and
+  // groupTranslationSteps drops it from the step list: no step, no underline.
+  //
+  // The fill must still CHAIN ACROSS it, which is why this is a list of the keyed sentences rather
+  // than a skip flag: the passes below take each keyed sentence's keyed neighbour. On a page with no
+  // keyless sentence — every page of the sample book — this is 0,1,2,… and the two passes are
+  // exactly the neighbour fills they have always been.
+  uint8_t keyed[MAX_SENTENCES];
+  int keyedCount = 0;
+
   // Forward pass: match by key.
   for (int s = 0; s < splits.count; s++) {
     std::string pk = sentenceKey(origWordPtrs, splits.spans[s].startWord, splits.spans[s].endWord);
     if (pk.empty()) continue;
+    if (keyedCount < MAX_SENTENCES) keyed[keyedCount++] = static_cast<uint8_t>(s);
     std::string np;
     for (char c : pk) {
       if (c == '.') continue;
@@ -677,22 +693,24 @@ void TooltipOverlay::preparePage(const Page& page) {
     }
   }
 
-  // Gap fill: infer unmatched sentences from neighbors.
-  // Backward: if s+1 matched at idx N, s gets idx N-1.
-  for (int s = splits.count - 2; s >= 0; s--) {
+  // Gap fill: infer unmatched sentences from their KEYED neighbors (see `keyed` above).
+  // Backward: if the next keyed sentence matched at idx N, this one gets idx N-1.
+  for (int k = keyedCount - 2; k >= 0; k--) {
+    const int s = keyed[k], next = keyed[k + 1];
     if (matchedIdx[s] >= 0) continue;
-    if (matchedIdx[s + 1] > 0) {
-      int idx = matchedIdx[s + 1] - 1;
+    if (matchedIdx[next] > 0) {
+      int idx = matchedIdx[next] - 1;
       sentenceTranslations[s] = index[idx].translation;
       matchedIdx[s] = idx;
       matched++;
     }
   }
-  // Forward: if s-1 matched at idx N, s gets idx N+1.
-  for (int s = 1; s < splits.count; s++) {
+  // Forward: if the previous keyed sentence matched at idx N, this one gets idx N+1.
+  for (int k = 1; k < keyedCount; k++) {
+    const int s = keyed[k], prev = keyed[k - 1];
     if (matchedIdx[s] >= 0) continue;
-    if (matchedIdx[s - 1] >= 0 && matchedIdx[s - 1] + 1 < (int)index.size()) {
-      int idx = matchedIdx[s - 1] + 1;
+    if (matchedIdx[prev] >= 0 && matchedIdx[prev] + 1 < (int)index.size()) {
+      int idx = matchedIdx[prev] + 1;
       sentenceTranslations[s] = index[idx].translation;
       matchedIdx[s] = idx;
       matched++;
