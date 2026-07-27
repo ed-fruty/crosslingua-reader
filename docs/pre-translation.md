@@ -96,8 +96,6 @@ The reader shows only the original text on each page. **Long-press either
 side button** to bring up an overlay with the translations of the
 paragraphs visible on the current page.
 
-<img src="./images/crosslingua/page-translation.jpg" height="500" alt="CrossLingua Page Translation mode overlay" />
-
 *Long-press to open, side buttons scroll, Back to close.*
 
 In Page Translation mode, when a paragraph spans page boundaries (starts on one page
@@ -114,6 +112,8 @@ small overlay. Sentence stepping can use either the front or side button pair.
 At a page boundary it can either loop within the current page or turn the page
 and continue. Translation text can use the same size as the book or one step
 smaller.
+
+<img src="./images/crosslingua/tooltip-portrait.jpg" height="500" alt="CrossLingua Tooltip mode in portrait orientation" />
 
 ### Interlinear
 

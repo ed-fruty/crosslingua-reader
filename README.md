@@ -5,8 +5,9 @@
 
 CrossLingua keeps the capable, open-source CrossPoint reading experience and
 builds a complete bilingual workflow around it: translate an EPUB directly on
-the device or prepare it in Calibre, then choose how much of each language you
-want to see.
+the device or prepare it with the
+[Ebook Translator Calibre plugin](https://github.com/bookfere/Ebook-Translator-Calibre-Plugin),
+then choose how much of each language you want to see.
 
 **Runs on:** ESP32-C3-based Xteink [X4](https://www.xteink.com/products/xteink-x4)
 and [X3](https://www.xteink.com/products/xteink-x3).
@@ -33,7 +34,7 @@ and [X3](https://www.xteink.com/products/xteink-x3).
 
 ## What makes CrossLingua different?
 
-### Lingua: bilingual reading built into the reader
+## Lingua: bilingual reading built into the reader
 
 Lingua can translate the current chapter or an entire EPUB over Wi-Fi. The
 result is cached on the SD card, so after translation the book can be read
@@ -42,20 +43,24 @@ The original EPUB is never modified.
 
 CrossLingua also recognizes translations embedded in an EPUB as
 language-tagged paragraphs. That makes the same reading modes available for
-bilingual books prepared outside the device, including books produced with a
-Calibre translation workflow.
+bilingual books prepared outside the device, including books produced with the
+[Ebook Translator Calibre plugin](https://github.com/bookfere/Ebook-Translator-Calibre-Plugin).
 
-#### Two translation workflows
+### Two translation workflows
 
 - **On the device:** choose the source and target languages, translate one
   chapter or the whole book, and keep the generated bilingual copy in the
-  book's SD-card cache.
-- **With Calibre:** prepare a bilingual EPUB with a translation plugin and
-  transfer it to the reader. CrossLingua detects its language-tagged
+  book's SD-card cache. A single chapter usually takes **1–3 minutes**. A full
+  book usually takes **10–30 minutes**. Actual time depends on your Wi-Fi
+  connection, translation-engine availability, the amount of text, and similar
+  conditions.
+- **With Calibre:** prepare a bilingual EPUB with the
+  [Ebook Translator plugin](https://github.com/bookfere/Ebook-Translator-Calibre-Plugin)
+  and transfer it to the reader. CrossLingua detects its language-tagged
   translation paragraphs and applies the same Lingua modes without translating
   the book again.
 
-#### Translation engines
+### Translation engines
 
 | Engine | API key | Notes |
 |---|---:|---|
@@ -73,12 +78,12 @@ Calibre translation workflow.
 > withdrawn by their providers. Text is sent to the selected provider only
 > while a translation is being created.
 
-### Eight ways to read
+## Eight ways to read
 
 The same translated book can be viewed in any of these modes. Mode-specific
 options appear directly below the active mode in the **Lingua** menu.
 
-#### Interlinear
+### Interlinear
 
 Compact translation annotations sit above the source lines they belong to.
 This keeps both languages in one reading flow without duplicating full
@@ -89,7 +94,7 @@ paragraph blocks. The annotation colour can be set to **Black**, **Grey**, or
   <img src="./docs/images/crosslingua/interlinear.jpg" width="420" alt="CrossLingua Interlinear mode"/>
 </p>
 
-#### Side by Side
+### Side by Side
 
 The source and translation are laid out as synchronized left and right
 columns. Only the translation column's colour is configurable: **Black**,
@@ -107,13 +112,13 @@ orientations.
   </tr>
 </table>
 
-#### Interleaved
+### Interleaved
 
 Original and translated paragraphs alternate in the normal page flow.
 Translations can use **Dimmed** or **Dimmed Light** ink and either the
 **Same** or a **Smaller** text size.
 
-#### Tooltip
+### Tooltip
 
 Read the uncluttered original page and reveal one sentence translation at a
 time in a small overlay. Choose the **front** or **side** button pair for
@@ -125,49 +130,62 @@ a **Smaller** size.
   <img src="./docs/images/crosslingua/tooltip-landscape.jpg" width="640" alt="CrossLingua Tooltip mode"/>
 </p>
 
-#### Page Translation
+<p align="center">
+  <img src="./docs/images/crosslingua/tooltip-portrait.jpg" width="420" alt="CrossLingua Tooltip mode in portrait orientation"/>
+</p>
+
+### Page Translation
 
 Keep the original page visible and open a larger translation overlay for the
 text on that page. Choose the **front** or **side** buttons for the overlay
 controls and use the **Same** or a **Smaller** translation size.
 
-<p align="center">
-  <img src="./docs/images/crosslingua/page-translation.jpg" width="420" alt="CrossLingua Page Translation mode"/>
-</p>
-
-#### Original Only
+### Original Only
 
 Show only the source-language text. This is useful for immersion reading
 while keeping translations available for a quick switch to Tooltip or Page
 Translation.
 
-#### Translation Only
+### Translation Only
 
 Show only the translated text as a clean monolingual book.
 
-#### Normal
+### Normal
 
 Render the source and translation together in the EPUB's normal flow, using
 the same text colour. This is the neutral compatibility mode for already
 bilingual EPUBs.
 
-### Bookshelf with cover previews
+## Bookshelf with cover previews
 
 **Bookshelf** is a visual alternative to the file browser. It renders a 3×3
 grid, generates and caches EPUB cover thumbnails in the background, preserves
 folder navigation, and lets you open a book directly from its cover.
 
-<p align="center">
-  <img src="./docs/images/crosslingua/bookshelf.jpg" width="420" alt="CrossLingua Bookshelf"/>
-</p>
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <img src="./docs/images/crosslingua/bookshelf-folders.jpg" alt="CrossLingua Bookshelf series and folder navigation"/><br/>
+      <sub>Organize the library into series and folders.</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="./docs/images/crosslingua/bookshelf-series.jpg" alt="A complete Mistborn series in CrossLingua Bookshelf"/><br/>
+      <sub>Browse a complete series by its covers.</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="./docs/images/crosslingua/bookshelf.jpg" alt="CrossLingua Bookshelf loading and caching cover previews"/><br/>
+      <sub>Cover previews are generated and cached in the background.</sub>
+    </td>
+  </tr>
+</table>
 
-### EdsLab as the default reading font
+## A custom font made for CrossLingua
 
-CrossLingua replaces the built-in Noto Serif slot with **EdsLab**, a slab
-serif chosen for comfortable e-ink reading and genuine Ukrainian Cyrillic
-coverage (`і`, `ї`, `є`, `ґ`). Noto Sans remains available, and custom
-`.cpfont` families can still be installed from the SD card. See
-[SD-card fonts](./docs/sd-card-fonts.md).
+We developed **EdsLab**, a custom reading font created specifically for
+CrossLingua and comfortable bilingual reading on an e-ink screen. It is the
+default font, but you are not locked into it: custom `.cpfont` families can
+still be installed from the SD card. See
+[Custom SD-card fonts](./docs/sd-card-fonts.md).
 
 ## Everything inherited from CrossPoint
 
@@ -193,23 +211,14 @@ they are planned.
 ## USB-locked devices (Xteink Unlocker)
 
 Some Xteink units purchased from third-party stores (e.g. AliExpress) ship with
-USB flashing locked from the factory. The Xteink Unlocker at
-https://crosspointreader.com/#unlock-tool does **not** currently list
-CrossLingua as an officially supported firmware.
+USB flashing locked from the factory. If your device is locked, use the Xteink
+Unlocker at https://crosspointreader.com/#unlock-tool before flashing.
 
 **You do not need this tool if you bought your device directly from xteink.com.** Those units are not locked.
 
 **Not sure if your device is locked?** Power it on, connect the USB-C cable, and try flashing via the web flasher first (see
 [Install firmware](#install-firmware) below). If the browser's serial device picker does not show your device, try a different
 USB port or browser before assuming the device is locked. Only reach for the unlocker if the device still doesn't appear.
-
-> ### ⚠️ WARNING: READ THIS BEFORE USING THE UNLOCKER ⚠️
-> 
-> **The only officially supported firmwares in the unlock tool are CrossPoint and CrossInk.**
-> 
-> Flashing any other firmware on a USB-locked device may **permanently brick the device** or leave it **permanently
-> stuck on that firmware with no recovery path**. Once USB flashing is re-locked, your only way back is via OTA, and if
-> the firmware you flashed doesn't support OTA, **there is no way out**.
 
 ## Install firmware
 
@@ -407,32 +416,6 @@ Contributions are welcome. If you're new to the codebase, start with the
 work, see its [ideas discussion board](https://github.com/crosspoint-reader/crosspoint-reader/discussions/categories/ideas).
 
 Everyone here is a volunteer, so please be respectful and patient. For governance and community expectations, see [GOVERNANCE.md](./GOVERNANCE.md).
-
----
-
-## Community forks
-
-One of the best things about open source is that anyone can take the code in a different direction. If you need something outside CrossPoint's [scope](./SCOPE.md), check out the community forks:
-
-- [CrossInk](https://github.com/uxjulia/CrossInk) — Typography and reading tracking: Bionic Reading (bolds word stems to create fixation points), guide dots between words, improved paragraph indents, and replaces the default fonts with ChareInk/Lexend/Bitter.
-
-- [papyrix-reader](https://github.com/bigbag/papyrix-reader) — Adds FB2 and MD format support. Actively maintained with Arabic script support. Custom themes via SD card.
-
-- ~~[crosspet](https://github.com/trilwu/crosspet) — A Vietnamese fork that adds a Tamagotchi-style virtual chicken that grows based on your reading milestones (pages read, streaks, care). Also: Flashcards, Weather, Pomodoro timer, and mini-games.~~ (Unmaintained)
-
-- [crosspoint-reader-cjk](https://github.com/aBER0724/crosspoint-reader-cjk) — Purpose-built for Chinese, Japanese, and Korean reading.
-
-- [inx](https://github.com/obijuankenobiii/inx) — Completely reimagines the user interface with tabbed navigation.
-
-- ~~[PlusPoint](https://github.com/ngxson/pluspoint-reader) — custom JS apps support.~~ (Unmaintained)
-
-- [crosspoint-reader-papers3](https://github.com/juicecultus/crosspoint-reader-papers3) — Crosspoint port for M5Stack Paper S3. 
-
-- [t5s3-reader](https://github.com/ShallowGreen123/t5s3-reader) — Crosspoint port for LilyGo T5 ePaper S3 / T5S3 4.7-inch e-paper device.
-
-**Note:** Many of these features will make their way into CrossPoint over time. We maintain a slower pace to ensure rock-solid stability and squash bugs before they reach your device.
-
-Want to build your own device? Be sure to check out the [de-link](https://github.com/iandchasse/de-link) project.
 
 ---
 
