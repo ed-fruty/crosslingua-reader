@@ -2227,7 +2227,9 @@ void ChapterHtmlSlimParser::appendSideBySideNoTranslationMarkerIfUnpaired() {
   // the block already being flushed, no new buffers. Dimming uses the same per-word vehicle as
   // translated text in v2 — the EpdFontFamily::TRANSLATED style bit, which the renderer maps to
   // the configured translation gray level (see GfxRenderer renderChar*). This is v2's equivalent
-  // of the fork's grayLevel=1 marker.
+  // of the fork's grayLevel=1 marker, and it is why modeToGray() (src/main.cpp) answers a fixed 1
+  // under this mode: the marker shares its LINE with the source text, so a line role cannot reach
+  // it and the per-word bit is the only vehicle it has.
   const char* marker = tr(STR_NO_TRANSLATION);
   std::string markerWord;
   for (const char* p = marker;; ++p) {

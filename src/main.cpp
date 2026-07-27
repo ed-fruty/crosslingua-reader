@@ -138,13 +138,29 @@ enum class BootResume : uint8_t {
 // startDeepSleep() does not return, so a set latch only ends at the wakeup reset.
 static bool deepSleepInProgress = false;
 
-// Pre-Translation: map the display mode + shade sub-setting to the renderer's 3-level gray value.
-// Only Interleaved mode dims translated text, and the shade picks how far (SHADE_DIMMED->1,
-// SHADE_DIMMED_LIGHT->2); every other mode draws in normal black (0), including the overlay modes
-// which render original-only in the main flow. The shade is DRAWING-only, which is why it is read
-// here (every tick) and not in the section cache key. constexpr keeps this a compile-time lookup
-// with zero runtime/flash overhead.
+// Pre-Translation: map the display mode + shade sub-setting to the renderer's 3-level gray value
+// for words carrying the per-word EpdFontFamily::TRANSLATED bit. Interleaved dims translated text
+// and the shade picks how far (SHADE_DIMMED->1, SHADE_DIMMED_LIGHT->2).
+//
+// Side by Side returns a FIXED 1 for exactly one piece of text: the "not translated" marker that
+// appendSideBySideNoTranslationMarkerIfUnpaired appends, word by word, to an unpaired original.
+// That marker is the one thing in this mode whose colour cannot come from a line role — it shares
+// its line with the source text it annotates — so the per-word bit is its only vehicle, and it was
+// rendering SOLID BLACK because this function answered 0 for the mode, contradicting both its own
+// "dim marker" comment and the fork behaviour it ports. It is deliberately NOT the Side by Side
+// colour sub-setting: the marker is editorial furniture that must stay visibly secondary even when
+// the user sets the translation column to Black. Nothing else in a Side by Side page takes this
+// value — the translation column carries the bit too, but its LineFontRole::Translation ink
+// overrides the bit on every glyph (GfxRenderer::ForcedInkScope), including with Black. The one
+// exception is a section.bin cached by a build older than that role tag: its translation column is
+// stored as Body, takes no ink, and so picks this value up until the chapter is next re-laid out.
+//
+// Every other mode draws in normal black (0), including the overlay modes which render
+// original-only in the main flow. The shade is DRAWING-only, which is why it is read here (every
+// tick) and not in the section cache key. constexpr keeps this a compile-time lookup with zero
+// runtime/flash overhead.
 static constexpr uint8_t modeToGray(uint8_t mode, uint8_t shade) {
+  if (mode == CrossPointSettings::PT_SIDE_BY_SIDE) return 1;
   return (mode != CrossPointSettings::PT_INTERLEAVED) ? 0 : (shade == CrossPointSettings::SHADE_DIMMED_LIGHT) ? 2 : 1;
 }
 
