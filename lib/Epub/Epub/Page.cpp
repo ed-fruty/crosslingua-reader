@@ -20,9 +20,19 @@ void renderFilteredPageElements(const std::vector<std::shared_ptr<PageElement>>&
 
 }  // namespace
 
+// The two sentinels are declared in different libraries (lib/Epub must not depend on the concrete
+// renderer type in a header), so pin them together where both are visible.
+static_assert(PageFontSet::INK_INHERIT == GfxRenderer::INK_INHERIT,
+              "PageFontSet ink sentinel must match the renderer's");
+
 void PageLine::render(GfxRenderer& renderer, const PageFontSet& fonts, const int xOffset, const int yOffset) {
   // A line is homogeneous, so the role resolves to ONE id here and TextBlock keeps its plain
   // int fontId — the mixed-font page is a property of the page, not of any single line.
+  //
+  // Same for the ink: colour is applied at the LINE boundary from the role, not per word from a
+  // style bit. Scope-guarded because a page is drawn three times (BW + LSB + MSB planes) and each
+  // pass must set and clear it again; a latch would leak one line's colour into the next.
+  const GfxRenderer::ForcedInkScope ink(renderer, fonts.inkForRole(fontRole));
   block->render(renderer, fonts.forRole(fontRole), xPos + xOffset, yPos + yOffset);
 }
 

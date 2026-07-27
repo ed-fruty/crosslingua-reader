@@ -29,6 +29,12 @@ class GfxRenderer {
  public:
   enum RenderMode { BW, GRAYSCALE_LSB, GRAYSCALE_MSB };
 
+  // "No forced ink" sentinel for setForcedInk() / ForcedInkScope. Deliberately NOT 0: 0 IS a level
+  // (solid black), and forcing black is the whole point of the primitive -- it is what lets a line
+  // role override the per-word TRANSLATED style bit in BOTH directions. Mirrored by
+  // PageFontSet::INK_INHERIT (lib/Epub); a static_assert in Page.cpp keeps the two equal.
+  static constexpr uint8_t INK_INHERIT = 0xFF;
+
   // Logical screen orientation from the perspective of callers
   enum Orientation {
     Portrait,                  // 480x800 logical coordinates (current default)
@@ -77,6 +83,13 @@ class GfxRenderer {
 
   uint8_t translationGrayLevel = 0;  // 0=black (default), 1=dark gray, 2=light gray.
                                      // Applied to words tagged with EpdFontFamily::TRANSLATED.
+
+  // Forced ink for EVERY glyph of the current draw, whatever its style bits say. INK_INHERIT (the
+  // default) leaves the TRANSLATED-bit path above untouched, so a renderer that never sets this is
+  // bit-identical to before. Any other value (0=black, 1=dark gray, 2=light gray) WINS over the
+  // style bit -- that is what makes "this line is black" expressible, not just "this line is gray".
+  // Set only by PageLine::render through ForcedInkScope, so its lifetime is exactly one line.
+  uint8_t forcedInk = INK_INHERIT;
 
   // CJK UI font fallback map: primary (built-in, Latin-only) UI font id -> a
   // size-matched SD-card font id that carries CJK glyphs. When a string drawn
@@ -282,6 +295,24 @@ class GfxRenderer {
   // 0=black (default, no remap), 1=dark gray (also drawn in BW pass as fallback), 2=light gray.
   void setTranslationGrayLevel(uint8_t level) { translationGrayLevel = level; }
   uint8_t getTranslationGrayLevel() const { return translationGrayLevel; }
+  // Per-ROLE ink (Lingua colour sub-settings). The app resolves a line's LineFontRole to an ink
+  // level and the whole line draws in it, which is why the colour of an annotation row or a
+  // translation column is decided ONCE per line here instead of per word through the style bit.
+  // INK_INHERIT restores the style-bit behaviour.
+  void setForcedInk(const uint8_t ink) { forcedInk = ink; }
+  uint8_t getForcedInk() const { return forcedInk; }
+
+  // RAII setter for the above: no heap, no std::function, one byte saved and restored. Nested
+  // scopes work (each restores its predecessor's value), which keeps a future overlay that draws a
+  // line inside another line's scope honest.
+  struct ForcedInkScope {
+    GfxRenderer& renderer;
+    uint8_t previous;
+    ForcedInkScope(GfxRenderer& r, const uint8_t ink) : renderer(r), previous(r.getForcedInk()) { r.setForcedInk(ink); }
+    ~ForcedInkScope() { renderer.setForcedInk(previous); }
+    ForcedInkScope(const ForcedInkScope&) = delete;
+    ForcedInkScope& operator=(const ForcedInkScope&) = delete;
+  };
   // Grayscale preconditioning settle pass (no-op on X4). The rect overload
   // takes the gray region in LOGICAL screen coordinates and rotates it to the
   // panel; the no-arg overload settles the full frame. Call after the BW base

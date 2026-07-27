@@ -343,8 +343,13 @@ static void renderCharScaled(const GfxRenderer& renderer, GfxRenderer::RenderMod
                              const bool pixelState, const EpdFontFamily::Style style) {
   // Pre-Translation: words tagged with TRANSLATED render at the configured gray level.
   // 0 = black (default, unchanged behavior); 1 = dark gray; 2 = light gray.
+  // A per-role ink set by the line being drawn (PageLine::render -> ForcedInkScope) OVERRIDES the
+  // per-word bit, including with 0: a Lingua colour is a property of the whole line, and "black"
+  // has to be able to win over an inherited TRANSLATED bit. INK_INHERIT means no line asked.
+  const uint8_t forcedInk = renderer.getForcedInk();
   const bool isTranslated = (style & EpdFontFamily::TRANSLATED) != 0;
-  const uint8_t effectiveGrayLevel = isTranslated ? renderer.getTranslationGrayLevel() : 0;
+  const uint8_t effectiveGrayLevel =
+      forcedInk != GfxRenderer::INK_INHERIT ? forcedInk : (isTranslated ? renderer.getTranslationGrayLevel() : 0);
 
   const EpdGlyph* glyph = fontFamily.getGlyph(cp, style);
   if (!glyph) return;
@@ -443,8 +448,12 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
                            const bool pixelState, const EpdFontFamily::Style style) {
   // Pre-Translation: words tagged with TRANSLATED render at the configured gray level.
   // 0 = black (default, normal antialiased path); 1 = dark gray; 2 = light gray.
+  // Per-role ink wins over the style bit; see the matching comment in renderCharScaled(). Both
+  // glyph paths must agree, or a scaled SUP/SUB inside a coloured line would stay black.
+  const uint8_t forcedInk = renderer.getForcedInk();
   const bool isTranslated = (style & EpdFontFamily::TRANSLATED) != 0;
-  const uint8_t effectiveGrayLevel = isTranslated ? renderer.getTranslationGrayLevel() : 0;
+  const uint8_t effectiveGrayLevel =
+      forcedInk != GfxRenderer::INK_INHERIT ? forcedInk : (isTranslated ? renderer.getTranslationGrayLevel() : 0);
 
   const EpdGlyph* glyph = fontFamily.getGlyph(cp, style);
   if (!glyph) {
