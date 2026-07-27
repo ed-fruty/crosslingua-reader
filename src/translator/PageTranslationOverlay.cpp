@@ -578,6 +578,17 @@ void PageTranslationOverlay::preparePage(const Page& page) {
     // stop the needle there. The kept prefix always covers at least the first word
     // (a line-end split never lands on the first token), which is enough to catch
     // gross drift while tolerating benign in-text hyphenation.
+    //
+    // Does this paragraph BEGIN on this page? Only the page's FIRST entry can fail to: every later
+    // index appears because a new paragraph opened here. The same folded needle that validates the
+    // boundary answers it — a paragraph that starts here has its visible slice at OFFSET 0 of the
+    // source paragraph, while one that flowed in from the previous page is found further in. There
+    // is no structural flag to read (PageLine carries no "first line of its paragraph" bit), and the
+    // layout's baked indent cannot stand in for one: it is 0 for a genuine start too whenever the
+    // spacing setting is on. Unknown (no pair, no origText, or a needle too short to discriminate)
+    // defaults to TRUE — origText is retained for exactly the two boundary paragraphs, so the answer
+    // is available precisely where it is needed, and a chapter's opening paragraph must indent.
+    bool startsHere = true;
     bool forceSource = false;
     if (pair != nullptr && (isFirst || isLast) && !pair->origText.empty() && !visibleText.empty()) {
       // ChapterHtmlSlimParser prepends a U+2022 bullet as the first word of every <li>, so a list
@@ -603,28 +614,31 @@ void PageTranslationOverlay::preparePage(const Page& page) {
       }
       if (needle.size() >= 3) {
         const std::string foldedOrig = textnorm::foldForMatch(pair->origText);
-        if (foldedOrig.find(needle) == std::string::npos) {
+        const size_t at = foldedOrig.find(needle);  // one scan answers both questions
+        if (at == std::string::npos) {
           if (!boundaryErrLogged) {
             LOG_ERR("PGT", "boundary drift at idx %d: visible text not in source paragraph — source fallback", idx);
             boundaryErrLogged = true;
           }
           forceSource = true;
+        } else if (isFirst) {
+          startsHere = (at == 0);  // found further in => the page opened mid-paragraph
         }
       }
     }
 
     if (pair == nullptr || pair->translation.empty() || forceSource) {
-      pageParagraphs.push_back({visibleText, false});  // Option C source fallback
+      pageParagraphs.push_back({visibleText, false, startsHere});  // Option C source fallback
       continue;
     }
 
     const int visibleSentences = countSentences(visibleText);
     std::string shown = sliceTranslationForPage(*pair, visibleText, visibleSentences, isFirst, isLast);
     if (shown.empty()) {
-      pageParagraphs.push_back({visibleText, false});  // defensive: never show a blank translated line
+      pageParagraphs.push_back({visibleText, false, startsHere});  // defensive: never show a blank translated line
       continue;
     }
-    pageParagraphs.push_back({std::move(shown), true});
+    pageParagraphs.push_back({std::move(shown), true, startsHere});
     translatedCount++;
   }
 
@@ -877,13 +891,16 @@ void PageTranslationOverlay::render(GfxRenderer& renderer, const Page& page, int
   constexpr int PAD = 10;
   const int maxTextW = viewportWidth - 2 * PAD;
   // Mirror the reader's "Extra Paragraph Spacing" setting: a gap between paragraphs when on,
-  // otherwise paragraphs run flush and the first-line indent below marks the boundary instead. HALF
-  // a line height, which is exactly what the page layout adds after a paragraph
-  // (ChapterHtmlSlimParser::makePages: `currentPageNextY += lineHeight / 2`, and the Text Settings
-  // preview's `lineAdvance / 2`) — a full lh showed a gap twice the page's. Content therefore does
-  // not advance in whole-lh steps, which is why the draw pass below scrolls to real line tops
-  // instead of fixed pixel multiples.
-  const int paraSpacing = SETTINGS.extraParagraphSpacing ? lh / 2 : 0;
+  // otherwise paragraphs run flush and the first-line indent below marks the boundary instead. A
+  // FULL line height — a genuine blank line — in the OVERLAY's own font and line rhythm.
+  //
+  // Deliberately not the page layout's `lineHeight / 2` (ChapterHtmlSlimParser::makePages). That
+  // half-line is a gap between paragraphs that share one line grid, in the body font. This overlay
+  // is a full-panel replacement composited over an erased rect (the fillRect above): it is not
+  // line-registered with the page underneath, and its `lh` is the overlay font's, which may be a
+  // size smaller. Half of a smaller line height reads as a seam rather than a paragraph break, so
+  // matching the page's number here does not reproduce the page's appearance.
+  const int paraSpacing = SETTINGS.extraParagraphSpacing ? lh : 0;
   // The other half of the same setting, and the ONLY source of the overlay's paragraph indent: the
   // reader's style-free rule (ParsedText::defaultFirstLineIndent — three space widths when the
   // spacing is off, none when it is on), measured in the font the overlay actually draws with.
@@ -895,8 +912,11 @@ void PageTranslationOverlay::render(GfxRenderer& renderer, const Page& page, int
   // paragraph, so the overlay could never show an indent at all. The text on screen here is a
   // TRANSLATION: it carries no stylesheet, so the setting is the only thing that may decide.
   //
-  // Uniform across the page for the same reason: every paragraph the overlay draws is presented as
-  // its own block of translated text, so the first one is indented exactly like the rest.
+  // One value for the whole page: it depends only on the setting and the overlay font, so every
+  // paragraph that BEGINS here is indented identically — the source stylesheet cannot make one
+  // paragraph indent and the next one not. The single exception is a paragraph that flowed in from
+  // the previous page, which is not a paragraph start at all and renders flush (DisplayPara::
+  // startsHere), exactly as the body's continuation lines do.
   int paraIndent =
       ParsedText::defaultFirstLineIndent(renderer, pageTranslationFontId, SETTINGS.extraParagraphSpacing != 0);
   if (paraIndent > maxTextW / 2) paraIndent = maxTextW / 2;  // sanity net; never leaves line 0 unusable
@@ -917,7 +937,8 @@ void PageTranslationOverlay::render(GfxRenderer& renderer, const Page& page, int
   paras.reserve(pageParagraphs.size());
   const char* const marker = tr(STR_NO_TRANSLATION);
   for (const auto& para : pageParagraphs) {
-    auto lines = breakParagraph(renderer, pageTranslationFontId, para.text, maxTextW, paraIndent, spW, hyphenate);
+    const int firstIndent = para.startsHere ? paraIndent : 0;
+    auto lines = breakParagraph(renderer, pageTranslationFontId, para.text, maxTextW, firstIndent, spW, hyphenate);
     if (!para.translated) {
       // Option C: the body already holds the SOURCE text; append one short dim
       // marker line so the untranslated gap is visible but unobtrusive.
