@@ -13,7 +13,7 @@ from PIL import Image, ImageDraw, ImageFont
 ROOT = Path(__file__).parent.parent
 SOURCE_MD = ROOT / "USER_GUIDE.md"
 OUTPUT_EPUB = ROOT / "CrossPoint_User_Guide.epub"
-LOGO_PNG = ROOT / "src/images/Logo120.png"
+LOGO_PNG = ROOT / "src/images/Logo200.png"
 
 # Portrait cover dimensions matching the X4 display (480×800)
 COVER_W, COVER_H = 480, 800
