@@ -16,33 +16,30 @@ namespace {
 // SECTION FILE FORMAT VERSION
 //
 // READ THIS BEFORE COMPARING THE NUMBER TO ANYTHING OUTSIDE THIS FORK.
-// This fork's format at version 33 is NOT upstream develop's format at version 33. The number
-// collides; the layout does not. Our header carries four fields upstream's does not have at all --
-// translationFontId, annotationFontId, the PtLayout byte, and the translatedSource /
-// embeddedTranslation pair -- so an upstream-written .bin and one of ours are mutually
-// unreadable while both stamping 33. The version byte is therefore only meaningful WITHIN this
-// fork: it is a cache key for our own files, never a compatibility claim against upstream. Nothing
-// may treat "33" as a portable format identifier, and no cross-fork cache sharing is possible or
-// intended. (The .crosspoint cache is device-local and rebuilt on demand, so this costs a
-// re-layout, not correctness -- but only as long as nobody tries to make the number mean more than
-// it does.)
+// This fork's format at version 34 is NOT upstream develop's format at any version. Our header
+// carries four fields upstream's does not have at all -- translationFontId, annotationFontId, the
+// PtLayout byte, and the translatedSource / embeddedTranslation pair -- so an upstream-written .bin
+// and one of ours are mutually unreadable whatever number either stamps. The version byte is
+// therefore only meaningful WITHIN this fork: it is a cache key for our own files, never a
+// compatibility claim against upstream. Nothing may treat "34" as a portable format identifier, and
+// no cross-fork cache sharing is possible or intended. (The .crosspoint cache is device-local and
+// rebuilt on demand, so this costs a re-layout, not correctness -- but only as long as nobody tries
+// to make the number mean more than it does.)
 //
-// WHY 33 AND NOT 41. This line ran 33 -> 41 across internal iterations that were never released.
-// Numbers 34 through 41 are local-only history: no build carrying them left this fork, so no user
-// has a cache stamped with them that anyone else needs to interoperate with, and keeping a private
-// counter drifting further from upstream's bought nothing. They are collapsed back into 33, which
-// is the value upstream develop currently has. Everything those iterations added to the format is
-// still here -- see "THE FORMAT AT 33" below -- only the counter was rewound.
+// WHY 34 AND NOT 42. This line once ran 33 -> 41 across internal iterations that were never
+// released, then was collapsed back to 33 (upstream develop's value) because no build carrying
+// 34..41 ever left this fork. 34 is now claimed for the FIRST format change since that rewind: the
+// Interlinear line-parity rewrite. Do not "resume" at 42.
 //
-// The rewind itself invalidates every cache on any device that ran a 34..41 build: those files
-// stamp 34..41, this firmware accepts only 33 (or the partial sentinel), so they are rejected as an
-// unknown version and rebuilt once, per book, in the background. That is expected and wanted.
-//
-// THE NEXT GENUINE FORMAT CHANGE TAKES THIS TO 34. Do not reuse 33 for a new layout, and do not
-// "resume" at 42.
+// WHY 34 EXISTS AT ALL, given the byte layout did not move. Rule 2 below: the version IS the cache
+// key, and Interlinear's page CONTENT changed completely -- the source no longer breaks a line at
+// every sentence, and each source line now carries exactly one annotation strip instead of a
+// variable stack over the sentence's first line. Nothing else in the key moved, so without this bump
+// a device holding pages built by the sentence-per-line model would serve them forever and the
+// rewrite would appear to have done nothing.
 //
 // ---------------------------------------------------------------------------------------------
-// THE FORMAT AT 33
+// THE FORMAT AT 34
 //
 // The header, in write order (see writeSectionFileHeader; loadSectionFile reads it back in exactly
 // this order, and HEADER_SIZE below is the sum):
@@ -80,12 +77,15 @@ namespace {
 //   byte is part of the cache key, so adding a value to the enum is itself a format change.
 //   - SideBySide lays original and translation into two half-width columns (renderSideBySide),
 //     reusing the existing per-line xPos field rather than adding structure.
-//   - Interlinear emits a small LineFontRole::Annotation row above the source line each sentence
-//     starts on. A source sentence ALWAYS starts a new line: sentence starts are resolved before
-//     line breaking and fed in as hard constraints, not discovered afterwards over the already
-//     broken word array. Each row sits at the same x the source line starts at -- the block's inset,
-//     plus its alignment, plus (on the paragraph's first line only) its first-line indent. The
-//     pairing runs over the focus-MERGED word stream rather than the raw token array, so Focus
+//   - Interlinear pairs EVERY source line with exactly one small LineFontRole::Annotation strip
+//     directly above it, so a page alternates strip, source, strip, source with no doubles and no
+//     gaps. The source itself is broken exactly as OriginalOnly would break it -- sentence starts
+//     constrain nothing, they are only REPORTED back by layout (line, x, starts-line) so a
+//     sentence's translation can begin under its own first word and then flow through the strips
+//     above that sentence's remaining source lines. A source line holding the tail of one sentence
+//     and the head of the next carries two annotation PageLines at ONE yPos, the shape SideBySide
+//     already writes for its columns. A blank strip emits no PageLine at all and only advances y.
+//     The pairing runs over the focus-MERGED word stream rather than the raw token array, so Focus
 //     Reading -- which stores each word as a bold prefix plus a regular tail -- cannot move a
 //     sentence boundary.
 // * Fonts used for translated and annotation text are keyed. translationFontId and annotationFontId
@@ -138,7 +138,7 @@ namespace {
 // invalidate -- a downloaded or deleted sidecar flips the byte, and an embedded translation is
 // baked into the chapter HTML, so a book that gains one is a different file with a different cache
 // directory.
-constexpr uint8_t SECTION_FILE_VERSION = 33;
+constexpr uint8_t SECTION_FILE_VERSION = 34;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
@@ -154,16 +154,16 @@ constexpr uint8_t SECTION_FILE_INCOMPLETE_VERSION = 0;
 // MUST change in lockstep with SECTION_FILE_VERSION: the sentinel IS the partial's
 // format version, so a stale-format partial otherwise passes the header check and
 // only fails (noisily, via the block-decode error path) when a page is loaded.
-// Derived so the pairing can't be forgotten: 0xFE for v28, 0xFD for v29, ... 0xF9 for v33.
+// Derived so the pairing can't be forgotten: 0xFE for v28, 0xFD for v29, ... 0xF8 for v34.
 // The derivation walks DOWN as the version walks up, so rewinding the version walks it back up:
-// the 33 -> 41 iterations put it at 0xF1, and collapsing back to 33 returns it to 0xF9. A partial
-// left on a card by one of those builds carries 0xF1..0xF8, which is neither 33 nor 0xF9, so it is
-// rejected as an unknown version and rebuilt -- the same one-off invalidation the rewind costs
-// finalized files.
+// the 33 -> 41 iterations put it at 0xF1, collapsing back to 33 returned it to 0xF9, and 34 now
+// takes it to 0xF8. A partial left on a card by any of those builds carries a sentinel this
+// firmware does not recognise, so it is rejected as an unknown version and rebuilt -- the same
+// one-off invalidation a version bump costs finalized files.
 constexpr uint8_t SECTION_FILE_PARTIAL_VERSION = 0xFE - (SECTION_FILE_VERSION - 28);
 // The derivation only stays a distinct sentinel while the two ranges have not met; assert it rather
-// than trusting a future bump to notice. At 33 the sentinel is 0xF9 (249): comfortably above the
-// version, and nothing but a version past 0xF9-28 = 221 could ever close the gap.
+// than trusting a future bump to notice. At 34 the sentinel is 0xF8 (248): comfortably above the
+// version, and nothing but a version past 0xF8-28 = 220 could ever close the gap.
 static_assert(SECTION_FILE_PARTIAL_VERSION > SECTION_FILE_VERSION &&
                   SECTION_FILE_PARTIAL_VERSION != SECTION_FILE_INCOMPLETE_VERSION,
               "Partial sentinel collides with a real version");
@@ -1144,8 +1144,8 @@ std::string Section::getTextFromSectionFile() {
       if (el->getTag() == TAG_PageLine) {
         const auto& line = static_cast<const PageLine&>(*el);
         // Skip editorial rows the reader inserted itself. Under PtLayout::Interlinear an Annotation
-        // row is a whole translated sentence, so including it would interleave two languages in every
-        // consumer of this text (the QR page-text view, bookmark summaries). Scoped to Annotation
+        // row is a fragment of translated text, so including it would interleave two languages in
+        // every consumer of this text (the QR page-text view, bookmark summaries). Scoped to Annotation
         // only: Translation rows ARE part of the chapter under the Both layout (Interleaved), and
         // dropping them would change that mode's behaviour.
         if (line.fontRole == LineFontRole::Annotation) continue;

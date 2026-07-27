@@ -90,36 +90,46 @@ if (parsedSize != fileSize) {
 
 ## `section.bin`
 
-### Version 33 — current
+### Version 34 — current
 
-> **This 33 is not upstream's 33.** The number collides with upstream `develop`'s
-> current version; the layout does not. This fork's header carries four fields
+**The byte layout is unchanged from 33.** No new field, no new tag, no change to
+`TextBlock`'s arena or to the header. 34 exists because the version *is* the cache
+key and the **content** of every cached Interlinear page changed completely: the
+source no longer breaks a line at every sentence, and each source line now carries
+exactly one annotation strip instead of a variable stack over the sentence's first
+line. Without the bump, a device holding pages built by the sentence-per-line model
+would serve them forever. Side-by-Side forced a bump for exactly the same reason when
+it landed (see the note under [Side-by-Side](#side-by-side-two-column-layout)).
+
+> **This number is not upstream's.** This fork's header carries four fields
 > upstream's has no concept of — `translationFontId`, `annotationFontId`, the
 > `PtLayout` byte, and the `translatedSource` / `embeddedTranslation` pair — so an
-> upstream-written `.bin` and one of ours are mutually unreadable while both stamp
-> `33`. The version byte is a cache key **within this fork only**, never a
+> upstream-written `.bin` and one of ours are mutually unreadable whatever number
+> either stamps. The version byte is a cache key **within this fork only**, never a
 > portable format identifier and never a compatibility claim. No cross-fork cache
 > sharing is possible or intended.
 >
-> **The next genuine format change takes this to 34.** Do not reuse 33 for a new
-> layout, and do not "resume" at 42.
+> **Do not "resume" at 42.** The next genuine format change takes this to 35.
 
-#### Why the number went backwards
+#### Why the number went backwards, then forwards again
 
 This line ran 33 → 41 across internal iterations that were never released. Numbers
-34 through 41 are local-only history: no build carrying them left the fork, so no
-user has a cache stamped with them that anyone needs to interoperate with, and a
-private counter drifting further from upstream's bought nothing. They are collapsed
-back into 33, the value upstream `develop` currently has. **Everything those
-iterations added to the format is still here** — the sections below are the merged
-result, not a rollback. Only the counter was rewound.
+34 through 41 were local-only history: no build carrying them left the fork, so no
+user had a cache stamped with them that anyone needed to interoperate with, and a
+private counter drifting further from upstream's bought nothing. They were collapsed
+back into 33, the value upstream `develop` has. **Everything those iterations added
+to the format is still here** — the sections below are the merged result, not a
+rollback. Only the counter was rewound.
 
-The rewind invalidates every cache on any device that ran a 34–41 build: those files
-stamp 34–41, this firmware accepts only 33 (or the partial sentinel), so they are
-rejected as an unknown version and rebuilt once per book in the background. That is
-expected. The partial sentinel moves with the version by the same derivation
-(`0xFE - (version - 28)`), so it returns from `0xF1` to `0xF9` and stale partials are
-rejected on the same grounds.
+34 is now claimed again, this time for a real change: the Interlinear line-parity
+rewrite. It reuses the number because nothing outside this fork ever saw the first
+34, and because resuming at 42 would preserve a gap that means nothing.
+
+Both the rewind and this bump invalidate caches on any device that ran an affected
+build; those files are rejected as an unknown version and rebuilt once per book in
+the background. That is expected. The partial sentinel moves with the version by the
+same derivation (`0xFE - (version - 28)`): `0xF1` under the 34–41 iterations, `0xF9`
+after the rewind, `0xF8` now. Stale partials are rejected on the same grounds.
 
 #### Header layout
 
@@ -173,80 +183,123 @@ sources — neither a `.translated.html` sidecar nor translations embedded in th
 chapter's own XHTML. So an Interlinear cache entry only exists for a chapter that
 actually has a translation.
 
-#### Interlinear line breaking
+#### Interlinear line parity
 
 Interlinear has a layout of its own and cannot share a cache entry with Normal or
-Interleaved. Each sentence's translation is emitted as its own
-`LineFontRole::Annotation` row directly *above* the source line that sentence starts
-on. An annotation row is an ordinary `PageLine` — nothing new is serialized per line
-or per page — stamped with the original paragraph's index just as its source line is,
-with height `getLineHeight(annotationFontId)`, which is what lets two type sizes tile
-edge to edge on one page. No sentence metadata reaches disk: alignment is fully
-resolved before the page is written.
+Interleaved. Its rule is **line parity**: every source line of an annotated paragraph
+is paired with exactly one small `LineFontRole::Annotation` strip directly above it,
+so a page reads *strip, source, strip, source* all the way down — never two source
+lines in a row, never two strips in a row. A strip is an ordinary `PageLine` —
+nothing new is serialized per line or per page — stamped with the original
+paragraph's index just as its source line is, with height
+`getLineHeight(annotationFontId)`, which is what lets two type sizes tile edge to
+edge on one page. No sentence metadata reaches disk: everything is resolved before
+the page is written.
 
-- **A source sentence always begins a new line.** Sentence starts are resolved
-  *before* line breaking and fed into it as hard constraints
-  (`ParsedText::setForcedLineBreaks`), instead of being discovered afterwards over the
-  already-broken word array. A sentence that wraps flows normally onto the lines below
-  it.
-- **An annotation row starts where its source line starts, directly above it.** Not
-  "at the left margin": that is only the same thing for a left-aligned or justified
-  paragraph whose sentence is not the first. Three things place the row, all taken from
-  the *source* block so the two cannot drift:
-  - the block's left inset (`emitInterlinearRow`);
-  - the block's **alignment**. A `text-align:center` epigraph or a `text-align:right`
-    verse block gets centred / right-aligned rows, so the pair shares a centre line or
-    a right edge. `Justify` degrades to left, which is where a justified line starts
-    anyway, because a row this small stretched to the full measure would open gaping
-    word gaps;
-  - the **first-line indent**, on the rows over source line 0 *only*
-    (`ParsedText::firstLineIndent`, the value `extractLine` itself used). The
-    paragraph's first source line is indented — three spaces when extra paragraph
-    spacing is off, the CSS `text-indent` when one is set, a negative hanging indent
-    verbatim — so a row hard-zeroed to the margin left the *first* pair of every
-    paragraph out of line while every later pair matched. This is also what keeps
-    annotation rows on the body's own rule: indent when extra paragraph spacing is
-    off, no indent (and a paragraph gap instead) when it is on.
-
-  An earlier iteration used a hanging indent — first row inset to the x of the
-  sentence's first *word*, continuation rows falling back to the margin, indent dropped
-  entirely past 3/4 of the measure. That scheme produced several row-sets stacked over
-  one line while neighbouring lines carried none, and parked a shard of translation
-  against the right margin whenever a sentence started late. It is gone: the row's
-  `text-indent` is now always `0`.
+- **The source flows completely normally.** It is laid out exactly as
+  `PtLayout::OriginalOnly` would lay it out: same DP, same hyphenation, same
+  justification, same first-line indent, no constraint of any kind. Sentences do
+  **not** each begin a new line. Sentence starts are handed to layout as *tracked
+  words* (`ParsedText::setTrackedWords`), which constrain nothing — layout simply
+  reports back, per tracked index, which emitted line it landed on, at what x, and
+  whether it opened that line (`ParsedText::TrackedWordPos`). The reported line
+  ordinal counts only lines that were actually emitted, so a line dropped to a
+  `TextBlock` arena OOM cannot shift every later annotation by one.
+- **One strip per source line, not one per sentence.** A sentence spanning three
+  source lines has its translation distributed across the three strips above those
+  three lines: the translation flows too, in small type, one line of it per line of
+  source. `buildAnnotationChunks` lays the sentence's translation span out once, at
+  the same measure the source used and with `text-indent` set to the x the source
+  sentence starts at, so chunk 0 occupies "from the sentence's x to the right margin"
+  and chunks 1..N the full measure — geometrically congruent with the source
+  sentence's own lines. That congruence, plus an annotation face at ~57% of the body
+  pitch, is why the chunk count comes out at or below the source line count without
+  any fudge factor.
+- **Sentence sync.** A sentence's translation begins at the x its *source* sentence
+  begins, not wherever the previous translation happened to stop, so the two stay
+  visually paired sentence by sentence. The x is read off the real laid-out word, so
+  it already carries the block's left inset, its alignment, its first-line indent and
+  any justification stretch of the words before it on that line — nothing is
+  re-derived. Continuation chunks take the *source line's* own left edge
+  (`TextBlock::wordXpos(0)`), which is `0` for every left-aligned or justified block
+  and non-zero for a centred or right-aligned one.
+- **A source line can carry two runs at one `yPos`.** When a line holds the tail of
+  one sentence and the head of the next, its strip carries the tail fragment at the
+  line's left edge and the head fragment at the next sentence's x — two
+  `PageLine`s, same `yPos`, different `xPos`. That is the shape `renderSideBySide`
+  already writes for its two columns, and every downstream consumer walks
+  `page->elements` without assuming distinct or monotonic y. It is still one visual
+  annotation line and y still advances once.
+- **A blank strip is reserved, not skipped.** When a sentence's translation runs out
+  before its source lines do — the normal case, given the smaller face — the
+  remaining strips are blank. A blank strip emits **no** `PageLine` at all (no arena,
+  no serialized bytes, no render call) and only advances y. Dropping the strip
+  instead would put two source lines back to back and leave a source line without its
+  annotation line, which is exactly what the layout exists to prevent. A paragraph
+  with **no** annotation at all (no pairing function, an RTL source, an empty
+  translation, an unpaired original) reserves no strip and flows as plain source.
+- **Overflow is truncated at the last permitted strip.** If a translation somehow
+  needs more rows than its sentence has source lines, the surplus rows are discarded
+  at build time. Giving them a strip of their own would put two annotation rows over
+  one source line. The surplus is by definition at least a full measure of text past
+  the right margin of the last permitted chunk — off-panel and unreadable either way
+  — and `GfxRenderer::drawPixel` `LOG_ERR`s every out-of-panel pixel while
+  `TextBlock::render` does no x culling, so letting it run would cost thousands of log
+  lines per page for no pixels. It is a rare path: it needs a translation roughly
+  1.75× the source's typographic length, and `CrossPointSettings::UNSUPPORTED_TARGETS`
+  already forces the annotation font back to body size for the CJK / Arabic / Hebrew /
+  Thai / Greek / Hindi targets, so the small face only ever serves Latin and Cyrillic
+  targets.
 - **The pairing reads WORDS, not tokens.** `ParsedText` does not always store one token
   per word: with Focus Reading on, every word is a bold prefix plus a regular tail
   ("Ok" is `"O"` + `"k"`), and `extractLine` concatenates the tail back before a line
   leaves the layout engine. Pairing runs *before* layout and so must merge them itself
   (`buildMergedWordStream`). Without that, `"Ok."` keys as `"O k"` (3 bytes) instead of
-  `"Ok"` (2), clears the junk-sentence test, and takes an annotation row and a forced
-  line break that the Tooltip overlay — which reads laid-out page words — does not give
-  it. The two consumers `src/translator/SentencePairing.h` promises a single answer to
-  would then disagree, and only when the setting is on. Annotation indices come back in
-  merged-word space and are mapped to token indices before anything else uses them.
-- **The last line of every sentence is not justified.** It is usually short, since the
-  following sentence no longer fills it; stretching it to the full measure would open
-  gaping word gaps. This reuses the rule the paragraph's own last line already had
-  (`ParsedText::extractLine`).
-- **A sentence whose translation is empty produces no row and no forced break**, and
-  simply continues on the previous sentence's last line — there is no row that could be
-  mispaired, and the next translated sentence still starts a line of its own.
-- **A sentence opening on a continuation token** (one glued to the word before it) is
-  the one case the constraint cannot honour: no line breaker may break there. Its rows
-  sit above the line that *contains* its start, at the margin.
+  `"Ok"` (2), clears the junk-sentence test, and becomes a sentence boundary the
+  Tooltip overlay — which reads laid-out page words — does not see. The two consumers
+  `src/translator/SentencePairing.h` promises a single answer to would then disagree,
+  and only when the setting is on. Annotation indices come back in merged-word space
+  and are mapped to token indices before anything else uses them.
+- **A sentence whose translation is empty produces no chunk**, so its source lines are
+  absorbed into the preceding sentence's slot range and simply show blank strips.
+- **Page breaking is atomic over a fixed group.** One strip plus one source line is
+  tested against the viewport once, before the strip is placed, so a strip can never
+  be separated from its source line. The group height is now constant, so the old
+  degenerate per-row fallback is gone; the anti-loop guard is that an empty page never
+  breaks.
 - **RTL.** An RTL source paragraph is not annotated at all — `extractLine` permutes a
   line into visual order whenever the block resolves RTL *or* contains any RTL word, so
   a source paragraph that is RTL, or that merely carries an inline Hebrew/Arabic run,
-  lays out as plain unannotated source. This is also what keeps the inherited alignment
-  above safe, since a right-aligned *source* is only ever an LTR block with explicit
-  `text-align:right`. An RTL *target* lays its rows out at the full measure on their own
-  natural margin (flush right): the RTL-flip in `extractLine` fires only on the left
-  branch, so an inherited `Center` or `Right` survives it (both are already correct for
-  an RTL row), while a left row flips to flush right and takes no indent.
+  lays out as plain unannotated source. An RTL *target* keeps line parity but gives up
+  sentence sync: `extractLine` flips such a row onto its own natural margin and
+  measures it against `measure - indent`, so a positive indent would push it backwards,
+  away from its sentence. `buildAnnotationChunks` therefore passes `text-indent = 0`
+  for an RTL target and its strips read flush right.
 
-Page cost rises accordingly: each sentence ends with roughly half a line of white
-space, so Interlinear runs about **+70% pages versus Normal** at the 14pt portrait
-default, and more for dialogue-heavy prose.
+Page cost is exactly `(bodyLineHeight + annotationLineHeight) / bodyLineHeight`,
+about **+57% pages versus Normal** at the 14pt/8pt portrait default. Unlike the
+earlier sentence-per-line model it does **not** degrade with short-sentence prose,
+because no sentence ends its line early any more.
+
+##### What this replaced
+
+Two earlier iterations shipped and were wrong about the *model*, not the code:
+
+1. A hanging-indent scheme: the first row of a sentence was inset to the x of the
+   sentence's first word, continuation rows fell back to the margin, and the indent
+   was dropped past 3/4 of the measure. Several row-sets stacked over one line while
+   neighbouring lines carried none.
+2. A sentence-per-line scheme: sentence starts were fed into line breaking as **hard
+   constraints** (`ParsedText::setForcedLineBreaks`) so every sentence began its own
+   line, and its whole translation was emitted as a variable-height stack of rows
+   above that line. That broke ordinary paragraph flow, left every sentence ending on
+   a short ragged line (justification was suppressed there to stop it stretching), and
+   still gave continuation lines no annotation at all.
+
+Both are gone. `setForcedLineBreaks`, `isForcedBreakAt`, `nextForcedBreakAfter`,
+the DP's forced-run cost case and the per-run justification suppression were all
+deleted from `ParsedText`; only the *reporting* half survives, widened into
+`setTrackedWords` / `TrackedWordPos`.
 
 #### `translationFontId` and `annotationFontId`
 
@@ -378,10 +431,11 @@ paired translation. See [Side by Side](./pre-translation.md#side-by-side).
 
 ### Earlier history — the fork's original 28–33 numbering
 
-> **The "version 33" in this section is a different format from the version 33
-> above.** It is the fork's *original* 33 (per-block hyphenation), long superseded.
-> The number was reused when 34–41 were collapsed; these notes are kept for
-> archaeology only and describe formats no current firmware reads.
+> **The "version 33" in this section is not the 33 this fork last shipped.** It is
+> the fork's *original* 33 (per-block hyphenation), long superseded. The number was
+> reused when 34–41 were collapsed, and the format has since moved on to 34; these
+> notes are kept for archaeology only and describe formats no current firmware
+> reads.
 
 #### Original version 33
 
@@ -425,8 +479,8 @@ superscript, and subscript. The format also includes:
 
 ### ImHex pattern
 
-Describes the **current** format (version 33 as defined above, not the original 33
-in the archaeology section).
+Describes the **current** format (version 34 as defined above, not the original 33
+in the archaeology section; the byte layout is identical between the two).
 
 ```c++
 import std.mem;
@@ -693,7 +747,7 @@ clean, complete write has finished. Consequences:
   `hasTranslatedSidecar()` is true, never from a `.part`.
 - That sidecar check answers "which file does the build parse", **not** "does this chapter
   have a translation". The latter is `Section::hasTranslation()`, which is also true for a
-  chapter whose translations are embedded in its own XHTML (see version 33 above); it is
+  chapter whose translations are embedded in its own XHTML (see version 34 above); it is
   what gates the display-mode fallback and what is stamped as `translatedSource`.
 - A leftover `.part` from an interrupted run is transient; `Section::clearCache()`
   reclaims it on the next `.bin` invalidation, while the completed final file is
