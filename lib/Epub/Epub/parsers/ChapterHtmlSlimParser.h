@@ -256,16 +256,38 @@ class ChapterHtmlSlimParser {
   struct InterlinearRun {
     std::shared_ptr<TextBlock> row;  // null is legal: the strip is reserved and nothing is drawn
     int16_t x = 0;                   // EXTRA offset added to the block's left inset at placement
+    // Right edge of this run's INK, in the same measure-relative space as x. What the next run on
+    // the same strip must clear, so two sentence runs sharing a line can never overprint.
+    int16_t rightEdge = 0;
+    // Which of the sentence's slots -- i.e. which of ITS source lines, counted from the first --
+    // this row belongs over. Carried explicitly because a slot with no room left on its strip is
+    // skipped, so a run's position in the vector is not its slot.
+    uint16_t slot = 0;
+  };
+  // The geometry one sentence's annotation rows are fitted to: each row gets the horizontal room its
+  // OWN source line leaves free. All measure-relative, like InterlinearRun::x.
+  struct InterlinearBands {
+    // The paragraph's source lines. Rows firstLine..firstLine+slots-1 must still be live — the
+    // caller releases a line only once it has been emitted, which is strictly after this is read.
+    const std::vector<std::shared_ptr<TextBlock>>* srcLines = nullptr;
+    size_t firstLine = 0;  // index of the sentence's first source line in *srcLines
+    size_t slots = 0;      // source lines the sentence occupies, i.e. rows available to it
+    int16_t headX = 0;     // x its source sentence starts at: where row 0 wants to start
+    int16_t tailX = 0;     // x the NEXT source sentence starts at, or the measure when it owns the line
+    int16_t floorX = 0;    // ink already on row 0's strip; the row starts clear of it, never over it
   };
   // Lay ONE annotation (a group of source sentences sharing a translation) out into at most `slots`
-  // rows and append them to `chunks`. `headX` is the x its source sentence starts at and becomes the
-  // block's first-line indent, so chunk 0 occupies "from there to the right margin" and chunks 1..N
-  // the full measure -- geometrically congruent with the source sentence's own lines. Rows past
-  // `slots` are discarded (see the truncation note in renderInterlinear). Emits nothing for an empty
-  // translation.
-  void buildAnnotationChunks(const InterlinearAnnotation& annotation, const ParsedText& transBlock, int16_t headX,
-                             uint16_t measureWidth, int annotationFont, size_t slots, bool rtlTarget,
-                             std::vector<std::shared_ptr<TextBlock>>& chunks);
+  // rows -- one per source line the sentence occupies -- and append them to `runs` in slot order.
+  //
+  // Each row is wrapped at the width of its OWN band and placed as a whole box at the band's start,
+  // which is what puts an LTR row's first glyph and an RTL row's last one on their sentence's x. The
+  // widths are chosen so the text fills every slot in proportion rather than packing into the first
+  // rows and leaving the rest of the sentence's strips blank. A row never crosses the panel edge and
+  // never crosses the ink already on its strip; short of that it is free to run past its band, which
+  // is how an over-long translation stretches instead of losing its tail.
+  void buildAnnotationRuns(const InterlinearAnnotation& annotation, const ParsedText& transBlock,
+                           const InterlinearBands& bands, uint16_t measureWidth, int annotationFont,
+                           std::vector<InterlinearRun>& runs);
   // Place one already-laid-out row at an absolute y. No page-break test and no y advance -- both
   // belong to the pair, not to a row (see emitInterlinearPair).
   void placeInterlinearRow(const std::shared_ptr<TextBlock>& row, int16_t xPos, int16_t yPos, LineFontRole role);

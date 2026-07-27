@@ -66,6 +66,13 @@ class ParsedText {
   std::vector<TrackedWordPos>* trackedOut = nullptr;
 
   int resolveFirstLineIndent(bool isFirstLine, const GfxRenderer& renderer, int fontId) const;
+  // Everything that must be settled before the first word is measured: the paragraph's base
+  // direction, whether its alignment is the natural one for that direction, and (for an SD-card
+  // face) the glyph advances this block needs. Idempotent, so the per-line entry point can repeat
+  // it on every call without changing what a whole-block layout would have decided.
+  void prepareForLayout(const GfxRenderer& renderer, int fontId);
+  // Drop the first `consumed` tokens from every parallel vector once their line is out.
+  void consumeWords(size_t consumed);
   std::vector<size_t> computeLineBreaks(const GfxRenderer& renderer, int fontId, int pageWidth,
                                         std::vector<uint16_t>& wordWidths, std::vector<bool>& continuesVec,
                                         std::vector<bool>& noSpaceBeforeVec);
@@ -171,4 +178,23 @@ class ParsedText {
   void layoutAndExtractLines(const GfxRenderer& renderer, int fontId, uint16_t viewportWidth,
                              const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
                              bool includeLastLine = true, std::vector<TrackedWordPos>* trackedOutParam = nullptr);
+  // Lay out exactly ONE line at `width` and consume only that line's words, leaving the rest of the
+  // block for a later call — at a DIFFERENT width if the caller wants one.
+  //
+  // layoutAndExtractLines wraps a whole block at a single measure, which PtLayout::Interlinear
+  // cannot use: each annotation row is confined to the horizontal BAND its own source line leaves
+  // free, and those bands differ row by row (the first is shortened by the x its source sentence
+  // starts at, the last by the x the NEXT source sentence starts at). So the rows of one sentence
+  // are wrapped at several different widths, one call each.
+  //
+  // The line is always treated as a FIRST line — resolveFirstLineIndent sees breakIndex 0 on every
+  // call — so a caller that wants an indent on the opening row only must clear blockStyle.textIndent
+  // itself before the second call. Interlinear sets it to zero throughout and positions each row by
+  // placing its whole box, which is also what puts an RTL row's right edge on its band's right edge.
+  //
+  // Returns true when a line reached `processLine`, false when the block is empty or the line was
+  // dropped (TextBlock arena OOM). The words are consumed either way, so a loop on size() always
+  // terminates. Tracked words are NOT reported: the report is 1:1 with one whole-block layout.
+  bool extractNextLine(const GfxRenderer& renderer, int fontId, uint16_t width,
+                       const std::function<void(std::shared_ptr<TextBlock>)>& processLine);
 };

@@ -505,21 +505,7 @@ int ParsedText::resolveFirstLineIndent(const bool isFirstLine, const GfxRenderer
   }
   return 0;
 }
-// Consumes data to minimize memory usage
-void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fontId, const uint16_t viewportWidth,
-                                       const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
-                                       const bool includeLastLine, std::vector<TrackedWordPos>* const trackedOutParam) {
-  // Borrow the report vector for this call only (extractLine writes through it) and pre-fill it 1:1
-  // with the tracked list, so an index whose line is dropped or never reached stays NOT_PLACED.
-  trackedOut = trackedOutParam;
-  if (trackedOut) {
-    trackedOut->assign(trackedWords.size(), TrackedWordPos{});
-  }
-  if (words.empty()) {
-    trackedOut = nullptr;
-    return;
-  }
-
+void ParsedText::prepareForLayout(const GfxRenderer& renderer, const int fontId) {
   // Per-paragraph RTL auto-detection: only when CSS/HTML didn't explicitly set direction.
   // Explicit dir="ltr" must be respected and not overridden by content heuristic.
   if (!blockStyle.directionDefined && hasRtlWord) {
@@ -553,6 +539,62 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
     if (styleMask == 0) styleMask = 0x01;  // defensive: regular only
     renderer.ensureSdCardFontReady(fontId, words, hyphenationEnabled, styleMask);
   }
+}
+
+void ParsedText::consumeWords(const size_t consumed) {
+  if (consumed == 0) return;
+  const size_t take = std::min(consumed, words.size());
+  words.erase(words.begin(), words.begin() + take);
+  wordStyles.erase(wordStyles.begin(), wordStyles.begin() + take);
+  wordContinues.erase(wordContinues.begin(), wordContinues.begin() + take);
+  wordNoSpaceBefore.erase(wordNoSpaceBefore.begin(), wordNoSpaceBefore.begin() + take);
+  wordIsFocusSuffix.erase(wordIsFocusSuffix.begin(), wordIsFocusSuffix.begin() + take);
+  if (!rubyTexts.empty()) {
+    const size_t rtConsumed = std::min(take, rubyTexts.size());
+    rubyTexts.erase(rubyTexts.begin(), rubyTexts.begin() + rtConsumed);
+  }
+}
+
+bool ParsedText::extractNextLine(const GfxRenderer& renderer, const int fontId, const uint16_t width,
+                                 const std::function<void(std::shared_ptr<TextBlock>)>& processLine) {
+  if (words.empty()) return false;
+
+  prepareForLayout(renderer, fontId);
+
+  const int pageWidth = width;
+  auto wordWidths = calculateWordWidths(renderer, fontId);
+  // The whole remaining block is broken, and only the first line of that break is taken. Breaking
+  // just the opening line is not separable from breaking the rest — the DP's cost for line 0 is
+  // defined by what the lines after it can do with what is left — and a sentence's translation is a
+  // few dozen tokens, so the repeated work is bounded and small.
+  const std::vector<size_t> lineBreakIndices =
+      hyphenationEnabled
+          ? computeHyphenatedLineBreaks(renderer, fontId, pageWidth, wordWidths, wordContinues, wordNoSpaceBefore)
+          : computeLineBreaks(renderer, fontId, pageWidth, wordWidths, wordContinues, wordNoSpaceBefore);
+  if (lineBreakIndices.empty()) return false;
+
+  const bool emitted = extractLine(0, 0, pageWidth, wordWidths, wordContinues, wordNoSpaceBefore, lineBreakIndices,
+                                   processLine, renderer, fontId);
+  consumeWords(lineBreakIndices[0]);
+  return emitted;
+}
+
+// Consumes data to minimize memory usage
+void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fontId, const uint16_t viewportWidth,
+                                       const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
+                                       const bool includeLastLine, std::vector<TrackedWordPos>* const trackedOutParam) {
+  // Borrow the report vector for this call only (extractLine writes through it) and pre-fill it 1:1
+  // with the tracked list, so an index whose line is dropped or never reached stays NOT_PLACED.
+  trackedOut = trackedOutParam;
+  if (trackedOut) {
+    trackedOut->assign(trackedWords.size(), TrackedWordPos{});
+  }
+  if (words.empty()) {
+    trackedOut = nullptr;
+    return;
+  }
+
+  prepareForLayout(renderer, fontId);
 
   const int pageWidth = viewportWidth;
   auto wordWidths = calculateWordWidths(renderer, fontId);
@@ -582,16 +624,7 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
 
   // Remove consumed words so size() reflects only remaining words
   if (lineCount > 0) {
-    const size_t consumed = lineBreakIndices[lineCount - 1];
-    words.erase(words.begin(), words.begin() + consumed);
-    wordStyles.erase(wordStyles.begin(), wordStyles.begin() + consumed);
-    wordContinues.erase(wordContinues.begin(), wordContinues.begin() + consumed);
-    wordNoSpaceBefore.erase(wordNoSpaceBefore.begin(), wordNoSpaceBefore.begin() + consumed);
-    wordIsFocusSuffix.erase(wordIsFocusSuffix.begin(), wordIsFocusSuffix.begin() + consumed);
-    if (!rubyTexts.empty()) {
-      const size_t rtConsumed = std::min(consumed, rubyTexts.size());
-      rubyTexts.erase(rubyTexts.begin(), rubyTexts.begin() + rtConsumed);
-    }
+    consumeWords(lineBreakIndices[lineCount - 1]);
   }
 }
 
