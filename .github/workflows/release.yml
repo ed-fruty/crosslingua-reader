@@ -88,20 +88,6 @@ jobs:
           GITHUB_REPO: ${{ github.repository }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Remove non-firmware release assets
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          RELEASE_ID="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" --jq '.id' 2>/dev/null || true)"
-          if [ -n "${RELEASE_ID}" ]; then
-            gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets" --paginate \
-              --jq '.[] | select(.name != "firmware.bin") | .id' |
-            while read -r ASSET_ID; do
-              [ -z "${ASSET_ID}" ] || gh api --method DELETE \
-                "repos/${GITHUB_REPOSITORY}/releases/assets/${ASSET_ID}"
-            done
-          fi
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
@@ -113,3 +99,17 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             .pio/build/gh_release/firmware.bin
+
+      # Keep this last: an older run for a moved tag may finish concurrently
+      # and attach its legacy asset set after this run starts.
+      - name: Remove non-firmware release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RELEASE_ID="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" --jq '.id')"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets" --paginate \
+            --jq '.[] | select(.name != "firmware.bin") | .id' |
+          while read -r ASSET_ID; do
+            [ -z "${ASSET_ID}" ] || gh api --method DELETE \
+              "repos/${GITHUB_REPOSITORY}/releases/assets/${ASSET_ID}"
+          done
