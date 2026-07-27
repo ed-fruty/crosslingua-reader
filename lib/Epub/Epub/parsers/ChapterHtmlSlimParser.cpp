@@ -3,44 +3,94 @@
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
+#include <I18n.h>
 #include <Logging.h>
+#include <Utf8.h>
+#include <XmlParserUtils.h>
 #include <expat.h>
 
-#include "../../Epub.h"
-#include "../Page.h"
-#include "../converters/ImageDecoderFactory.h"
-#include "../converters/ImageToFramebufferDecoder.h"
-#include "../htmlEntities.h"
+#include <algorithm>
+#include <cstdint>
+#include <iterator>
+#include <new>
 
-const char* HEADER_TAGS[] = {"h1", "h2", "h3", "h4", "h5", "h6"};
-constexpr int NUM_HEADER_TAGS = sizeof(HEADER_TAGS) / sizeof(HEADER_TAGS[0]);
+#include "../../../../src/fontIds.h"
+#include "Epub.h"
+#include "Epub/Page.h"
+#include "Epub/TranslationDetection.h"
+#include "Epub/converters/ImageDecoderFactory.h"
+#include "Epub/converters/ImageDimsProbe.h"
+#include "Epub/converters/ImageToFramebufferDecoder.h"
+#include "Epub/htmlEntities.h"
+#include "Epub/hyphenation/Hyphenator.h"
+#include "ParagraphBoundary.h"
 
 // Minimum file size (in bytes) to show indexing popup - smaller chapters don't benefit from it
 constexpr size_t MIN_SIZE_FOR_POPUP = 10 * 1024;  // 10KB
+constexpr size_t PARSE_BUFFER_SIZE = 1024;
 
-const char* BLOCK_TAGS[] = {"p", "li", "div", "br", "blockquote"};
-constexpr int NUM_BLOCK_TAGS = sizeof(BLOCK_TAGS) / sizeof(BLOCK_TAGS[0]);
+// This number comes from PR #73
+// If we have > 750 words buffered up, perform the layout and consume out all but the last line
+// There should be enough here to build out 1-2 full pages and doing this will free up a lot of
+// memory.
+// Spotted when reading Intermezzo, there are some really long text blocks in there.
+constexpr size_t TEXT_BLOCK_SOFT_FLUSH_WORDS = 750;
 
-const char* BOLD_TAGS[] = {"b", "strong"};
-constexpr int NUM_BOLD_TAGS = sizeof(BOLD_TAGS) / sizeof(BOLD_TAGS[0]);
+// When CSS is enabled, flush earlier to save RAM. 320 is still more than enough to build a CJK
+// page at font size 14
+constexpr size_t TEXT_BLOCK_SOFT_FLUSH_WORDS_WITH_CSS = 320;
 
-const char* ITALIC_TAGS[] = {"i", "em"};
-constexpr int NUM_ITALIC_TAGS = sizeof(ITALIC_TAGS) / sizeof(ITALIC_TAGS[0]);
+// Hard cap on the number of anchor IDs recorded per chapter. Legitimate navigation
+// anchors (TOC entries, footnotes, cross-references) rarely exceed a few hundred per
+// chapter. A runaway count usually means a converter injected machine-generated IDs on
+// every text fragment (e.g. Kobo KePub spans). The cap prevents unbounded heap growth
+// on resource-constrained devices (~380KB heap). TOC anchors bypass this cap.
+constexpr size_t MAX_ANCHORS_PER_CHAPTER = 1024;
 
-const char* UNDERLINE_TAGS[] = {"u", "ins"};
-constexpr int NUM_UNDERLINE_TAGS = sizeof(UNDERLINE_TAGS) / sizeof(UNDERLINE_TAGS[0]);
-
-const char* IMAGE_TAGS[] = {"img"};
-constexpr int NUM_IMAGE_TAGS = sizeof(IMAGE_TAGS) / sizeof(IMAGE_TAGS[0]);
-
-const char* SKIP_TAGS[] = {"head"};
-constexpr int NUM_SKIP_TAGS = sizeof(SKIP_TAGS) / sizeof(SKIP_TAGS[0]);
+constexpr const char* HEADER_TAGS[] = {"h1", "h2", "h3", "h4", "h5", "h6"};
+// Paragraph-boundary block tags (p, li, div, br, blockquote and h1..h6) now live
+// in the shared paraboundary predicate (ParagraphBoundary.h) so the layout parser
+// and the PageTranslationOverlay SAX reparser cannot diverge. HEADER_TAGS above is retained
+// only for header-specific STYLING (centered + bold), not boundary detection.
+constexpr const char* BOLD_TAGS[] = {"b", "strong"};
+constexpr const char* ITALIC_TAGS[] = {"i", "em"};
+constexpr const char* UNDERLINE_TAGS[] = {"u", "ins"};
+constexpr const char* LINETHROUGH_TAGS[] = {"del", "s", "strike"};
+constexpr const char* IMAGE_TAGS[] = {"img", "image"};
+constexpr const char* SKIP_TAGS[] = {"head", "rp"};
 
 bool isWhitespace(const char c) { return c == ' ' || c == '\r' || c == '\n' || c == '\t'; }
 
-// given the start and end of a tag, check to see if it matches a known tag
-bool matches(const char* tag_name, const char* possible_tags[], const int possible_tag_count) {
-  for (int i = 0; i < possible_tag_count; i++) {
+std::string trimAndNormalize(const std::string& str) {
+  if (str.empty()) return "";
+  size_t start = 0;
+  while (start < str.size() && isWhitespace(str[start])) {
+    start++;
+  }
+  if (start == str.size()) return "";
+  size_t end = str.size() - 1;
+  while (end > start && isWhitespace(str[end])) {
+    end--;
+  }
+  std::string result;
+  result.reserve(end - start + 1);
+  bool inSpace = false;
+  for (size_t i = start; i <= end; i++) {
+    if (isWhitespace(str[i])) {
+      if (!inSpace) {
+        result.push_back(' ');
+        inSpace = true;
+      }
+    } else {
+      result.push_back(str[i]);
+      inSpace = false;
+    }
+  }
+  return result;
+}
+
+bool matches(const char* tag_name, const char* const* possible_tags, size_t count) {
+  for (size_t i = 0; i < count; i++) {
     if (strcmp(tag_name, possible_tags[i]) == 0) {
       return true;
     }
@@ -48,18 +98,96 @@ bool matches(const char* tag_name, const char* possible_tags[], const int possib
   return false;
 }
 
-bool isHeaderOrBlock(const char* name) {
-  return matches(name, HEADER_TAGS, NUM_HEADER_TAGS) || matches(name, BLOCK_TAGS, NUM_BLOCK_TAGS);
+const char* getAttribute(const XML_Char** atts, const char* attrName) {
+  if (!atts) return nullptr;
+  for (int i = 0; atts[i]; i += 2) {
+    if (strcmp(atts[i], attrName) == 0) return atts[i + 1];
+  }
+  return nullptr;
 }
 
-// Update effective bold/italic/underline based on block style and inline style stack
+// Returns true if the HTML element is a purely inline, non-navigable wrapper.
+// IDs on these elements are never meaningful navigation targets in epub content.
+// Reading-system converters (Kobo KePub, Calibre, etc.) frequently inject thousands
+// of such IDs for progress tracking or internal bookkeeping, and recording each one
+// as a navigation anchor exhausts the heap on memory-constrained devices.
+// Block-level, sectioning, and structural elements are always considered navigable.
+bool isNonNavigableInlineElement(const char* name) { return strcmp(name, "span") == 0; }
+
+bool isInternalEpubLink(const char* href) {
+  if (!href || href[0] == '\0') return false;
+  if (strncmp(href, "http://", 7) == 0 || strncmp(href, "https://", 8) == 0) return false;
+  if (strncmp(href, "mailto:", 7) == 0) return false;
+  if (strncmp(href, "ftp://", 6) == 0) return false;
+  if (strncmp(href, "tel:", 4) == 0) return false;
+  if (strncmp(href, "javascript:", 11) == 0) return false;
+  return true;
+}
+
+// Single source of truth for "is this a paragraph-boundary tag" — the union of
+// HEADER_TAGS and the container/hard-break block tags. Forwards to the shared
+// paraboundary predicate that the overlay reparser also uses.
+bool isHeaderOrBlock(const char* name) { return paraboundary::isParagraphBlockTag(name); }
+
+bool isTableStructuralTag(const char* name) {
+  return strcmp(name, "table") == 0 || strcmp(name, "tr") == 0 || strcmp(name, "td") == 0 || strcmp(name, "th") == 0;
+}
+
+void ChapterHtmlSlimParser::applyDirectionToEntry(StyleStackEntry& entry, const CssStyle& css) {
+  if (css.hasDirection()) {
+    entry.hasDirection = true;
+    entry.direction = css.direction;
+  }
+}
+
+EpdFontFamily::Style ChapterHtmlSlimParser::fontStyleForTextDecoration(const CssTextDecoration decoration) {
+  EpdFontFamily::Style style = EpdFontFamily::REGULAR;
+  if ((decoration & CssTextDecoration::Underline) != CssTextDecoration::None) {
+    style = static_cast<EpdFontFamily::Style>(style | EpdFontFamily::UNDERLINE);
+  }
+  if ((decoration & CssTextDecoration::LineThrough) != CssTextDecoration::None) {
+    style = static_cast<EpdFontFamily::Style>(style | EpdFontFamily::STRIKETHROUGH);
+  }
+  return style;
+}
+
+void ChapterHtmlSlimParser::applyTextDecorationToEntry(StyleStackEntry& entry, const CssStyle& css) {
+  if (css.hasTextDecoration()) {
+    entry.hasTextDecoration = true;
+    entry.textDecoration = css.textDecoration;
+  }
+}
+
+void ChapterHtmlSlimParser::pushDecorationStyleEntry(const CssTextDecoration defaultDecoration,
+                                                     const CssStyle& cssStyle) {
+  StyleStackEntry entry;
+  entry.depth = depth;
+  entry.hasTextDecoration = true;
+  entry.textDecoration = cssStyle.hasTextDecoration() ? cssStyle.textDecoration : defaultDecoration;
+  if (cssStyle.hasFontWeight()) {
+    entry.hasBold = true;
+    entry.bold = cssStyle.fontWeight == CssFontWeight::Bold;
+  }
+  if (cssStyle.hasFontStyle()) {
+    entry.hasItalic = true;
+    entry.italic = cssStyle.fontStyle == CssFontStyle::Italic;
+  }
+  applyDirectionToEntry(entry, cssStyle);
+  inlineStyleStack.push_back(entry);
+  updateEffectiveInlineStyle();
+}
+
+// Update effective bold/italic/decorations based on block style and inline style stack
 void ChapterHtmlSlimParser::updateEffectiveInlineStyle() {
   // Start with block-level styles
   effectiveBold = currentCssStyle.hasFontWeight() && currentCssStyle.fontWeight == CssFontWeight::Bold;
   effectiveItalic = currentCssStyle.hasFontStyle() && currentCssStyle.fontStyle == CssFontStyle::Italic;
-  effectiveUnderline =
-      currentCssStyle.hasTextDecoration() && currentCssStyle.textDecoration == CssTextDecoration::Underline;
-  effectiveColor = currentCssStyle.hasColor() ? currentCssStyle.textGrayLevel : 0;
+  effectiveTextDecoration =
+      currentCssStyle.hasTextDecoration() ? currentCssStyle.textDecoration : CssTextDecoration::None;
+  effectiveDirectionDefined = currentCssStyle.hasDirection();
+  effectiveDirection = currentCssStyle.direction;
+  effectiveSup = false;
+  effectiveSub = false;
 
   // Apply inline style stack in order
   for (const auto& entry : inlineStyleStack) {
@@ -69,21 +197,159 @@ void ChapterHtmlSlimParser::updateEffectiveInlineStyle() {
     if (entry.hasItalic) {
       effectiveItalic = entry.italic;
     }
-    if (entry.hasUnderline) {
-      effectiveUnderline = entry.underline;
+    // CSS line decorations propagate through descendants; child entries add
+    // their own lines but cannot cancel an ancestor's already active line.
+    if (entry.hasTextDecoration) {
+      effectiveTextDecoration = effectiveTextDecoration | entry.textDecoration;
     }
-    if (entry.hasColor) {
-      effectiveColor = entry.color;
+    if (entry.hasDirection) {
+      effectiveDirectionDefined = true;
+      effectiveDirection = entry.direction;
+    }
+    if (entry.hasSup) {
+      effectiveSup = entry.sup;
+      if (entry.sup) effectiveSub = false;
+    }
+    if (entry.hasSub) {
+      effectiveSub = entry.sub;
+      if (entry.sub) effectiveSup = false;
+    }
+  }
+
+  // Keep inherited direction in the active empty text block so upcoming block starts
+  // can inherit from non-block ancestors such as <html dir="rtl"> / <body dir="rtl">.
+  if (currentTextBlock && currentTextBlock->isEmpty()) {
+    auto& style = currentTextBlock->getBlockStyle();
+    if (effectiveDirectionDefined) {
+      style.directionDefined = true;
+      style.isRtl = (effectiveDirection == CssTextDirection::Rtl);
+    } else {
+      style.directionDefined = false;
+      style.isRtl = false;
     }
   }
 }
 
+void ChapterHtmlSlimParser::flushPendingAnchor() {
+  if (pendingAnchorId.empty()) return;
+
+  // If the pending anchor is a TOC chapter boundary, force a page break after the previous
+  // block is flushed so the chapter starts on a fresh page.
+  if (std::find(tocAnchors.begin(), tocAnchors.end(), pendingAnchorId) != tocAnchors.end()) {
+    if (currentPage && !currentPage->elements.empty()) {
+      completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex);
+      completedPageCount++;
+      currentPage.reset(new Page());
+      currentPageNextY = 0;
+    }
+  }
+
+  // Record deferred anchor after previous block is flushed (and any TOC page break)
+  anchorData.push_back({std::move(pendingAnchorId), static_cast<uint16_t>(completedPageCount)});
+  pendingAnchorId.clear();
+}
+
+// Pre-Translation: layout-based block filtering, shared by flushPartWordBuffer and the ruby
+// handlers. Both, SideBySide and Interlinear emit everything (SideBySide pairs the two languages into
+// columns instead of dropping either; Interlinear needs the translated block to become a ParsedText
+// so renderInterlinear can read its words for the annotation rows -- it is never laid out as a
+// paragraph of its own); OriginalOnly drops translated text -- which is also what the Page
+// Translation and Tooltip display modes need, since they surface translations through a popup at view time and
+// emitting them inline would double the text and break the tooltip's underline/sentence-index math.
+// The top of the inline style stack carries whether the current text belongs to a translated block
+// (block-opening and inline tags stamp isTranslatedBlock onto their StyleStackEntry, and children
+// inherit it through nesting).
+bool ChapterHtmlSlimParser::wordIsFiltered() const {
+  const bool inTranslatedBlock = !inlineStyleStack.empty() && inlineStyleStack.back().isTranslatedBlock;
+  switch (ptLayout) {
+    case PtLayout::OriginalOnly:
+      return inTranslatedBlock;
+    case PtLayout::TranslationOnly:
+      return !inTranslatedBlock;
+    case PtLayout::Both:
+    case PtLayout::SideBySide:
+    case PtLayout::Interlinear:
+      return false;
+  }
+  return false;  // unreachable: every enumerator returns above
+}
+
+// Pre-Translation: which role the lines of the block currently being laid out carry. Only one
+// layout puts translated text in the main flow as a SECOND type size, so only one can tag a line:
+//
+//   Both           the two languages flow inline; a distinct translation font makes the translated
+//                  blocks visibly secondary. This is the Interleaved size's only layout. (Normal
+//                  shares this layout and must stay body-size, which is why the app hands a 0
+//                  translation font for every mode but Interleaved -- the layout engine cannot tell
+//                  the two modes apart, and must not try to.)
+//   OriginalOnly   translated words never reach a line at all (wordIsFiltered drops them), so there
+//                  is nothing to tag; the two overlay modes that map here composite their own,
+//                  separately-sized text over the finished page.
+//   TranslationOnly  the translation IS the page's primary text -- shrinking it would shrink the
+//                  whole chapter, so it stays Body.
+//   SideBySide     both columns are the same face by design (a shrunken column would defeat the
+//                  pairing), so nothing that reaches THIS function is tagged. The paired path does
+//                  tag its translation column LineFontRole::Translation, but for COLOUR, not for a
+//                  font — the translation slot is 0 under this mode, so the role resolves back to
+//                  the body font (see renderSideBySide). Two paths reach here under SideBySide and
+//                  both are main-flow text, hence Body: the soft-flush escape, and the full-width
+//                  fallback makePagesTableMode takes for a translation with no original to pair
+//                  with. KNOWN GAP, benign: translated text arriving either way is outside the
+//                  Translation Colour row's reach and draws black like the source. Black is the
+//                  row's own default, so it is never a colour the user did not pick; tagging these
+//                  Translation would close it (the font resolves to Body either way) at the cost of
+//                  making a rare fallback path carry a role its comment says it must not.
+//   Interlinear    the translated text does NOT flow inline at all: renderInterlinear re-emits it
+//                  into its own small rows tagged LineFontRole::Annotation, which resolve through the
+//                  annotation slot instead. Source lines therefore stay Body. The translated block
+//                  normally never reaches here — it is consumed by the pairing, not flushed through
+//                  makePages — with ONE exception: characterData's soft flush is a mid-block escape
+//                  that bypasses the pairing, and it answers Body for a translated block, i.e. the
+//                  translation at full body size in the main flow. That is why the soft flush holds
+//                  a paired layout to the base ceiling and treats a flush there as an OOM backstop
+//                  rather than a routine chunking step (see the threshold comment there).
+//
+// Reads the block-level translated flag, not the per-word inline-stack one wordIsFiltered() uses: a
+// role applies to a whole laid-out line, and currentBlockIsTranslated is exactly the granularity of
+// the block that is being flushed (see the makePagesTableMode comment for why it is still valid
+// here).
+LineFontRole ChapterHtmlSlimParser::currentLineRole() const {
+  // No distinct translation font configured: every line is Body, i.e. exactly the pre-existing
+  // layout, and fontIdForRole would resolve Translation back to fontId anyway.
+  if (translationFontId == 0 || !currentBlockIsTranslated) return LineFontRole::Body;
+  switch (ptLayout) {
+    case PtLayout::Both:
+      return LineFontRole::Translation;
+    case PtLayout::OriginalOnly:
+    case PtLayout::TranslationOnly:
+    case PtLayout::SideBySide:
+    case PtLayout::Interlinear:
+      break;
+  }
+  return LineFontRole::Body;
+}
+
 // flush the contents of partWordBuffer to currentTextBlock
 void ChapterHtmlSlimParser::flushPartWordBuffer() {
+  // Pre-Translation: the top of the inline style stack carries whether the word being flushed
+  // belongs to a translated block (block-opening and inline tags stamp isTranslatedBlock onto
+  // their StyleStackEntry, and children inherit it through nesting).
+  const bool inTranslatedBlock = !inlineStyleStack.empty() && inlineStyleStack.back().isTranslatedBlock;
+
+  // Mode-based filtering: drop the word entirely so it never reaches the layout engine.
+  // See wordIsFiltered() above for the per-mode rules.
+  // Reset continuation on drop: a dropped word must not attach to the next (this also keeps the
+  // CJK MAX_WORD_SIZE split intact, since both halves of a split word carry the same block state
+  // and are filtered identically).
+  if (wordIsFiltered()) {
+    partWordBufferIndex = 0;
+    nextWordContinues = false;
+    return;
+  }
+
   // Determine font style from depth-based tracking and CSS effective style
   const bool isBold = boldUntilDepth < depth || effectiveBold;
   const bool isItalic = italicUntilDepth < depth || effectiveItalic;
-  const bool isUnderline = underlineUntilDepth < depth || effectiveUnderline;
 
   // Combine style flags using bitwise OR
   EpdFontFamily::Style fontStyle = EpdFontFamily::REGULAR;
@@ -93,43 +359,24 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
   if (isItalic) {
     fontStyle = static_cast<EpdFontFamily::Style>(fontStyle | EpdFontFamily::ITALIC);
   }
-  if (isUnderline) {
-    fontStyle = static_cast<EpdFontFamily::Style>(fontStyle | EpdFontFamily::UNDERLINE);
+  fontStyle = static_cast<EpdFontFamily::Style>(fontStyle | fontStyleForTextDecoration(effectiveTextDecoration));
+  if (effectiveSup) {
+    fontStyle = static_cast<EpdFontFamily::Style>(fontStyle | EpdFontFamily::SUP);
+  } else if (effectiveSub) {
+    fontStyle = static_cast<EpdFontFamily::Style>(fontStyle | EpdFontFamily::SUB);
   }
-
-  uint8_t wordColor = effectiveColor;
-
-  // No Render: strip colored (translated) text entirely
-  if (translationMode == 3 && wordColor > 0) {
-    partWordBufferIndex = 0;
-    nextWordContinues = false;
-    return;
+  // Pre-Translation: tag translated words so the renderer can apply gray-level dimming in
+  // Dark/Light modes. The TRANSLATED bit (64) composes with the existing style bits.
+  if (inTranslatedBlock) {
+    fontStyle = static_cast<EpdFontFamily::Style>(fontStyle | EpdFontFamily::TRANSLATED);
   }
-  // Invert: strip original text, render translated text as normal black
-  if (translationMode == 4) {
-    if (wordColor == 0) {
-      partWordBufferIndex = 0;
-      nextWordContinues = false;
-      return;
-    }
-    wordColor = 0;
-  }
-  // Side by side: track colored blocks, render all text as black
-  if (translationMode == 5 && wordColor > 0) {
-    currentBlockHasColoredText = true;
-    wordColor = 0;
-  }
-
-  // Tooltip & Modal: keep both original and translated text as-is.
-  // Translated words retain their grayLevel marker and will be hidden
-  // at render time via colorTextGrayLevel=3, but stay in TextBlock for extraction.
-  // (No transformation needed — wordColor passes through unchanged.)
 
   // flush the buffer
   partWordBuffer[partWordBufferIndex] = '\0';
-  currentTextBlock->addWord(partWordBuffer, fontStyle, false, nextWordContinues, wordColor);
+  currentTextBlock->addWord(partWordBuffer, fontStyle, false, nextWordContinues);
   partWordBufferIndex = 0;
   nextWordContinues = false;
+  listItemBulletOnly = false;
 }
 
 // start a new text block if needed
@@ -138,21 +385,123 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
   if (currentTextBlock) {
     // already have a text block running and it is empty - just reuse it
     if (currentTextBlock->isEmpty()) {
-      // Merge with existing block style to accumulate CSS styling from parent block elements.
-      // This handles cases like <div style="margin-bottom:2em"><h1>text</h1></div> where the
-      // div's margin should be preserved, even though it has no direct text content.
-      currentTextBlock->setBlockStyle(currentTextBlock->getBlockStyle().getCombinedBlockStyle(blockStyle));
+      // The stack accumulates horizontal margins and text properties from ancestors.
+      // Vertical margins are per-element and not inherited through the stack, but
+      // container elements deposit their vertical margins on the empty block when they
+      // open. Merge those into the new style so the first child in a container inherits
+      // the container's vertical spacing.
+      const auto style = currentTextBlock->getBlockStyle();
+      BlockStyle incoming = blockStyle;
+      if (style.fromBrElement) {
+        // The empty block was created by a <br> section separator. Inject a full line of
+        // blank space before the following paragraph so the scene/section break is visible.
+        // This only fires when the <br> block stayed empty (i.e. no inline text was added).
+        const int16_t lineHeight = static_cast<int16_t>(renderer.getLineHeight(fontId, lineCompression));
+        incoming.marginTop = static_cast<int16_t>(incoming.marginTop + lineHeight);
+      }
+
+      currentTextBlock->setBlockStyle(style.getCombinedBlockStyle(incoming, BlockStyle::CombineAxis::Vertical));
+
+      flushPendingAnchor();
       return;
     }
 
-    if (translationMode == 5) {
+    // <li> added a bullet as the first word, making the block non-empty. When a nested
+    // block-level child (<p>, <div>, etc.) opens, reuse the block instead of flushing
+    // the bullet to its own line. The bullet stays inline with the child's text.
+    if (listItemBulletOnly) {
+      const auto style = currentTextBlock->getBlockStyle();
+      currentTextBlock->setBlockStyle(style.getCombinedBlockStyle(blockStyle, BlockStyle::CombineAxis::Vertical));
+      listItemBulletOnly = false;
+      flushPendingAnchor();
+      return;
+    }
+
+    // Pre-Translation: the two PAIRING layouts route through their own builder, which buffers
+    // originals and pairs them with their translations. currentBlockIsTranslated and
+    // currentBlockParagraphIdx are stamped AFTER this flush by the caller, so here they still
+    // describe the block being flushed — exactly what those builders inspect.
+    if (ptLayout == PtLayout::SideBySide) {
       makePagesTableMode();
+    } else if (ptLayout == PtLayout::Interlinear) {
+      makePagesInterlinearMode();
     } else {
       makePages();
     }
   }
-  currentTextBlock.reset(new ParsedText(extraParagraphSpacing, hyphenationEnabled, blockStyle));
-  currentBlockHasColoredText = false;
+  // If the pending anchor is a TOC chapter boundary, force a page break after the previous
+  // block is flushed so the chapter starts on a fresh page.
+  flushPendingAnchor();
+  currentTextBlock.reset(new ParsedText(extraParagraphSpacing, hyphenationEnabled, focusReadingEnabled, blockStyle));
+  wordsExtractedInBlock = 0;
+  listItemBulletOnly = false;
+  // Pre-Translation: a fresh physical text block has not been assigned a paragraph index yet. The
+  // next content block-open (original) that lands on it claims the index and advances the counter;
+  // nested opens that reuse this same block (empty / li-bullet reuse paths above) leave the flag set
+  // and inherit the index, so exactly one index is consumed per distinct content block.
+  currentBlockIndexAssigned = false;
+}
+
+void ChapterHtmlSlimParser::emitHorizontalRule(const BlockStyle& blockStyle) {
+  if (partWordBufferIndex > 0) {
+    flushPartWordBuffer();
+  }
+
+  if (currentTextBlock) {
+    const BlockStyle parentBlockStyle = currentTextBlock->getBlockStyle();
+    startNewTextBlock(parentBlockStyle);
+  }
+
+  if (!currentPage) {
+    currentPage.reset(new (std::nothrow) Page());
+    if (!currentPage) {
+      LOG_ERR("EHP", "Failed to create page for horizontal rule");
+      return;
+    }
+    currentPageNextY = 0;
+  }
+
+  const int16_t lineHeight = static_cast<int16_t>(renderer.getLineHeight(fontId, lineCompression));
+  const int16_t defaultVerticalSpacing = static_cast<int16_t>(lineHeight / 2);
+  const int16_t topSpacing =
+      static_cast<int16_t>((blockStyle.marginTop > 0 ? blockStyle.marginTop : defaultVerticalSpacing) +
+                           (blockStyle.paddingTop > 0 ? blockStyle.paddingTop : 0));
+  const int16_t bottomSpacing =
+      static_cast<int16_t>((blockStyle.marginBottom > 0 ? blockStyle.marginBottom : defaultVerticalSpacing) +
+                           (blockStyle.paddingBottom > 0 ? blockStyle.paddingBottom : 0));
+  constexpr uint8_t ruleThickness = 2;
+  const int16_t availableWidth =
+      std::max<int16_t>(1, static_cast<int16_t>(viewportWidth - blockStyle.totalHorizontalInset()));
+  const int16_t width = std::max<int16_t>(1, static_cast<int16_t>(availableWidth / 4));
+  const int16_t xPos = static_cast<int16_t>(blockStyle.leftInset() + ((availableWidth - width) / 2));
+  const int16_t totalHeight = static_cast<int16_t>(topSpacing + ruleThickness + bottomSpacing);
+
+  if (!currentPage->elements.empty() && currentPageNextY + totalHeight > viewportHeight) {
+    completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex);
+    completedPageCount++;
+    currentPage.reset(new (std::nothrow) Page());
+    if (!currentPage) {
+      LOG_ERR("EHP", "Failed to create page after horizontal-rule page break");
+      return;
+    }
+    currentPageNextY = 0;
+  }
+
+  currentPageNextY += topSpacing;
+
+  auto pageRule = std::shared_ptr<PageHorizontalRule>(
+      new (std::nothrow) PageHorizontalRule(width, ruleThickness, xPos, currentPageNextY));
+  if (!pageRule) {
+    LOG_ERR("EHP", "Failed to create PageHorizontalRule");
+    return;
+  }
+  currentPage->elements.push_back(pageRule);
+  currentPageNextY = static_cast<int16_t>(currentPageNextY + ruleThickness + bottomSpacing);
+
+  if (!pendingAnchorId.empty()) {
+    anchorData.push_back({std::move(pendingAnchorId), static_cast<uint16_t>(completedPageCount)});
+    pendingAnchorId.clear();
+  }
 }
 
 void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char* name, const XML_Char** atts) {
@@ -164,148 +513,465 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     return;
   }
 
-  // Extract class, style, and lang attributes for CSS and translation processing
+  if (strcmp(name, "p") == 0) {
+    self->xpathParagraphIndex++;
+  }
+  if (strcmp(name, "li") == 0) {
+    self->xpathListItemIndex++;
+  }
+
+  // Extract class, style, id, dir, and lang attributes for CSS/RTL/Pre-Translation processing.
+  // langAttr detects translated paragraphs (Calibre and CrossPoint emit translated blocks with a
+  // lang= / xml:lang= attribute differing from the book's primary language declared in content.opf).
   std::string classAttr;
   std::string styleAttr;
-  std::string langAttr;
+  std::string dirAttr;
+  const char* langAttr = nullptr;
   if (atts != nullptr) {
     for (int i = 0; atts[i]; i += 2) {
       if (strcmp(atts[i], "class") == 0) {
         classAttr = atts[i + 1];
       } else if (strcmp(atts[i], "style") == 0) {
         styleAttr = atts[i + 1];
-      } else if (strcmp(atts[i], "lang") == 0) {
+      } else if (strcmp(atts[i], "id") == 0) {
+        // Defer both anchor recording and TOC page breaks until startNewTextBlock,
+        // after the previous block is flushed to pages via makePages().
+        //
+        // Skip IDs on non-navigable inline elements (e.g. <span>): these are never
+        // link targets in epub content, but reading-system converters can inject tens
+        // of thousands of them per chapter, exhausting the heap. TOC anchors are
+        // always recorded regardless of element type, since they drive page breaks.
+        const char* idValue = atts[i + 1];
+        const bool isTocAnchor =
+            std::find(self->tocAnchors.begin(), self->tocAnchors.end(), idValue) != self->tocAnchors.end();
+        if (isTocAnchor || (!isNonNavigableInlineElement(name) && self->anchorData.size() < MAX_ANCHORS_PER_CHAPTER)) {
+          // Flush a displaced anchor before overwriting. Consecutive non-block elements
+          // (e.g. <aside id="fn1">text</aside><aside id="fn2">) with no intervening block
+          // never trigger startNewTextBlock, so fn1 gets silently overwritten. That leaves
+          // fn1 missing from the anchor map -> getPageForAnchor returns nullopt -> reader
+          // lands at page 0 (section start) instead of the footnote.
+          if (!self->pendingAnchorId.empty()) {
+            self->flushPendingAnchor();
+          }
+          self->pendingAnchorId = idValue;
+        }
+      } else if (strcmp(atts[i], "dir") == 0) {
+        dirAttr = atts[i + 1];
+      } else if (strcmp(atts[i], "lang") == 0 || strcmp(atts[i], "xml:lang") == 0) {
         langAttr = atts[i + 1];
       }
     }
+  }
+
+  // Pre-Translation: determine whether this element introduces (or sits inside) a translated block.
+  // Skip html/body to avoid false-positives from a document-level lang (e.g. <html lang="en">).
+  // The language comparison itself is translationdetect::isTranslatedLangTag -- the SAME predicate
+  // Section's per-chapter "does this chapter have a translation" gate scans with, so the gate can
+  // never enable a layout that finds nothing to filter (or refuse one that would have worked).
+  // It compares primary subtags case-insensitively, so `uk-UA` in an `en` book is translated while
+  // `en-GB` in an `en` book is not.
+  const bool langTagAllowed = strcmp(name, "html") != 0 && strcmp(name, "body") != 0;
+  const bool isExplicitTranslated =
+      langTagAllowed && translationdetect::isTranslatedLangTag(langAttr, self->bookPrimaryLang.c_str());
+  const bool inheritedTranslated = !self->inlineStyleStack.empty() && self->inlineStyleStack.back().isTranslatedBlock;
+  const bool currentIsTranslated = isExplicitTranslated || inheritedTranslated;
+
+  // Point the Hyphenator's translated slot at this block's language so its words hyphenate with
+  // their own script's rules (the primary/book hyphenator rejects every word in the other script).
+  // Baked into section.bin at layout time; the lang= here is the one TranslatingHtmlRewriter emits.
+  // Set at block-open (before this block's words lay out); guarded so it re-resolves only on change.
+  if (isExplicitTranslated && self->translatedHyphenLang != langAttr) {
+    self->translatedHyphenLang = langAttr;
+    Hyphenator::setTranslatedLanguage(langAttr);
   }
 
   auto centeredBlockStyle = BlockStyle();
   centeredBlockStyle.textAlignDefined = true;
   centeredBlockStyle.alignment = CssTextAlign::Center;
 
-  // Special handling for tables - show placeholder text instead of dropping silently
-  if (strcmp(name, "table") == 0) {
-    // Add placeholder text
-    self->startNewTextBlock(centeredBlockStyle);
+  // Compute CSS style for this element early so display:none can short-circuit
+  // before tag-specific branches emit any content or metadata.
+  CssStyle cssStyle;
+  if (self->cssParser) {
+    cssStyle = self->cssParser->resolveStyle(name, classAttr);
+    if (!styleAttr.empty()) {
+      CssStyle inlineStyle = CssParser::parseInlineStyle(styleAttr);
+      cssStyle.applyOver(inlineStyle);
+    }
+  }
 
-    self->italicUntilDepth = min(self->italicUntilDepth, self->depth);
-    // Advance depth before processing character data (like you would for an element with text)
+  // HTML dir attribute overrides CSS direction (case-insensitive per HTML spec)
+  if (!dirAttr.empty()) {
+    if (strcasecmp(dirAttr.c_str(), "rtl") == 0) {
+      cssStyle.direction = CssTextDirection::Rtl;
+      cssStyle.defined.direction = 1;
+    } else if (strcasecmp(dirAttr.c_str(), "ltr") == 0) {
+      cssStyle.direction = CssTextDirection::Ltr;
+      cssStyle.defined.direction = 1;
+    }
+  }
+
+  // Direction is inherited in HTML/CSS. If this element does not define one, carry
+  // the currently active inherited direction into its computed style.
+  if (!cssStyle.hasDirection() && self->effectiveDirectionDefined) {
+    cssStyle.direction = self->effectiveDirection;
+    cssStyle.defined.direction = 1;
+  }
+
+  // Skip elements with display:none before all fast paths (tables, links, etc.).
+  if (cssStyle.hasDisplay() && cssStyle.display == CssDisplay::None) {
+    self->skipUntilDepth = self->depth;
     self->depth += 1;
-    self->characterData(userData, "[Table omitted]", strlen("[Table omitted]"));
-
-    // Skip table contents (skip until parent as we pre-advanced depth above)
-    self->skipUntilDepth = self->depth - 1;
     return;
   }
 
-  if (matches(name, IMAGE_TAGS, NUM_IMAGE_TAGS)) {
+  // Special handling for tables/cells: flatten into per-cell paragraphs with a prefixed header.
+  if (strcmp(name, "table") == 0) {
+    // skip nested tables
+    if (self->tableDepth > 0) {
+      self->tableDepth += 1;
+      return;
+    }
+
+    if (self->partWordBufferIndex > 0) {
+      self->flushPartWordBuffer();
+    }
+    self->tableDepth += 1;
+    self->tableRowIndex = 0;
+    self->tableColIndex = 0;
+    self->depth += 1;
+    return;
+  }
+
+  if (self->tableDepth == 1 && strcmp(name, "tr") == 0) {
+    self->tableRowIndex += 1;
+    self->tableColIndex = 0;
+    self->depth += 1;
+    return;
+  }
+
+  if (self->tableDepth == 1 && (strcmp(name, "td") == 0 || strcmp(name, "th") == 0)) {
+    if (self->partWordBufferIndex > 0) {
+      self->flushPartWordBuffer();
+    }
+    self->tableColIndex += 1;
+
+    auto tableCellBlockStyle = BlockStyle();
+    tableCellBlockStyle.textAlignDefined = true;
+    const auto align = (self->paragraphAlignment == static_cast<uint8_t>(CssTextAlign::None))
+                           ? CssTextAlign::Justify
+                           : static_cast<CssTextAlign>(self->paragraphAlignment);
+    tableCellBlockStyle.alignment = align;
+    self->startNewTextBlock(tableCellBlockStyle);
+
+    const std::string headerText =
+        "Tab Row " + std::to_string(self->tableRowIndex) + ", Cell " + std::to_string(self->tableColIndex) + ":";
+    StyleStackEntry headerStyle;
+    headerStyle.depth = self->depth;
+    headerStyle.hasBold = true;
+    headerStyle.bold = false;
+    headerStyle.hasItalic = true;
+    headerStyle.italic = true;
+    // Pre-Translation: this synthetic "Tab Row N, Cell M:" label is UI text, not book content,
+    // so it is intentionally left unmarked (isTranslatedBlock stays false).
+    self->inlineStyleStack.push_back(headerStyle);
+    self->updateEffectiveInlineStyle();
+    const CssTextDecoration savedTextDecoration = self->effectiveTextDecoration;
+    self->effectiveTextDecoration = CssTextDecoration::None;
+    self->characterData(userData, headerText.c_str(), static_cast<int>(headerText.length()));
+    if (self->partWordBufferIndex > 0) {
+      self->flushPartWordBuffer();
+    }
+    self->effectiveTextDecoration = savedTextDecoration;
+    self->nextWordContinues = false;
+    self->inlineStyleStack.pop_back();
+    self->updateEffectiveInlineStyle();
+
+    self->depth += 1;
+    return;
+  }
+
+  if (self->tableDepth == 1 && strcmp(name, "hr") == 0) {
+    self->depth += 1;
+    return;
+  }
+
+  if (matches(name, IMAGE_TAGS, std::size(IMAGE_TAGS))) {
     std::string src;
     std::string alt;
     if (atts != nullptr) {
       for (int i = 0; atts[i]; i += 2) {
         if (strcmp(atts[i], "src") == 0) {
           src = atts[i + 1];
+        } else if (src.empty() && (strcmp(atts[i], "href") == 0 || strcmp(atts[i], "xlink:href") == 0)) {
+          src = atts[i + 1];
         } else if (strcmp(atts[i], "alt") == 0) {
           alt = atts[i + 1];
         }
       }
 
-      if (!src.empty()) {
+      const size_t fragmentPos = src.find('#');
+      if (fragmentPos != std::string::npos) {
+        src.resize(fragmentPos);
+      }
+
+      // imageRendering: 0=display, 1=placeholder (alt text only), 2=suppress entirely
+      if (self->imageRendering == 2) {
+        self->skipUntilDepth = self->depth;
+        self->depth += 1;
+        return;
+      }
+
+      if (!src.empty() && self->imageRendering != 1) {
         LOG_DBG("EHP", "Found image: src=%s", src.c_str());
 
         {
           // Resolve the image path relative to the HTML file
-          std::string resolvedPath = FsHelpers::normalisePath(self->contentBase + src);
+          std::string resolvedPath = FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(self->contentBase + src));
 
-          // Create a unique filename for the cached image
-          std::string ext;
-          size_t extPos = resolvedPath.rfind('.');
-          if (extPos != std::string::npos) {
-            ext = resolvedPath.substr(extPos);
-          }
-          std::string cachedImagePath = self->imageBasePath + std::to_string(self->imageCounter++) + ext;
-
-          // Extract image to cache file
-          FsFile cachedImageFile;
-          bool extractSuccess = false;
-          if (Storage.openFileForWrite("EHP", cachedImagePath, cachedImageFile)) {
-            extractSuccess = self->epub->readItemContentsToStream(resolvedPath, cachedImageFile, 4096);
-            cachedImageFile.flush();
-            cachedImageFile.close();
-            delay(50);  // Give SD card time to sync
-          }
-
-          if (extractSuccess) {
-            // Get image dimensions
-            ImageDimensions dims = {0, 0};
-            ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(cachedImagePath);
-            if (decoder && decoder->getDimensions(cachedImagePath, dims)) {
-              LOG_DBG("EHP", "Image dimensions: %dx%d", dims.width, dims.height);
-
-              // Scale to fit viewport while maintaining aspect ratio
-              int maxWidth = self->viewportWidth;
-              int maxHeight = self->viewportHeight;
-              float scaleX = (dims.width > maxWidth) ? (float)maxWidth / dims.width : 1.0f;
-              float scaleY = (dims.height > maxHeight) ? (float)maxHeight / dims.height : 1.0f;
-              float scale = (scaleX < scaleY) ? scaleX : scaleY;
-              if (scale > 1.0f) scale = 1.0f;
-
-              int displayWidth = (int)(dims.width * scale);
-              int displayHeight = (int)(dims.height * scale);
-
-              LOG_DBG("EHP", "Display size: %dx%d (scale %.2f)", displayWidth, displayHeight, scale);
-
-              // Create page for image - only break if image won't fit remaining space
-              if (self->currentPage && !self->currentPage->elements.empty() &&
-                  (self->currentPageNextY + displayHeight > self->viewportHeight)) {
-                self->completePageFn(std::move(self->currentPage));
-                self->currentPage.reset(new Page());
-                if (!self->currentPage) {
-                  LOG_ERR("EHP", "Failed to create new page");
-                  return;
-                }
-                self->currentPageNextY = 0;
-              } else if (!self->currentPage) {
-                self->currentPage.reset(new Page());
-                if (!self->currentPage) {
-                  LOG_ERR("EHP", "Failed to create initial page");
-                  return;
-                }
-                self->currentPageNextY = 0;
-              }
-
-              // Create ImageBlock and add to page
-              auto imageBlock = std::make_shared<ImageBlock>(cachedImagePath, displayWidth, displayHeight);
-              if (!imageBlock) {
-                LOG_ERR("EHP", "Failed to create ImageBlock");
-                return;
-              }
-              int xPos = (self->viewportWidth - displayWidth) / 2;
-              auto pageImage = std::make_shared<PageImage>(imageBlock, xPos, self->currentPageNextY);
-              if (!pageImage) {
-                LOG_ERR("EHP", "Failed to create PageImage");
-                return;
-              }
-              self->currentPage->elements.push_back(pageImage);
-              self->currentPageNextY += displayHeight;
-
-              self->depth += 1;
-              return;
-            } else {
-              LOG_ERR("EHP", "Failed to get image dimensions");
-              Storage.remove(cachedImagePath.c_str());
+          if (ImageDecoderFactory::isFormatSupported(resolvedPath)) {
+            // Create a unique filename for the cached image
+            std::string ext;
+            size_t extPos = resolvedPath.rfind('.');
+            if (extPos != std::string::npos) {
+              ext = resolvedPath.substr(extPos);
             }
-          } else {
-            LOG_ERR("EHP", "Failed to extract image");
-          }
+            std::string cachedImagePath = self->imageBasePath + std::to_string(self->imageCounter++) + ext;
+
+            {
+              // Probe the dimensions from the entry's first bytes (early-aborted
+              // inflate, a few KB) instead of extracting the whole image now —
+              // extraction is deferred to the first render of the page (see
+              // ImageBlock's lazy extractor). This is what keeps first-open of an
+              // image-heavy chapter from stalling for seconds per image.
+              ImageDimensions dims = {0, 0};
+              ImageDimsProbe headerProbe;
+              self->epub->readItemContentsToStream(resolvedPath, headerProbe, 1024, /*allowEarlyStop=*/true);
+              bool gotDimensions = headerProbe.getDimensions(dims);
+
+              if (!gotDimensions) {
+                // No header within the stream (rare) — fall back to extracting the
+                // whole image and probing the file. That can take seconds, so
+                // surface the indexing popup first (single-shot per parser).
+                if (self->popupFn && !self->imagePopupFired) {
+                  self->imagePopupFired = true;
+                  self->popupFn();
+                }
+                HalFile cachedImageFile;
+                bool extractSuccess = false;
+                if (Storage.openFileForWrite("EHP", cachedImagePath, cachedImageFile)) {
+                  extractSuccess = self->epub->readItemContentsToStream(resolvedPath, cachedImageFile, 4096);
+                  cachedImageFile.flush();
+                  cachedImageFile.close();
+                }
+                if (extractSuccess) {
+                  // Retry to absorb SD-card sync latency on slow cards, and to close
+                  // the silent-drop bug where a single getDimensions failure was fatal.
+                  ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(cachedImagePath);
+                  for (int attempt = 0; attempt < 3 && !gotDimensions; attempt++) {
+                    if (attempt > 0) {
+                      delay(50);  // Give a slow SD card time to finish syncing before retrying
+                    }
+                    gotDimensions = decoder && decoder->getDimensions(cachedImagePath, dims);
+                  }
+                } else {
+                  LOG_ERR("EHP", "Failed to extract image");
+                }
+              }
+
+              if (gotDimensions) {
+                LOG_DBG("EHP", "Image dimensions: %dx%d", dims.width, dims.height);
+
+                int displayWidth = 0;
+                int displayHeight = 0;
+                const float emSize = static_cast<float>(self->renderer.getFontAscenderSize(self->fontId));
+                const CssStyle& imgStyle = cssStyle;
+                const bool hasCssHeight = imgStyle.hasImageHeight();
+                const bool hasCssWidth = imgStyle.hasImageWidth();
+
+                // Compute effective container width for percentage-based image sizes.
+                // If the image is inside a block with horizontal margins/padding (e.g.
+                // <div style="margin: 1em 40%">), percentage widths like width:100%
+                // should resolve against the container width, not the full viewport.
+                int containerWidth = self->viewportWidth;
+                if (self->currentTextBlock) {
+                  const int inset = self->currentTextBlock->getBlockStyle().totalHorizontalInset();
+                  if (inset > 0 && inset < self->viewportWidth) {
+                    containerWidth = self->viewportWidth - inset;
+                  }
+                }
+
+                if (hasCssHeight && hasCssWidth && dims.width > 0 && dims.height > 0) {
+                  // Both CSS height and width set: resolve both, then clamp to viewport preserving requested ratio
+                  displayHeight = static_cast<int>(
+                      imgStyle.imageHeight.toPixels(emSize, static_cast<float>(self->viewportHeight)) + 0.5f);
+                  displayWidth =
+                      static_cast<int>(imgStyle.imageWidth.toPixels(emSize, static_cast<float>(containerWidth)) + 0.5f);
+                  if (displayHeight < 1) displayHeight = 1;
+                  if (displayWidth < 1) displayWidth = 1;
+                  if (displayWidth > containerWidth || displayHeight > self->viewportHeight) {
+                    float scaleX =
+                        (displayWidth > containerWidth) ? static_cast<float>(containerWidth) / displayWidth : 1.0f;
+                    float scaleY = (displayHeight > self->viewportHeight)
+                                       ? static_cast<float>(self->viewportHeight) / displayHeight
+                                       : 1.0f;
+                    float scale = (scaleX < scaleY) ? scaleX : scaleY;
+                    displayWidth = static_cast<int>(displayWidth * scale + 0.5f);
+                    displayHeight = static_cast<int>(displayHeight * scale + 0.5f);
+                    if (displayWidth < 1) displayWidth = 1;
+                    if (displayHeight < 1) displayHeight = 1;
+                  }
+                  LOG_DBG("EHP", "Display size from CSS height+width: %dx%d", displayWidth, displayHeight);
+                } else if (hasCssHeight && !hasCssWidth && dims.width > 0 && dims.height > 0) {
+                  // Use CSS height (resolve % against viewport height) and derive width from aspect ratio
+                  displayHeight = static_cast<int>(
+                      imgStyle.imageHeight.toPixels(emSize, static_cast<float>(self->viewportHeight)) + 0.5f);
+                  if (displayHeight < 1) displayHeight = 1;
+                  displayWidth =
+                      static_cast<int>(displayHeight * (static_cast<float>(dims.width) / dims.height) + 0.5f);
+                  if (displayHeight > self->viewportHeight) {
+                    displayHeight = self->viewportHeight;
+                    // Rescale width to preserve aspect ratio when height is clamped
+                    displayWidth =
+                        static_cast<int>(displayHeight * (static_cast<float>(dims.width) / dims.height) + 0.5f);
+                    if (displayWidth < 1) displayWidth = 1;
+                  }
+                  if (displayWidth > containerWidth) {
+                    displayWidth = containerWidth;
+                    // Rescale height to preserve aspect ratio when width is clamped
+                    displayHeight =
+                        static_cast<int>(displayWidth * (static_cast<float>(dims.height) / dims.width) + 0.5f);
+                    if (displayHeight < 1) displayHeight = 1;
+                  }
+                  if (displayWidth < 1) displayWidth = 1;
+                  LOG_DBG("EHP", "Display size from CSS height: %dx%d", displayWidth, displayHeight);
+                } else if (hasCssWidth && !hasCssHeight && dims.width > 0 && dims.height > 0) {
+                  // Use CSS width (resolve % against container width) and derive height from aspect ratio
+                  displayWidth =
+                      static_cast<int>(imgStyle.imageWidth.toPixels(emSize, static_cast<float>(containerWidth)) + 0.5f);
+                  if (displayWidth > containerWidth) displayWidth = containerWidth;
+                  if (displayWidth < 1) displayWidth = 1;
+                  displayHeight =
+                      static_cast<int>(displayWidth * (static_cast<float>(dims.height) / dims.width) + 0.5f);
+                  if (displayHeight > self->viewportHeight) {
+                    displayHeight = self->viewportHeight;
+                    // Rescale width to preserve aspect ratio when height is clamped
+                    displayWidth =
+                        static_cast<int>(displayHeight * (static_cast<float>(dims.width) / dims.height) + 0.5f);
+                    if (displayWidth < 1) displayWidth = 1;
+                  }
+                  if (displayHeight < 1) displayHeight = 1;
+                  LOG_DBG("EHP", "Display size from CSS width: %dx%d", displayWidth, displayHeight);
+                } else {
+                  // Scale to fit container while maintaining aspect ratio
+                  int maxWidth = containerWidth;
+                  int maxHeight = self->viewportHeight;
+                  float scaleX = (dims.width > maxWidth) ? (float)maxWidth / dims.width : 1.0f;
+                  float scaleY = (dims.height > maxHeight) ? (float)maxHeight / dims.height : 1.0f;
+                  float scale = (scaleX < scaleY) ? scaleX : scaleY;
+                  if (scale > 1.0f) scale = 1.0f;
+
+                  displayWidth = (int)(dims.width * scale);
+                  displayHeight = (int)(dims.height * scale);
+                  LOG_DBG("EHP", "Display size: %dx%d (scale %.2f)", displayWidth, displayHeight, scale);
+                }
+
+                // Flush any pending text block so it appears before the image
+                if (self->partWordBufferIndex > 0) {
+                  self->flushPartWordBuffer();
+                }
+                if (self->currentTextBlock && !self->currentTextBlock->isEmpty()) {
+                  const BlockStyle parentBlockStyle = self->currentTextBlock->getBlockStyle();
+                  self->startNewTextBlock(parentBlockStyle);
+                }
+
+                // Apply vertical margins from the container to the image.
+                // Top margin lives on the empty text block (deposited via vertical merge
+                // in startNewTextBlock). Bottom margin was stripped by withoutBottom() for
+                // deferred application at element close, so read it from the stack.
+                int16_t imageMarginTop = 0;
+                int16_t imageMarginBottom = 0;
+                if (self->currentTextBlock && self->currentTextBlock->isEmpty()) {
+                  const auto& bs = self->currentTextBlock->getBlockStyle();
+                  imageMarginTop = bs.topInset();
+                  if (self->blockStyleStack.size() > 1) {
+                    imageMarginBottom = self->blockStyleStack.back().bottomInset();
+                  }
+                }
+
+                // Create page for image - only break if image won't fit remaining space
+                if (self->currentPage && !self->currentPage->elements.empty() &&
+                    (self->currentPageNextY + imageMarginTop + displayHeight + imageMarginBottom >
+                     self->viewportHeight)) {
+                  self->completePageFn(std::move(self->currentPage), self->xpathParagraphIndex,
+                                       self->xpathListItemIndex);
+                  self->completedPageCount++;
+                  self->currentPage.reset(new Page());
+                  if (!self->currentPage) {
+                    LOG_ERR("EHP", "Failed to create new page");
+                    return;
+                  }
+                  self->currentPageNextY = 0;
+                } else if (!self->currentPage) {
+                  self->currentPage.reset(new Page());
+                  if (!self->currentPage) {
+                    LOG_ERR("EHP", "Failed to create initial page");
+                    return;
+                  }
+                  self->currentPageNextY = 0;
+                }
+
+                // Apply top margin from container block
+                self->currentPageNextY += imageMarginTop;
+
+                // Create ImageBlock and add to page
+                // nothrow: make_shared uses bare new, which aborts on OOM under
+                // -fno-exceptions; images arrive mid-parse when the heap is at its
+                // most loaded, so this must fail soft into the null-check below.
+                auto imageBlock = std::shared_ptr<ImageBlock>(
+                    new (std::nothrow) ImageBlock(cachedImagePath, resolvedPath, displayWidth, displayHeight));
+                if (!imageBlock) {
+                  LOG_ERR("EHP", "Failed to create ImageBlock");
+                  return;
+                }
+                int xPos = (self->viewportWidth - displayWidth) / 2;
+                auto pageImage =
+                    std::shared_ptr<PageImage>(new (std::nothrow) PageImage(imageBlock, xPos, self->currentPageNextY));
+                if (!pageImage) {
+                  LOG_ERR("EHP", "Failed to create PageImage");
+                  return;
+                }
+                self->currentPage->elements.push_back(pageImage);
+                self->currentPageNextY += displayHeight + imageMarginBottom;
+
+                // The image consumed the empty block's accumulated vertical spacing.
+                // Reset the block so the Vertical merge in startNewTextBlock doesn't
+                // re-apply the same margins to the next text paragraph.
+                if (self->currentTextBlock && self->currentTextBlock->isEmpty()) {
+                  BlockStyle resetStyle;
+                  resetStyle.alignment = (self->paragraphAlignment == static_cast<uint8_t>(CssTextAlign::None))
+                                             ? CssTextAlign::Justify
+                                             : static_cast<CssTextAlign>(self->paragraphAlignment);
+                  self->currentTextBlock->setBlockStyle(resetStyle);
+                }
+
+                self->depth += 1;
+                return;
+              } else {
+                LOG_ERR("EHP", "Failed to get image dimensions");
+                Storage.remove(cachedImagePath.c_str());
+              }
+            }
+          }  // isFormatSupported
         }
       }
 
       // Fallback to alt text if image processing fails
       if (!alt.empty()) {
         alt = "[Image: " + alt + "]";
-        self->startNewTextBlock(centeredBlockStyle);
+        self->startNewTextBlock(self->blockStyleStack.back()
+                                    .getCombinedBlockStyle(centeredBlockStyle, BlockStyle::CombineAxis::Horizontal)
+                                    .withoutBottom());
         self->italicUntilDepth = std::min(self->italicUntilDepth, self->depth);
         self->depth += 1;
         self->characterData(userData, alt.c_str(), alt.length());
@@ -321,7 +987,26 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     }
   }
 
-  if (matches(name, SKIP_TAGS, NUM_SKIP_TAGS)) {
+  // Ruby tag handling
+  if (strcmp(name, "ruby") == 0) {
+    self->flushPartWordBuffer();
+    self->inRuby = true;
+    self->rubyStartWordIndex = self->currentTextBlock ? static_cast<int>(self->currentTextBlock->size()) : 0;
+    if (self->currentTextBlock) {
+      self->currentTextBlock->ensureRubyCapacity();
+    }
+    self->rubyTextBuffer.clear();
+    self->depth += 1;
+    return;
+  }
+  if (strcmp(name, "rt") == 0) {
+    self->flushPartWordBuffer();
+    self->collectingRubyText = true;
+    self->depth += 1;
+    return;
+  }
+
+  if (matches(name, SKIP_TAGS, std::size(SKIP_TAGS))) {
     // start skip
     self->skipUntilDepth = self->depth;
     self->depth += 1;
@@ -340,75 +1025,181 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     }
   }
 
-  // Compute CSS style for this element
-  CssStyle cssStyle;
-  if (self->cssParser) {
-    // Get combined tag + class styles
-    cssStyle = self->cssParser->resolveStyle(name, classAttr);
-    // Merge inline style (highest priority)
-    if (!styleAttr.empty()) {
-      CssStyle inlineStyle = CssParser::parseInlineStyle(styleAttr);
-      cssStyle.applyOver(inlineStyle);
+  // Detect internal <a href="..."> links (footnotes, cross-references)
+  // Note: <aside epub:type="footnote"> elements are rendered as normal content
+  // without special handling. Links pointing to them are collected as footnotes.
+  if (strcmp(name, "a") == 0) {
+    const char* href = getAttribute(atts, "href");
+
+    bool isInternalLink = isInternalEpubLink(href);
+
+    // Special case: javascript:void(0) links with data attributes
+    // Example: <a href="javascript:void(0)"
+    // data-xyz="{&quot;name&quot;:&quot;OPS/ch2.xhtml&quot;,&quot;frag&quot;:&quot;id46&quot;}">
+    if (href && strncmp(href, "javascript:", 11) == 0) {
+      isInternalLink = false;
+      // TODO: Parse data-* attributes to extract actual href
+    }
+
+    if (isInternalLink) {
+      // Flush buffer before style change
+      if (self->partWordBufferIndex > 0) {
+        self->flushPartWordBuffer();
+        self->nextWordContinues = true;
+      }
+      self->insideFootnoteLink = true;
+      self->footnoteLinkDepth = self->depth;
+      strncpy(self->currentFootnote.href, href, sizeof(self->currentFootnote.href) - 1);
+      self->currentFootnote.href[sizeof(self->currentFootnote.href) - 1] = '\0';
+      self->currentFootnote.number[0] = '\0';
+      self->currentFootnoteLinkTextLen = 0;
+
+      // Apply underline style to visually indicate the link.
+      StyleStackEntry entry;
+      entry.depth = self->depth;
+      entry.hasTextDecoration = true;
+      entry.textDecoration = CssTextDecoration::Underline;
+      entry.isTranslatedBlock = currentIsTranslated;  // Pre-Translation: inherit from enclosing block
+      applyDirectionToEntry(entry, cssStyle);
+      self->inlineStyleStack.push_back(entry);
+      self->updateEffectiveInlineStyle();
+
+      // Skip CSS resolution — we already handled styling for this <a> tag
+      self->depth += 1;
+      return;
     }
   }
 
-  const float emSize = static_cast<float>(self->renderer.getLineHeight(self->fontId)) * self->lineCompression;
+  const float emSize = static_cast<float>(self->renderer.getFontAscenderSize(self->fontId));
   const auto userAlignmentBlockStyle = BlockStyle::fromCssStyle(
       cssStyle, emSize, static_cast<CssTextAlign>(self->paragraphAlignment), self->viewportWidth);
 
-  if (matches(name, HEADER_TAGS, NUM_HEADER_TAGS)) {
+  if (strcmp(name, "hr") == 0) {
+    auto hrBlockStyle = BlockStyle::fromCssStyle(cssStyle, emSize, CssTextAlign::Left, self->viewportWidth);
+    if (!self->embeddedStyle) {
+      hrBlockStyle.marginLeft = 0;
+      hrBlockStyle.marginRight = 0;
+      hrBlockStyle.marginTop = 0;
+      hrBlockStyle.marginBottom = 0;
+      hrBlockStyle.paddingLeft = 0;
+      hrBlockStyle.paddingRight = 0;
+      hrBlockStyle.paddingTop = 0;
+      hrBlockStyle.paddingBottom = 0;
+      hrBlockStyle.textIndentDefined = false;
+      hrBlockStyle.textIndent = 0;
+    }
+    self->emitHorizontalRule(hrBlockStyle);
+    self->depth += 1;
+    return;
+  }
+
+  if (matches(name, HEADER_TAGS, std::size(HEADER_TAGS))) {
     self->currentCssStyle = cssStyle;
     auto headerBlockStyle = BlockStyle::fromCssStyle(cssStyle, emSize, CssTextAlign::Center, self->viewportWidth);
     headerBlockStyle.textAlignDefined = true;
     if (self->embeddedStyle && cssStyle.hasTextAlign()) {
       headerBlockStyle.alignment = cssStyle.textAlign;
     }
-    self->startNewTextBlock(headerBlockStyle);
+    // Pre-Translation: push a no-op inline-style marker so child inline tags inherit
+    // isTranslatedBlock through nesting. It carries no style bits, so it does not affect
+    // effective styles; it is popped by the generic inline-pop in endElement.
+    StyleStackEntry translationEntry;
+    translationEntry.depth = self->depth;
+    translationEntry.isTranslatedBlock = currentIsTranslated;
+    self->inlineStyleStack.push_back(translationEntry);
+    const auto accumulated =
+        self->blockStyleStack.back().getCombinedBlockStyle(headerBlockStyle, BlockStyle::CombineAxis::Horizontal);
+    self->blockStyleStack.push_back(accumulated);
+    // Pre-Translation (SideBySide, mode 5): the unpaired-original marker is no longer emitted
+    // pre-emptively here. makePagesTableMode buffers each original and only decides it is
+    // unpaired (appending the marker via flushBufferedOriginal) once the next original arrives
+    // or EOF is reached, so a pre-emptive mark here would double-mark and bake into paired blocks.
+    self->startNewTextBlock(accumulated.withoutBottom());
     self->boldUntilDepth = std::min(self->boldUntilDepth, self->depth);
     self->updateEffectiveInlineStyle();
-  } else if (matches(name, BLOCK_TAGS, NUM_BLOCK_TAGS)) {
-    if (strcmp(name, "br") == 0) {
+    // Pre-Translation: stamp the paragraph index AFTER startNewTextBlock so the previous block is
+    // flushed under the previous translation state. The counter advances once per content-bearing
+    // original block at ANY nesting depth: the FIRST open to claim a freshly-created text block
+    // takes the next index (currentBlockIndexAssigned latches so nested opens reusing the same empty
+    // block inherit it instead of double-counting). A translated block never advances the counter;
+    // it pairs with the most recent original paragraph (paragraphCounter - 1).
+    self->currentBlockIsTranslated = currentIsTranslated;
+    if (currentIsTranslated) {
+      self->currentBlockParagraphIdx = static_cast<int16_t>(self->paragraphCounter - 1);
+    } else if (!self->currentBlockIndexAssigned) {
+      self->currentBlockParagraphIdx = self->paragraphCounter;
+      self->paragraphCounter++;
+      self->currentBlockIndexAssigned = true;
+    }
+  } else if (paraboundary::isParagraphBlockTag(name)) {
+    // Reached only for NON-header block tags (headers handled by the branch
+    // above), i.e. exactly the old BLOCK_TAGS set {p, li, div, br, blockquote}.
+    if (paraboundary::isHardBreak(name)) {
       if (self->partWordBufferIndex > 0) {
         // flush word preceding <br/> to currentTextBlock before calling startNewTextBlock
         self->flushPartWordBuffer();
       }
-      self->startNewTextBlock(self->currentTextBlock->getBlockStyle());
+      // Tag the new block so startNewTextBlock can inject a full line-height gap if
+      // the block remains empty (i.e. <br> is a section separator between paragraphs).
+      // If the block gets text added before the next block opens it becomes non-empty,
+      // goes through makePages() normally, and the flag has no effect (inline <br> case).
+      BlockStyle brStyle = self->blockStyleStack.back();
+      brStyle.fromBrElement = true;
+      self->startNewTextBlock(brStyle);
     } else {
       self->currentCssStyle = cssStyle;
-      self->startNewTextBlock(userAlignmentBlockStyle);
+      // Pre-Translation: push a no-op inline-style marker for isTranslatedBlock propagation.
+      StyleStackEntry translationEntry;
+      translationEntry.depth = self->depth;
+      translationEntry.isTranslatedBlock = currentIsTranslated;
+      self->inlineStyleStack.push_back(translationEntry);
+      const auto accumulated = self->blockStyleStack.back().getCombinedBlockStyle(userAlignmentBlockStyle,
+                                                                                  BlockStyle::CombineAxis::Horizontal);
+      self->blockStyleStack.push_back(accumulated);
+      // Pre-Translation (SideBySide, mode 5): the unpaired-original marker is no longer emitted
+      // pre-emptively here — makePagesTableMode/flushBufferedOriginal own the unpaired decision
+      // (see the header branch above for the full rationale).
+      self->startNewTextBlock(accumulated.withoutBottom());
       self->updateEffectiveInlineStyle();
+      // Pre-Translation: stamp the paragraph index AFTER startNewTextBlock so the previous block
+      // flushed inside it uses the previous translation state. The counter advances once per
+      // content-bearing original block at ANY nesting depth: the FIRST open to claim a freshly-
+      // created text block takes the next index (currentBlockIndexAssigned latches so nested opens
+      // reusing the same empty block inherit it instead of double-counting). A translated block
+      // never advances the counter; it pairs with the most recent original (paragraphCounter - 1).
+      self->currentBlockIsTranslated = currentIsTranslated;
+      if (currentIsTranslated) {
+        self->currentBlockParagraphIdx = static_cast<int16_t>(self->paragraphCounter - 1);
+      } else if (!self->currentBlockIndexAssigned) {
+        self->currentBlockParagraphIdx = self->paragraphCounter;
+        self->paragraphCounter++;
+        self->currentBlockIndexAssigned = true;
+      }
 
       if (strcmp(name, "li") == 0) {
         self->currentTextBlock->addWord("\xe2\x80\xa2", EpdFontFamily::REGULAR);
+        self->listItemBulletOnly = true;
       }
     }
-  } else if (matches(name, UNDERLINE_TAGS, NUM_UNDERLINE_TAGS)) {
+  } else if (matches(name, UNDERLINE_TAGS, std::size(UNDERLINE_TAGS))) {
     // Flush buffer before style change so preceding text gets current style
     if (self->partWordBufferIndex > 0) {
       self->flushPartWordBuffer();
       self->nextWordContinues = true;
     }
-    self->underlineUntilDepth = std::min(self->underlineUntilDepth, self->depth);
-    // Push inline style entry for underline tag
-    StyleStackEntry entry;
-    entry.depth = self->depth;  // Track depth for matching pop
-    entry.hasUnderline = true;
-    entry.underline = true;
-    if (cssStyle.hasFontWeight()) {
-      entry.hasBold = true;
-      entry.bold = cssStyle.fontWeight == CssFontWeight::Bold;
+    self->pushDecorationStyleEntry(CssTextDecoration::Underline, cssStyle);
+    // Pre-Translation: inherit translated state (the helper does not know about it).
+    self->inlineStyleStack.back().isTranslatedBlock = currentIsTranslated;
+  } else if (matches(name, LINETHROUGH_TAGS, std::size(LINETHROUGH_TAGS))) {
+    // Flush buffer before style change so preceding text gets current style
+    if (self->partWordBufferIndex > 0) {
+      self->flushPartWordBuffer();
+      self->nextWordContinues = true;
     }
-    if (cssStyle.hasFontStyle()) {
-      entry.hasItalic = true;
-      entry.italic = cssStyle.fontStyle == CssFontStyle::Italic;
-    }
-    if (cssStyle.hasColor()) {
-      entry.hasColor = true;
-      entry.color = cssStyle.textGrayLevel;
-    }
-    self->inlineStyleStack.push_back(entry);
-    self->updateEffectiveInlineStyle();
-  } else if (matches(name, BOLD_TAGS, NUM_BOLD_TAGS)) {
+    self->pushDecorationStyleEntry(CssTextDecoration::LineThrough, cssStyle);
+    // Pre-Translation: inherit translated state (the helper does not know about it).
+    self->inlineStyleStack.back().isTranslatedBlock = currentIsTranslated;
+  } else if (matches(name, BOLD_TAGS, std::size(BOLD_TAGS))) {
     // Flush buffer before style change so preceding text gets current style
     if (self->partWordBufferIndex > 0) {
       self->flushPartWordBuffer();
@@ -420,21 +1211,16 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     entry.depth = self->depth;  // Track depth for matching pop
     entry.hasBold = true;
     entry.bold = true;
+    entry.isTranslatedBlock = currentIsTranslated;  // Pre-Translation: inherit from enclosing block
     if (cssStyle.hasFontStyle()) {
       entry.hasItalic = true;
       entry.italic = cssStyle.fontStyle == CssFontStyle::Italic;
     }
-    if (cssStyle.hasTextDecoration()) {
-      entry.hasUnderline = true;
-      entry.underline = cssStyle.textDecoration == CssTextDecoration::Underline;
-    }
-    if (cssStyle.hasColor()) {
-      entry.hasColor = true;
-      entry.color = cssStyle.textGrayLevel;
-    }
+    applyTextDecorationToEntry(entry, cssStyle);
+    applyDirectionToEntry(entry, cssStyle);
     self->inlineStyleStack.push_back(entry);
     self->updateEffectiveInlineStyle();
-  } else if (matches(name, ITALIC_TAGS, NUM_ITALIC_TAGS)) {
+  } else if (matches(name, ITALIC_TAGS, std::size(ITALIC_TAGS))) {
     // Flush buffer before style change so preceding text gets current style
     if (self->partWordBufferIndex > 0) {
       self->flushPartWordBuffer();
@@ -446,30 +1232,47 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     entry.depth = self->depth;  // Track depth for matching pop
     entry.hasItalic = true;
     entry.italic = true;
+    entry.isTranslatedBlock = currentIsTranslated;  // Pre-Translation: inherit from enclosing block
     if (cssStyle.hasFontWeight()) {
       entry.hasBold = true;
       entry.bold = cssStyle.fontWeight == CssFontWeight::Bold;
     }
-    if (cssStyle.hasTextDecoration()) {
-      entry.hasUnderline = true;
-      entry.underline = cssStyle.textDecoration == CssTextDecoration::Underline;
+    applyTextDecorationToEntry(entry, cssStyle);
+    applyDirectionToEntry(entry, cssStyle);
+    self->inlineStyleStack.push_back(entry);
+    self->updateEffectiveInlineStyle();
+  } else if (strcmp(name, "sup") == 0 || strcmp(name, "sub") == 0) {
+    if (self->partWordBufferIndex > 0) {
+      self->flushPartWordBuffer();
+      self->nextWordContinues = true;
     }
-    if (cssStyle.hasColor()) {
-      entry.hasColor = true;
-      entry.color = cssStyle.textGrayLevel;
+    StyleStackEntry entry;
+    entry.depth = self->depth;
+    entry.isTranslatedBlock = currentIsTranslated;  // Pre-Translation: inherit from enclosing block
+    if (strcmp(name, "sup") == 0) {
+      entry.hasSup = true;
+      entry.sup = true;
+    } else {
+      entry.hasSub = true;
+      entry.sub = true;
     }
     self->inlineStyleStack.push_back(entry);
     self->updateEffectiveInlineStyle();
   } else if (strcmp(name, "span") == 0 || !isHeaderOrBlock(name)) {
-    // Handle span and other inline elements for CSS styling
-    if (cssStyle.hasFontWeight() || cssStyle.hasFontStyle() || cssStyle.hasTextDecoration() || cssStyle.hasColor()) {
+    // Handle span and other inline elements for CSS styling. Also push an entry when this element
+    // introduces an explicit translated marker (lang=) so it propagates to children, even without
+    // any CSS styling.
+    const bool hasCssStyle = cssStyle.hasFontWeight() || cssStyle.hasFontStyle() || cssStyle.hasTextDecoration() ||
+                             cssStyle.hasDirection() || cssStyle.hasVerticalAlign();
+    if (hasCssStyle || isExplicitTranslated) {
       // Flush buffer before style change so preceding text gets current style
       if (self->partWordBufferIndex > 0) {
         self->flushPartWordBuffer();
         self->nextWordContinues = true;
       }
       StyleStackEntry entry;
-      entry.depth = self->depth;  // Track depth for matching pop
+      entry.depth = self->depth;                      // Track depth for matching pop
+      entry.isTranslatedBlock = currentIsTranslated;  // Pre-Translation: inherit or set
       if (cssStyle.hasFontWeight()) {
         entry.hasBold = true;
         entry.bold = cssStyle.fontWeight == CssFontWeight::Bold;
@@ -478,39 +1281,17 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
         entry.hasItalic = true;
         entry.italic = cssStyle.fontStyle == CssFontStyle::Italic;
       }
-      if (cssStyle.hasTextDecoration()) {
-        entry.hasUnderline = true;
-        entry.underline = cssStyle.textDecoration == CssTextDecoration::Underline;
+      applyTextDecorationToEntry(entry, cssStyle);
+      applyDirectionToEntry(entry, cssStyle);
+      if (cssStyle.hasVerticalAlign()) {
+        if (cssStyle.verticalAlign == CssVerticalAlign::Super) {
+          entry.hasSup = true;
+          entry.sup = true;
+        } else if (cssStyle.verticalAlign == CssVerticalAlign::Sub) {
+          entry.hasSub = true;
+          entry.sub = true;
+        }
       }
-      if (cssStyle.hasColor()) {
-        entry.hasColor = true;
-        entry.color = cssStyle.textGrayLevel;
-      }
-      self->inlineStyleStack.push_back(entry);
-      self->updateEffectiveInlineStyle();
-    }
-  }
-
-  // Detect translation via lang attribute (CrossPoint and Calibre translations)
-  // Skip html/body to avoid false-positives from document-level lang (e.g. <html lang="en">)
-  if (!langAttr.empty() && strcmp(name, "html") != 0 && strcmp(name, "body") != 0) {
-    if (!self->inlineStyleStack.empty() && self->inlineStyleStack.back().depth == self->depth) {
-      // Style entry already exists (from CSS) — add translated marker if not set
-      if (!self->inlineStyleStack.back().hasColor) {
-        self->inlineStyleStack.back().hasColor = true;
-        self->inlineStyleStack.back().color = 1;
-        self->updateEffectiveInlineStyle();
-      }
-    } else {
-      // No entry — push new translated marker
-      if (self->partWordBufferIndex > 0) {
-        self->flushPartWordBuffer();
-        self->nextWordContinues = true;
-      }
-      StyleStackEntry entry;
-      entry.depth = self->depth;
-      entry.hasColor = true;
-      entry.color = 1;
       self->inlineStyleStack.push_back(entry);
       self->updateEffectiveInlineStyle();
     }
@@ -523,9 +1304,52 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
 void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char* s, const int len) {
   auto* self = static_cast<ChapterHtmlSlimParser*>(userData);
 
+  // Skip content of nested table
+  if (self->tableDepth > 1) {
+    return;
+  }
+
   // Middle of skip
   if (self->skipUntilDepth < self->depth) {
     return;
+  }
+
+  // Collect ruby text instead of normal word processing. Pre-Translation: skip the append when the
+  // enclosing block is dropped for the active mode — its base words never reach the text block, so
+  // the annotation has nothing to attach to (see the </rt> handler).
+  if (self->collectingRubyText) {
+    if (!self->wordIsFiltered()) {
+      self->rubyTextBuffer.append(s, len);
+    }
+    return;
+  }
+
+  // Collect footnote link display text (for the number label)
+  // Skip whitespace and brackets to normalize noterefs like "[1]" → "1"
+  if (self->insideFootnoteLink) {
+    int start = 0;
+    int end = len - 1;
+
+    // Example input and output texts:
+    // "     [  12  ]   " => "12"
+    // "   turn to 256  " => "turn to 256"
+
+    // Ignore leading whitespaces and left square brackets
+    while (start < len && (isWhitespace(s[start]) || (s[start] == '['))) {
+      ++start;
+    }
+
+    // Ignore trailing whitespaces and right square brackets
+    while (end >= start && (isWhitespace(s[end]) || (s[end] == ']'))) {
+      --end;
+    }
+
+    // Extract footnote link text
+    for (int i = start; (self->currentFootnoteLinkTextLen < sizeof(self->currentFootnote.number) - 1) && (i <= end);
+         ++i) {
+      self->currentFootnote.number[self->currentFootnoteLinkTextLen++] = s[i];
+    }
+    self->currentFootnote.number[self->currentFootnoteLinkTextLen] = '\0';
   }
 
   for (int i = 0; i < len; i++) {
@@ -540,25 +1364,57 @@ void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char
       continue;
     }
 
-    // Detect U+00A0 (non-breaking space): UTF-8 encoding is 0xC2 0xA0
-    // Render a visible space without allowing a line break around it.
+    // Detect U+00A0 (non-breaking space, UTF-8: 0xC2 0xA0) or
+    //        U+202F (narrow no-break space, UTF-8: 0xE2 0x80 0xAF).
+    //
+    // Both are rendered as a visible space but must never allow a line break around them.
+    // We split the no-break space into its own word token and link the surrounding words
+    // with continuation flags so the layout engine treats them as an indivisible group.
+    //
+    // Example: "200&#xA0;Quadratkilometer" or "200&#x202F;Quadratkilometer"
+    //   Input bytes:  "200\xC2\xA0Quadratkilometer"  (or 0xE2 0x80 0xAF for U+202F)
+    //   Tokens produced:
+    //     [0] "200"               continues=false
+    //     [1] " "                 continues=true   (attaches to "200", no gap)
+    //     [2] "Quadratkilometer"  continues=true   (attaches to " ", no gap)
+    //
+    //   The continuation flags prevent the line-breaker from inserting a line break
+    //   between "200" and "Quadratkilometer". However, "Quadratkilometer" is now a
+    //   standalone word for hyphenation purposes, so Liang patterns can produce
+    //   "200 Quadrat-" / "kilometer" instead of the unusable "200" / "Quadratkilometer".
     if (static_cast<uint8_t>(s[i]) == 0xC2 && i + 1 < len && static_cast<uint8_t>(s[i + 1]) == 0xA0) {
-      // Flush any pending text so style is applied correctly.
       if (self->partWordBufferIndex > 0) {
         self->flushPartWordBuffer();
       }
 
-      // Add a standalone space that attaches to the previous word.
       self->partWordBuffer[0] = ' ';
       self->partWordBuffer[1] = '\0';
       self->partWordBufferIndex = 1;
       self->nextWordContinues = true;  // Attach space to previous word (no break).
       self->flushPartWordBuffer();
 
-      // Ensure the next real word attaches to this space (no break).
-      self->nextWordContinues = true;
+      self->nextWordContinues = true;  // Next real word attaches to this space (no break).
 
       i++;  // Skip the second byte (0xA0)
+      continue;
+    }
+
+    // U+202F (narrow no-break space) — identical logic to U+00A0 above.
+    if (static_cast<uint8_t>(s[i]) == 0xE2 && i + 2 < len && static_cast<uint8_t>(s[i + 1]) == 0x80 &&
+        static_cast<uint8_t>(s[i + 2]) == 0xAF) {
+      if (self->partWordBufferIndex > 0) {
+        self->flushPartWordBuffer();
+      }
+
+      self->partWordBuffer[0] = ' ';
+      self->partWordBuffer[1] = '\0';
+      self->partWordBufferIndex = 1;
+      self->nextWordContinues = true;
+      self->flushPartWordBuffer();
+
+      self->nextWordContinues = true;
+
+      i += 2;  // Skip the remaining two bytes (0x80 0xAF)
       continue;
     }
 
@@ -576,31 +1432,77 @@ void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char
       }
     }
 
-    // If we're about to run out of space, then cut the word off and start a new one
+    // If we're about to run out of space, then cut the word off and start a new one.
+    // For CJK text (no spaces), this is the primary word-breaking mechanism.
+    // We must avoid splitting multi-byte UTF-8 sequences across word boundaries,
+    // otherwise the trailing bytes become orphaned continuation bytes that the
+    // decoder can't interpret.
     if (self->partWordBufferIndex >= MAX_WORD_SIZE) {
-      self->flushPartWordBuffer();
+      int safeLen = utf8SafeTruncateBuffer(self->partWordBuffer, self->partWordBufferIndex);
+
+      if (safeLen < self->partWordBufferIndex && safeLen > 0) {
+        // Incomplete UTF-8 sequence at the end — save it before flushing
+        int overflow = self->partWordBufferIndex - safeLen;
+        char saved[4];
+        for (int j = 0; j < overflow; j++) {
+          saved[j] = self->partWordBuffer[safeLen + j];
+        }
+        self->partWordBufferIndex = safeLen;
+        self->flushPartWordBuffer();
+        self->nextWordContinues = true;
+        for (int j = 0; j < overflow; j++) {
+          self->partWordBuffer[j] = saved[j];
+        }
+        self->partWordBufferIndex = overflow;
+      } else {
+        self->flushPartWordBuffer();
+        self->nextWordContinues = true;
+      }
     }
 
     self->partWordBuffer[self->partWordBufferIndex++] = s[i];
   }
 
-  // If we have > 750 words buffered up, perform the layout and consume out all but the last line
-  // There should be enough here to build out 1-2 full pages and doing this will free up a lot of
-  // memory.
-  // Spotted when reading Intermezzo, there are some really long text blocks in there.
-  // Skip in side-by-side mode since intact paragraphs are needed for pairing.
-  if (self->translationMode != 5 && self->currentTextBlock->size() > 750) {
-    LOG_DBG("EHP", "Text block too long, splitting into multiple pages");
+  // Keep token growth bounded: CSS-heavy spans can fragment text into many tiny
+  // words, so flush earlier when embedded CSS is active. We still keep the
+  // "exclude last line" behavior to preserve paragraph flow across chunks.
+  //
+  // NOT the lowered CSS ceiling under a PAIRED layout. In SideBySide and Interlinear the open block
+  // is an OPERAND of a pairing, not a paragraph: makePagesTableMode / makePagesInterlinearMode buffer
+  // the original and hand both halves to renderSideBySide / renderInterlinear at endElement. A
+  // mid-block flush escapes that entirely — it lays the prefix out here and pushes it straight to the
+  // page through addLineToPage, so an ORIGINAL loses its column / its annotation strips (source line
+  // directly under source line, which is exactly what PtLayout::Interlinear's alternation rule
+  // forbids) and a TRANSLATION is dumped into the main flow at BODY size, because currentLineRole()
+  // resolves to Body for both modes. Only the tail that survives to endElement is paired.
+  //
+  // The CSS ceiling is 320 tokens and Focus Reading splits every word of 2+ characters into two, so
+  // that fired at roughly 160 words — an ordinary long paragraph. The base ceiling still applies as
+  // the OOM backstop: it is the bound the untranslated path already lives with, and past it a broken
+  // pair is better than a heap exhaustion.
+  const size_t blockWordCount = self->currentTextBlock->size();
+  const bool pairedLayout = self->ptLayout == PtLayout::SideBySide || self->ptLayout == PtLayout::Interlinear;
+  const size_t softFlushThreshold =
+      (self->embeddedStyle && !pairedLayout) ? TEXT_BLOCK_SOFT_FLUSH_WORDS_WITH_CSS : TEXT_BLOCK_SOFT_FLUSH_WORDS;
+  if (blockWordCount > softFlushThreshold) {
+    LOG_DBG("EHP", "Text block soft flush (%u words)", static_cast<unsigned>(blockWordCount));
+    const int horizontalInset = self->currentTextBlock->getBlockStyle().totalHorizontalInset();
+    const uint16_t effectiveWidth = (horizontalInset < self->viewportWidth)
+                                        ? static_cast<uint16_t>(self->viewportWidth - horizontalInset)
+                                        : self->viewportWidth;
+    // Same role/font pairing as makePages(): this is the SAME open block, just flushed early, so its
+    // lines must be measured, advanced and stamped exactly as the block's remaining lines will be.
+    const LineFontRole role = self->currentLineRole();
     self->currentTextBlock->layoutAndExtractLines(
-        self->renderer, self->fontId, self->viewportWidth,
-        [self](const std::shared_ptr<TextBlock>& textBlock) { self->addLineToPage(textBlock); }, false);
+        self->renderer, self->fontIdForRole(role), effectiveWidth,
+        [self, role](const std::shared_ptr<TextBlock>& textBlock) { self->addLineToPage(textBlock, role); }, false);
   }
 }
 
 void XMLCALL ChapterHtmlSlimParser::defaultHandlerExpand(void* userData, const XML_Char* s, const int len) {
   // Check if this looks like an entity reference (&...;)
   if (len >= 3 && s[0] == '&' && s[len - 1] == ';') {
-    const char* utf8Value = lookupHtmlEntity(s, len);
+    const char* utf8Value = lookupHtmlEntity(s, static_cast<size_t>(len));
     if (utf8Value != nullptr) {
       // Known entity: expand to its UTF-8 value
       characterData(userData, utf8Value, strlen(utf8Value));
@@ -616,6 +1518,45 @@ void XMLCALL ChapterHtmlSlimParser::defaultHandlerExpand(void* userData, const X
 void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* name) {
   auto* self = static_cast<ChapterHtmlSlimParser*>(userData);
 
+  // Ruby text: </rt> distributes ruby to base words, </ruby> resets ruby state
+  if (strcmp(name, "rt") == 0) {
+    self->collectingRubyText = false;
+    // Pre-Translation: in a mode that drops this block (OrigOnly/TransOnly/PageTranslation/Tooltip), the base
+    // characters never became words, so baseWordCount would be 0 and the fallback below would walk
+    // back and glue this furigana onto the last SURVIVING word of an unrelated run. Skip the whole
+    // distribution instead; rubyTextBuffer is cleared below either way.
+    if (self->inRuby && self->currentTextBlock && !self->wordIsFiltered()) {
+      const int currentWordCount = static_cast<int>(self->currentTextBlock->size());
+      const int baseWordCount = currentWordCount - self->rubyStartWordIndex;
+      std::string cleanRuby = trimAndNormalize(self->rubyTextBuffer);
+      if (!cleanRuby.empty()) {
+        if (baseWordCount > 0) {
+          self->currentTextBlock->setRubyGroupAt(self->rubyStartWordIndex, baseWordCount, cleanRuby);
+          self->rubyStartWordIndex = currentWordCount;
+        } else if (self->rubyStartWordIndex > 0) {
+          int leaderIdx = self->rubyStartWordIndex - 1;
+          while (leaderIdx >= 0 &&
+                 (self->currentTextBlock->getWordStyleAt(leaderIdx) & EpdFontFamily::RUBY_CONTINUE) != 0) {
+            leaderIdx--;
+          }
+          if (leaderIdx >= 0) {
+            std::string prevRuby = self->currentTextBlock->getRubyTextAt(leaderIdx);
+            self->currentTextBlock->setRubyForWordAt(leaderIdx, prevRuby + cleanRuby);
+          }
+        }
+      }
+    }
+    self->rubyTextBuffer.clear();
+    self->depth -= 1;
+    return;
+  }
+  if (strcmp(name, "ruby") == 0 && self->inRuby) {
+    self->inRuby = false;
+    self->rubyStartWordIndex = -1;
+    self->rubyTextBuffer.clear();
+    self->depth -= 1;
+    return;
+  }
   // Check if any style state will change after we decrement depth
   // If so, we MUST flush the partWordBuffer with the CURRENT style first
   // Note: depth hasn't been decremented yet, so we check against (depth - 1)
@@ -623,20 +1564,29 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
       !self->inlineStyleStack.empty() && self->inlineStyleStack.back().depth == self->depth - 1;
   const bool willClearBold = self->boldUntilDepth == self->depth - 1;
   const bool willClearItalic = self->italicUntilDepth == self->depth - 1;
-  const bool willClearUnderline = self->underlineUntilDepth == self->depth - 1;
 
-  const bool styleWillChange = willPopStyleStack || willClearBold || willClearItalic || willClearUnderline;
+  const bool styleWillChange = willPopStyleStack || willClearBold || willClearItalic;
   const bool headerOrBlockTag = isHeaderOrBlock(name);
+  const bool tableStructuralTag = isTableStructuralTag(name);
+
+  if (self->tableDepth > 1 && strcmp(name, "table") == 0) {
+    // get rid of all text inside the nested table
+    self->partWordBufferIndex = 0;
+    self->tableDepth -= 1;
+    LOG_DBG("EHP", "nested table detected, get rid of its content");
+    return;
+  }
 
   // Flush buffer with current style BEFORE any style changes
   if (self->partWordBufferIndex > 0) {
     // Flush if style will change OR if we're closing a block/structural element
-    const bool isInlineTag = !headerOrBlockTag && strcmp(name, "table") != 0 &&
-                             !matches(name, IMAGE_TAGS, NUM_IMAGE_TAGS) && self->depth != 1;
-    const bool shouldFlush = styleWillChange || headerOrBlockTag || matches(name, BOLD_TAGS, NUM_BOLD_TAGS) ||
-                             matches(name, ITALIC_TAGS, NUM_ITALIC_TAGS) ||
-                             matches(name, UNDERLINE_TAGS, NUM_UNDERLINE_TAGS) || strcmp(name, "table") == 0 ||
-                             matches(name, IMAGE_TAGS, NUM_IMAGE_TAGS) || self->depth == 1;
+    const bool isInlineTag = !headerOrBlockTag && !tableStructuralTag &&
+                             !matches(name, IMAGE_TAGS, std::size(IMAGE_TAGS)) && self->depth != 1;
+    const bool shouldFlush = styleWillChange || headerOrBlockTag || matches(name, BOLD_TAGS, std::size(BOLD_TAGS)) ||
+                             matches(name, ITALIC_TAGS, std::size(ITALIC_TAGS)) ||
+                             matches(name, UNDERLINE_TAGS, std::size(UNDERLINE_TAGS)) ||
+                             matches(name, LINETHROUGH_TAGS, std::size(LINETHROUGH_TAGS)) || tableStructuralTag ||
+                             matches(name, IMAGE_TAGS, std::size(IMAGE_TAGS)) || self->depth == 1;
 
     if (shouldFlush) {
       self->flushPartWordBuffer();
@@ -649,9 +1599,39 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
 
   self->depth -= 1;
 
+  // Closing a footnote link — create entry from collected text and href
+  if (self->insideFootnoteLink && self->depth == self->footnoteLinkDepth) {
+    if (self->currentFootnote.number[0] != '\0' && self->currentFootnote.href[0] != '\0') {
+      FootnoteEntry entry;
+      strncpy(entry.number, self->currentFootnote.number, sizeof(entry.number) - 1);
+      entry.number[sizeof(entry.number) - 1] = '\0';
+      strncpy(entry.href, self->currentFootnote.href, sizeof(entry.href) - 1);
+      entry.href[sizeof(entry.href) - 1] = '\0';
+      int wordIndex =
+          self->wordsExtractedInBlock + (self->currentTextBlock ? static_cast<int>(self->currentTextBlock->size()) : 0);
+      self->pendingFootnotes.push_back({wordIndex, entry});
+    }
+    self->insideFootnoteLink = false;
+  }
+
   // Leaving skip
   if (self->skipUntilDepth == self->depth) {
     self->skipUntilDepth = INT_MAX;
+  }
+
+  if (self->tableDepth == 1 && (strcmp(name, "td") == 0 || strcmp(name, "th") == 0)) {
+    self->nextWordContinues = false;
+  }
+
+  if (self->tableDepth == 1 && (strcmp(name, "tr") == 0)) {
+    self->nextWordContinues = false;
+  }
+
+  if (self->tableDepth == 1 && strcmp(name, "table") == 0) {
+    self->tableDepth -= 1;
+    self->tableRowIndex = 0;
+    self->tableColIndex = 0;
+    self->nextWordContinues = false;
   }
 
   // Leaving bold tag
@@ -662,11 +1642,6 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
   // Leaving italic tag
   if (self->italicUntilDepth == self->depth) {
     self->italicUntilDepth = INT_MAX;
-  }
-
-  // Leaving underline tag
-  if (self->underlineUntilDepth == self->depth) {
-    self->underlineUntilDepth = INT_MAX;
   }
 
   // Pop from inline style stack if we pushed an entry at this depth
@@ -680,102 +1655,162 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
   if (headerOrBlockTag) {
     self->currentCssStyle.reset();
     self->updateEffectiveInlineStyle();
+
+    // br is self-closing and not a container — it doesn't push/pop the stack.
+    if (strcmp(name, "br") != 0 && self->blockStyleStack.size() > 1) {
+      // Apply closing element's bottom margin to the current text block so
+      // container spacing appears after the element's content (on the last child),
+      // not on the first child via the empty-block merge in startNewTextBlock.
+      if (self->currentTextBlock) {
+        const auto style = self->currentTextBlock->getBlockStyle();
+        self->currentTextBlock->setBlockStyle(style.addBottom(self->blockStyleStack.back()));
+      }
+      self->blockStyleStack.pop_back();
+      // Start a new text block with the parent style to prevent subsequent bare text
+      // from inheriting the closed block style (e.g. alignment or margins).
+      //
+      // Pre-Translation: this close-side call is now the point at which the just-closed block is
+      // flushed — startNewTextBlock() routes a non-empty currentTextBlock through
+      // makePagesTableMode() in SideBySide (mode 5) or makePages() otherwise. Both READ
+      // currentBlockParagraphIdx / currentBlockIsTranslated, so those fields must still describe
+      // the block being closed and are intentionally NOT cleared here. The next content
+      // block-open overwrites both, and the EOF flush in finishParse() likewise relies on the last
+      // opened block's state surviving after all endElement callbacks have fired.
+      //
+      // Splitting on close does NOT double-count paragraphs: the fresh ParsedText created below
+      // resets currentBlockIndexAssigned to false, and the next block-open finds that block empty,
+      // takes the reuse early-return in startNewTextBlock (which leaves the latch untouched), and
+      // then claims exactly one index. A close is never itself a block-open, so it never advances
+      // paragraphCounter.
+      self->startNewTextBlock(self->blockStyleStack.back());
+    }
+
+    // </li> closes: if the bullet never got inline text (empty <li> or <li> with only
+    // block children that were flushed), clear the flag so the next sibling doesn't
+    // merge into this block.
+    if (strcmp(name, "li") == 0) {
+      self->listItemBulletOnly = false;
+    }
   }
 }
 
-bool ChapterHtmlSlimParser::parseAndBuildPages() {
+ChapterHtmlSlimParser::~ChapterHtmlSlimParser() { abortParse(); }
+
+bool ChapterHtmlSlimParser::beginParse() {
+  // Initialize block style stack with a root entry representing "no ancestor block elements".
+  // The user's paragraph alignment is set as the default so child elements without explicit
+  // text-align inherit it correctly through getCombinedBlockStyle.
+  BlockStyle rootBlockStyle;
+  rootBlockStyle.alignment = (this->paragraphAlignment == static_cast<uint8_t>(CssTextAlign::None))
+                                 ? CssTextAlign::Justify
+                                 : static_cast<CssTextAlign>(this->paragraphAlignment);
+  blockStyleStack.clear();
+  blockStyleStack.reserve(8);
+  blockStyleStack.push_back(rootBlockStyle);
+
   auto paragraphAlignmentBlockStyle = BlockStyle();
   paragraphAlignmentBlockStyle.textAlignDefined = true;
-  // Resolve None sentinel to Justify for initial block (no CSS context yet)
-  const auto align = (this->paragraphAlignment == static_cast<uint8_t>(CssTextAlign::None))
-                         ? CssTextAlign::Justify
-                         : static_cast<CssTextAlign>(this->paragraphAlignment);
+  const auto align = rootBlockStyle.alignment;
   paragraphAlignmentBlockStyle.alignment = align;
   startNewTextBlock(paragraphAlignmentBlockStyle);
 
-  const XML_Parser parser = XML_ParserCreate(nullptr);
-  int done;
-
-  if (!parser) {
+  xmlParser_ = XML_ParserCreate(nullptr);
+  if (!xmlParser_) {
     LOG_ERR("EHP", "Couldn't allocate memory for parser");
     return false;
   }
 
   // Handle HTML entities (like &nbsp;) that aren't in XML spec or DTD
   // Using DefaultHandlerExpand preserves normal entity expansion from DOCTYPE
-  XML_SetDefaultHandlerExpand(parser, defaultHandlerExpand);
+  XML_SetDefaultHandlerExpand(xmlParser_, defaultHandlerExpand);
 
-  FsFile file;
-  if (!Storage.openFileForRead("EHP", filepath, file)) {
-    XML_ParserFree(parser);
+  if (!Storage.openFileForRead("EHP", filepath, parseFile_)) {
+    destroyXmlParser(xmlParser_);
+    xmlParser_ = nullptr;
     return false;
   }
 
   // Get file size to decide whether to show indexing popup.
-  if (popupFn && file.size() >= MIN_SIZE_FOR_POPUP) {
+  if (popupFn && parseFile_.size() >= MIN_SIZE_FOR_POPUP) {
     popupFn();
   }
 
-  XML_SetUserData(parser, this);
-  XML_SetElementHandler(parser, startElement, endElement);
-  XML_SetCharacterDataHandler(parser, characterData);
+  XML_SetUserData(xmlParser_, this);
+  XML_SetElementHandler(xmlParser_, startElement, endElement);
+  XML_SetCharacterDataHandler(xmlParser_, characterData);
 
-  do {
-    void* const buf = XML_GetBuffer(parser, 1024);
-    if (!buf) {
-      LOG_ERR("EHP", "Couldn't allocate memory for buffer");
-      XML_StopParser(parser, XML_FALSE);                // Stop any pending processing
-      XML_SetElementHandler(parser, nullptr, nullptr);  // Clear callbacks
-      XML_SetCharacterDataHandler(parser, nullptr);
-      XML_ParserFree(parser);
-      file.close();
-      return false;
-    }
+  parseStartTime_ = millis();
+  return true;
+}
 
-    const size_t len = file.read(buf, 1024);
+ChapterHtmlSlimParser::ParseStatus ChapterHtmlSlimParser::parseStep() {
+  void* const buf = XML_GetBuffer(xmlParser_, PARSE_BUFFER_SIZE);
+  if (!buf) {
+    LOG_ERR("EHP", "Couldn't allocate memory for buffer");
+    return ParseStatus::Error;
+  }
 
-    if (len == 0 && file.available() > 0) {
-      LOG_ERR("EHP", "File read error");
-      XML_StopParser(parser, XML_FALSE);                // Stop any pending processing
-      XML_SetElementHandler(parser, nullptr, nullptr);  // Clear callbacks
-      XML_SetCharacterDataHandler(parser, nullptr);
-      XML_ParserFree(parser);
-      file.close();
-      return false;
-    }
+  const size_t len = parseFile_.read(buf, PARSE_BUFFER_SIZE);
 
-    done = file.available() == 0;
+  if (len == 0 && parseFile_.available() > 0) {
+    LOG_ERR("EHP", "File read error");
+    return ParseStatus::Error;
+  }
 
-    if (XML_ParseBuffer(parser, static_cast<int>(len), done) == XML_STATUS_ERROR) {
-      LOG_ERR("EHP", "Parse error at line %lu:\n%s", XML_GetCurrentLineNumber(parser),
-              XML_ErrorString(XML_GetErrorCode(parser)));
-      XML_StopParser(parser, XML_FALSE);                // Stop any pending processing
-      XML_SetElementHandler(parser, nullptr, nullptr);  // Clear callbacks
-      XML_SetCharacterDataHandler(parser, nullptr);
-      XML_ParserFree(parser);
-      file.close();
-      return false;
-    }
-  } while (!done);
+  const int done = parseFile_.available() == 0;
 
-  XML_StopParser(parser, XML_FALSE);                // Stop any pending processing
-  XML_SetElementHandler(parser, nullptr, nullptr);  // Clear callbacks
-  XML_SetCharacterDataHandler(parser, nullptr);
-  XML_ParserFree(parser);
-  file.close();
+  if (XML_ParseBuffer(xmlParser_, static_cast<int>(len), done) == XML_STATUS_ERROR) {
+    LOG_ERR("EHP", "Parse error at line %lu:\n%s", XML_GetCurrentLineNumber(xmlParser_),
+            XML_ErrorString(XML_GetErrorCode(xmlParser_)));
+    return ParseStatus::Error;
+  }
+
+  return done ? ParseStatus::Done : ParseStatus::More;
+}
+
+void ChapterHtmlSlimParser::abortParse() {
+  if (xmlParser_) {
+    destroyXmlParser(xmlParser_);
+    xmlParser_ = nullptr;
+  }
+  // Only close the file if it was successfully opened in beginParse()
+  if (parseFile_.isOpen()) {
+    parseFile_.close();
+  }
+}
+
+bool ChapterHtmlSlimParser::finishParse() {
+  if (xmlParser_) {
+    LOG_DBG("EHP", "Time to parse and build pages: %lu ms", millis() - parseStartTime_);
+    destroyXmlParser(xmlParser_);
+    xmlParser_ = nullptr;
+  }
+  parseFile_.close();
 
   // Process last page if there is still text
   if (currentTextBlock) {
-    if (translationMode == 5) {
-      makePagesTableMode();
-      // Flush any remaining buffered original
+    // Pre-Translation: flush the trailing outermost block through the pairing builder that owns this
+    // layout. A trailing original is buffered (not laid out) there, so drain any block still buffered
+    // — the last original of the chapter — full-width via flushBufferedOriginal (which appends the
+    // italic "not translated" marker under SideBySide only; Interlinear just shows the source).
+    if (ptLayout == PtLayout::SideBySide || ptLayout == PtLayout::Interlinear) {
+      if (ptLayout == PtLayout::SideBySide) {
+        makePagesTableMode();
+      } else {
+        makePagesInterlinearMode();
+      }
       if (bufferedOriginalBlock) {
         flushBufferedOriginal();
       }
     } else {
       makePages();
     }
-    completePageFn(std::move(currentPage));
+    if (!pendingAnchorId.empty()) {
+      anchorData.push_back({std::move(pendingAnchorId), static_cast<uint16_t>(completedPageCount)});
+      pendingAnchorId.clear();
+    }
+    completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex);
+    completedPageCount++;
     currentPage.reset();
     currentTextBlock.reset();
   }
@@ -783,23 +1818,115 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
   return true;
 }
 
-void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line) {
-  const int lineHeight = renderer.getLineHeight(fontId) * lineCompression;
+bool ChapterHtmlSlimParser::parseAndBuildPages() {
+  if (!beginParse()) {
+    return false;
+  }
+  for (;;) {
+    const ParseStatus status = parseStep();
+    if (status == ParseStatus::Error) {
+      abortParse();
+      return false;
+    }
+    if (status == ParseStatus::Done) {
+      break;
+    }
+  }
+  return finishParse();
+}
 
-  if (currentPageNextY + lineHeight > viewportHeight) {
-    completePageFn(std::move(currentPage));
+void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line, const LineFontRole role) {
+  // Pitch follows the line's OWN font. yPos is the top of the line box and TextBlock::render puts the
+  // baseline at yPos + rubyShift + ascender(drawing font), with the glyphs living inside one
+  // advanceY of that top -- so advancing by exactly this line's advanceY tiles the boxes edge to
+  // edge whatever font each one used. A smaller translated line therefore consumes less height and
+  // the next line (of either size) starts right where it ended: no overlap, no leftover gap. Both
+  // terms must come from the SAME id the line was measured with, or the ruby shift baked into the
+  // advance would not match the one render() adds to the baseline.
+  const int roleFontId = fontIdForRole(role);
+  const int lineHeight = renderer.getLineHeight(roleFontId, lineCompression) +
+                         line->getRubyShift(renderer.getFontAscenderSize(roleFontId));
+
+  if (!currentPage) {
     currentPage.reset(new Page());
     currentPageNextY = 0;
   }
 
-  // Track which paragraph indices are on this page (for modal translation).
-  if (currentPage->firstParagraphIdx < 0) currentPage->firstParagraphIdx = paragraphCounter;
-  currentPage->lastParagraphIdx = paragraphCounter;
+  if (currentPageNextY + lineHeight > viewportHeight) {
+    completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex);
+    completedPageCount++;
+    currentPage.reset(new Page());
+    currentPageNextY = 0;
+  }
+
+  // Track cumulative words to assign footnotes to the page containing their anchor
+  wordsExtractedInBlock += line->wordCount();
+  auto footnoteIt = pendingFootnotes.begin();
+  while (footnoteIt != pendingFootnotes.end() && footnoteIt->first <= wordsExtractedInBlock) {
+    currentPage->addFootnote(footnoteIt->second.number, footnoteIt->second.href);
+    ++footnoteIt;
+  }
+  pendingFootnotes.erase(pendingFootnotes.begin(), footnoteIt);
 
   // Apply horizontal left inset (margin + padding) as x position offset
   const int16_t xOffset = line->getBlockStyle().leftInset();
-  currentPage->elements.push_back(std::make_shared<PageLine>(line, xOffset, currentPageNextY, paragraphCounter));
+  auto pageLine = std::make_shared<PageLine>(line, xOffset, currentPageNextY);
+  // Pre-Translation: stamp the line with its originating paragraph index so the renderer (and the
+  // Page Translation overlay) can map rendered lines back to original paragraphs.
+  pageLine->paragraphIdx = currentBlockParagraphIdx;
+  // ... and with the role it was measured and advanced with, which is the whole of what the renderer
+  // needs to draw it in the same font (PageLine::render -> PageFontSet::forRole).
+  pageLine->fontRole = role;
+  // Pre-Translation: track which original paragraph indices contribute to this page. Translated
+  // blocks share their original's index (via the pairing logic in startElement), so the range
+  // still represents original paragraphs.
+  if (currentBlockParagraphIdx >= 0) {
+    if (currentPage->firstParagraphIdx < 0) {
+      currentPage->firstParagraphIdx = currentBlockParagraphIdx;
+    }
+    currentPage->lastParagraphIdx = currentBlockParagraphIdx;
+  }
+  currentPage->elements.push_back(std::move(pageLine));
   currentPageNextY += lineHeight;
+}
+
+void ChapterHtmlSlimParser::flushPendingFootnotesToCurrentPage() {
+  if (pendingFootnotes.empty()) return;
+  if (currentPage) {
+    for (const auto& [idx, fn] : pendingFootnotes) {
+      currentPage->addFootnote(fn.number, fn.href);
+    }
+  }
+  // Cleared either way. An entry left behind here would be drained against the NEXT block's word base,
+  // which is precisely the misattribution this net exists to prevent. Every caller has a live
+  // currentPage by construction — makePages and both custom emitters create one before laying a single
+  // line — so the undelivered case is unreachable in practice.
+  pendingFootnotes.clear();
+}
+
+ChapterHtmlSlimParser::FootnoteLedger ChapterHtmlSlimParser::adoptBufferedFootnoteLedger() {
+  FootnoteLedger parked;
+  parked.wordBase = wordsExtractedInBlock;
+  // Swaps, never copies: an entry lives in exactly one ledger at every instant, so nothing can be
+  // delivered twice or lost in transit. Both swaps are O(1) and recycle the two buffers between the
+  // ledgers instead of allocating, so a chapter of footnoted paragraphs allocates once.
+  parked.pending.swap(pendingFootnotes);
+  pendingFootnotes.swap(bufferedOriginalFootnotes);
+  wordsExtractedInBlock = bufferedOriginalWordsExtracted;
+  return parked;
+}
+
+void ChapterHtmlSlimParser::releaseFootnoteLedger(FootnoteLedger& parked) {
+  // Anything still pending belongs to the buffered block and had no line of its own to land on (its
+  // layout produced fewer lines than its anchors need, or bailed out before emitting any), so give it
+  // the same best-effort page the end-of-block net gives every such entry rather than letting it cross
+  // into the in-flight block's ledger. Normally a no-op: makePages and both custom emitters run that
+  // net themselves before returning.
+  flushPendingFootnotesToCurrentPage();
+  bufferedOriginalFootnotes.swap(pendingFootnotes);
+  bufferedOriginalWordsExtracted = 0;
+  pendingFootnotes.swap(parked.pending);
+  wordsExtractedInBlock = parked.wordBase;
 }
 
 void ChapterHtmlSlimParser::makePages() {
@@ -813,7 +1940,12 @@ void ChapterHtmlSlimParser::makePages() {
     currentPageNextY = 0;
   }
 
-  const int lineHeight = renderer.getLineHeight(fontId) * lineCompression;
+  // Pre-Translation: resolve the role ONCE for the whole block and use its font for measurement,
+  // for the per-line advance (addLineToPage) and for the paragraph gap below, so every vertical
+  // number this block contributes is in the type size it is drawn at.
+  const LineFontRole role = currentLineRole();
+  const int roleFontId = fontIdForRole(role);
+  const int lineHeight = renderer.getLineHeight(roleFontId, lineCompression);
 
   // Apply top spacing before the paragraph (stored in pixels)
   const BlockStyle& blockStyle = currentTextBlock->getBlockStyle();
@@ -829,13 +1961,14 @@ void ChapterHtmlSlimParser::makePages() {
   const uint16_t effectiveWidth =
       (horizontalInset < viewportWidth) ? static_cast<uint16_t>(viewportWidth - horizontalInset) : viewportWidth;
 
-  LOG_DBG("EHP", "makePages paragraphCounter=%d wordCount=%d", paragraphCounter, (int)currentTextBlock->size());
-
   currentTextBlock->layoutAndExtractLines(
-      renderer, fontId, effectiveWidth,
-      [this](const std::shared_ptr<TextBlock>& textBlock) { addLineToPage(textBlock); });
+      renderer, roleFontId, effectiveWidth,
+      [this, role](const std::shared_ptr<TextBlock>& textBlock) { addLineToPage(textBlock, role); });
 
-  paragraphCounter++;
+  // Fallback: transfer any remaining pending footnotes to current page.
+  // Normally addLineToPage handles this via word-index tracking, but this catches
+  // edge cases where a footnote's word index equals the exact block size.
+  flushPendingFootnotesToCurrentPage();
 
   // Apply bottom spacing after the paragraph (stored in pixels)
   if (blockStyle.marginBottom > 0) {
@@ -845,92 +1978,965 @@ void ChapterHtmlSlimParser::makePages() {
     currentPageNextY += blockStyle.paddingBottom;
   }
 
-  // Extra paragraph spacing if enabled (default behavior)
+  // Extra paragraph spacing if enabled (default behavior).
+  // Pre-Translation (SideBySide, mode 5): paired blocks lay out through renderSideBySide, not
+  // makePages, so there is no longer a translated block flowing through here to suppress. The
+  // only mode-5 callers of makePages are full-width fallbacks (an unpaired original, or a
+  // translation with no buffered original), which both want normal paragraph spacing.
   if (extraParagraphSpacing) {
     currentPageNextY += lineHeight / 2;
   }
 }
 
-void ChapterHtmlSlimParser::flushBufferedOriginal() {
-  if (!bufferedOriginalBlock) return;
-  // Temporarily swap buffered block into currentTextBlock for makePages()
-  auto saved = std::move(currentTextBlock);
-  currentTextBlock = std::move(bufferedOriginalBlock);
-  makePages();
-  currentTextBlock = std::move(saved);
-}
-
+// Pre-Translation (SideBySide, mode 5): route one flushed outermost block to the two-column
+// table. currentBlockIsTranslated / currentBlockParagraphIdx still describe the block being
+// flushed at this point (the caller stamps the next block's state only after this returns).
 void ChapterHtmlSlimParser::makePagesTableMode() {
   if (!currentTextBlock || currentTextBlock->isEmpty()) return;
 
-  if (currentBlockHasColoredText) {
-    // This is a translation paragraph
+  if (currentBlockIsTranslated) {
+    // Translation paragraph: pair it beside the buffered original if one is waiting, otherwise
+    // fall back to a full-width layout (a translation with no preceding original — unusual).
     if (bufferedOriginalBlock) {
-      // Pair with buffered original: render side by side
+      // renderSideBySide drains against the SOURCE column, i.e. the buffered original, so that block's
+      // ledger is the one that must be installed while it runs. A sidecar translation cannot itself
+      // carry an anchor (see the drain comment there), but a book whose OWN markup marks a paragraph
+      // with a differing lang= can, and its indices restart from a base of their own — parking them
+      // keeps them out of the source column's drain, and the ledger swap also pins the word BASE, which
+      // is otherwise whatever the translation block left behind if it was large enough to soft-flush.
+      FootnoteLedger parkedFootnotes = adoptBufferedFootnoteLedger();
       renderSideBySide(std::move(bufferedOriginalBlock), std::move(currentTextBlock));
+      releaseFootnoteLedger(parkedFootnotes);
     } else {
-      // No buffered original: render full-width as fallback
       makePages();
     }
   } else {
-    // This is an original paragraph
+    // Original paragraph: if a previous original is still buffered it never got a translation,
+    // so lay it out full-width (with the italic marker) before buffering this one for pairing.
     if (bufferedOriginalBlock) {
-      // Previous original was unpaired: flush it full-width
       flushBufferedOriginal();
     }
-    // Buffer this original for potential pairing with next paragraph
+    bufferedOriginalParagraphIdx = currentBlockParagraphIdx;
+    // The block's footnote ledger goes into the buffer WITH it: its anchor indices are relative to its
+    // own words, and startNewTextBlock is about to zero that base for the next block. The buffered
+    // ledger is empty here by construction — flushBufferedOriginal above, and every other consumer of
+    // the buffer, leaves it so — hence a swap: it hands this block's ledger over AND leaves the
+    // in-flight one clean for the next block, with the two buffers recycled rather than reallocated.
+    bufferedOriginalFootnotes.swap(pendingFootnotes);
+    bufferedOriginalWordsExtracted = wordsExtractedInBlock;
     bufferedOriginalBlock = std::move(currentTextBlock);
   }
 }
 
-void ChapterHtmlSlimParser::renderSideBySide(std::unique_ptr<ParsedText> leftBlock,
-                                              std::unique_ptr<ParsedText> rightBlock) {
+// Pre-Translation (SideBySide, mode 5): lay out a buffered original that never received a paired
+// translation. It renders full-width (via makePages) with the italic "not translated" marker inline.
+void ChapterHtmlSlimParser::flushBufferedOriginal() {
+  if (!bufferedOriginalBlock) return;
+
+  // Swap the buffered original into currentTextBlock so makePages() lays it out, and point the
+  // block-level paragraph state at the buffered original so both the marker guard and the emitted
+  // PageLines' paragraphIdx match it. Save/restore the caller's in-flight state around the swap.
+  auto savedBlock = std::move(currentTextBlock);
+  const int16_t savedParagraphIdx = currentBlockParagraphIdx;
+  const bool savedIsTranslated = currentBlockIsTranslated;
+  // The footnote ledger travels with the block for the same reason the paragraph index does, and it is
+  // load-bearing HERE above all: the in-flight block that TRIGGERED this flush (the next original) has
+  // usually already pushed anchors of its own, and its indices restart from base 0 exactly as the
+  // buffered block's did. Left in the same ledger, the low-index entries of the block that has not been
+  // laid out yet satisfy addLineToPage's `first <= wordsExtractedInBlock` test on one of the buffered
+  // block's first lines and were delivered to ITS page, then erased — so the next paragraph's marker
+  // appeared one paragraph early, or (once the net below cleared the remainder) not at all.
+  FootnoteLedger parkedFootnotes = adoptBufferedFootnoteLedger();
+
+  currentTextBlock = std::move(bufferedOriginalBlock);
+  currentBlockParagraphIdx = bufferedOriginalParagraphIdx;
+  currentBlockIsTranslated = false;
+
+  appendSideBySideNoTranslationMarkerIfUnpaired();
+  makePages();
+
+  releaseFootnoteLedger(parkedFootnotes);
+  currentTextBlock = std::move(savedBlock);
+  currentBlockParagraphIdx = savedParagraphIdx;
+  currentBlockIsTranslated = savedIsTranslated;
+}
+
+// Pre-Translation (SideBySide, mode 5): lay a SOURCE block and its paired TRANSLATION block into
+// two half-width columns, emitted as lockstep PageLine rows sharing one yPos and advancing one
+// lineHeight per row. Both columns stamp the original paragraph's index
+// (bufferedOriginalParagraphIdx) so the Page Translation overlay's line->paragraph mapping still
+// resolves. RTL is handled per-word inside each half-width line by layoutAndExtractLines.
+//
+// SOURCE vs LEFT: today the source is the physically left column and the translation the right one,
+// but the two are NOT the same thing and the code below never treats them as such. Everything
+// keyed to the content — the footnote drain, the block style, the paragraph index — follows the
+// SOURCE stream by name; only sourceColX / transColX are physical. A future column-order setting
+// then only has to swap those two x values.
+void ChapterHtmlSlimParser::renderSideBySide(std::unique_ptr<ParsedText> sourceBlock,
+                                             std::unique_ptr<ParsedText> transBlock) {
+  if (!sourceBlock || !transBlock) return;
+
   if (!currentPage) {
     currentPage.reset(new Page());
     currentPageNextY = 0;
   }
 
+  // Both columns are laid out AND drawn in the body FONT: the pairing is what distinguishes the two
+  // languages here, and shrinking one column would break the lockstep row geometry this loop relies
+  // on (one shared yPos and one shared advance per row). The translation column is nonetheless
+  // tagged LineFontRole::Translation below -- the role is what carries the COLOUR sub-setting, and
+  // it costs nothing in fonts: readerPageFontSet()'s translation slot is 0 under this mode
+  // (getInterleavedTranslationFontId is gated to Interleaved), which PageFontSet maps back to the
+  // body font. currentLineRole() still answers Body under SideBySide, and must: it serves the main
+  // flow, where a translated block only ever lands via the soft-flush escape, not via this pairing.
   const int lineHeight = renderer.getLineHeight(fontId) * lineCompression;
-  const uint16_t gapWidth = viewportWidth * 0.04f;
-  const uint16_t colWidth = (viewportWidth - gapWidth) / 2;
-  const int16_t rightColX = colWidth + gapWidth;
+  const uint16_t gapWidth = static_cast<uint16_t>(viewportWidth * 0.04f);
+  // Equal columns, measured identically -- which is exactly why the source/translation order is a
+  // matter of x only and can never move a line break.
+  const uint16_t colWidth = static_cast<uint16_t>((viewportWidth - gapWidth) / 2);
+  // The two column origins, named by CONTENT and not by side. Today the source is the near column
+  // and the translation the far one; a future column-order setting swaps exactly these two values
+  // and nothing else in this function has to change.
+  const int16_t sourceColX = 0;
+  const int16_t transColX = static_cast<int16_t>(colWidth + gapWidth);
 
-  // Layout both columns into line vectors
-  std::vector<std::shared_ptr<TextBlock>> leftLines, rightLines;
-  leftBlock->layoutAndExtractLines(renderer, fontId, colWidth,
-                                   [&leftLines](const std::shared_ptr<TextBlock>& line) { leftLines.push_back(line); });
-  rightBlock->layoutAndExtractLines(
+  // Lay each column out at half width into its own line vector. Paragraphs are short (one block
+  // each), so a small reserve avoids the first few reallocs without over-committing DRAM.
+  std::vector<std::shared_ptr<TextBlock>> sourceLines;
+  std::vector<std::shared_ptr<TextBlock>> transLines;
+  sourceLines.reserve(8);
+  transLines.reserve(8);
+  sourceBlock->layoutAndExtractLines(
       renderer, fontId, colWidth,
-      [&rightLines](const std::shared_ptr<TextBlock>& line) { rightLines.push_back(line); });
+      [&sourceLines](const std::shared_ptr<TextBlock>& line) { sourceLines.push_back(line); });
+  transBlock->layoutAndExtractLines(renderer, fontId, colWidth, [&transLines](const std::shared_ptr<TextBlock>& line) {
+    transLines.push_back(line);
+  });
 
-  // Apply top spacing from the original block
-  const BlockStyle& bs = leftBlock->getBlockStyle();
+  // Top spacing comes from the SOURCE block (vertical, so order-invariant).
+  const BlockStyle& bs = sourceBlock->getBlockStyle();
   if (bs.marginTop > 0) currentPageNextY += bs.marginTop;
   if (bs.paddingTop > 0) currentPageNextY += bs.paddingTop;
 
-  // Place lines on pages
-  const size_t maxLines = std::max(leftLines.size(), rightLines.size());
+  const size_t maxLines = std::max(sourceLines.size(), transLines.size());
   for (size_t i = 0; i < maxLines; i++) {
+    // Page-break check: v2 uses the 3-arg completePageFn + explicit page counter.
     if (currentPageNextY + lineHeight > viewportHeight) {
-      completePageFn(std::move(currentPage));
+      completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex);
+      completedPageCount++;
       currentPage.reset(new Page());
       currentPageNextY = 0;
     }
 
-    if (i < leftLines.size()) {
-      currentPage->elements.push_back(std::make_shared<PageLine>(leftLines[i], 0, currentPageNextY));
+    // FOOTNOTES, attributed to the page carrying the anchor exactly as addLineToPage (:1828-1834) does
+    // it. SideBySide needs its own copy because a PAIRED paragraph never reaches addLineToPage, and
+    // under this layout every translated paragraph pairs: without this, pendingFootnotes accumulated
+    // for the whole chapter and was either dumped wholesale onto whatever page happened to be current at
+    // the next unpaired paragraph (the end-of-block net, flushPendingFootnotesToCurrentPage) or never
+    // delivered at all, since finishParse does not drain it.
+    //
+    // SOURCE column only -- semantically the source, not "the left one". The translation column is
+    // written by the sidecar as a fresh block element holding nothing but the ESCAPED plain text of
+    // the translation (TranslatingHtmlRewriter's write-out loop, via appendEscaped — '<' becomes
+    // "&lt;"), so it carries no <a epub:type="noteref"> and can never push a pending footnote, which
+    // is why one counter over the SOURCE column's lines is the whole story here.
+    //
+    // The pending indices and this counter share the SOURCE block's base because the caller installed
+    // that block's ledger (adoptBufferedFootnoteLedger) before calling: both the entries and the base
+    // below are the buffered original's own, and the in-flight block's are parked out of reach. Relying
+    // instead on "startNewTextBlock zeroed the counter and nothing advances it" was not sound — the soft
+    // flush (:1452) advances it for any block over 750 words (320 with embedded CSS), and the entries of
+    // an as-yet-unlaid block sat in the same list. The pre-layout anchor index vs post-layout
+    // wordCount() mismatch is addLineToPage's own approximation, kept identical here.
+    if (i < sourceLines.size()) {
+      wordsExtractedInBlock += sourceLines[i]->wordCount();
+      auto footnoteIt = pendingFootnotes.begin();
+      while (footnoteIt != pendingFootnotes.end() && footnoteIt->first <= wordsExtractedInBlock) {
+        currentPage->addFootnote(footnoteIt->second.number, footnoteIt->second.href);
+        ++footnoteIt;
+      }
+      pendingFootnotes.erase(pendingFootnotes.begin(), footnoteIt);
+
+      auto sourceLine = std::make_shared<PageLine>(sourceLines[i], sourceColX, currentPageNextY);
+      sourceLine->paragraphIdx = bufferedOriginalParagraphIdx;
+      // fontRole stays Body: this is the book's own text, and it must never take the translation
+      // colour.
+      currentPage->elements.push_back(std::move(sourceLine));
+      // The page owns this line now (PageLine's ctor takes the shared_ptr BY VALUE and moves it into
+      // its member, so the copy made above is the page's own reference), so release ours instead of
+      // pinning every line of BOTH columns until the call returns. Nothing below reads an earlier
+      // line: this loop only ever touches the CURRENT index of each column, and the sizes it compares
+      // against are unaffected by a reset. That restores the makePages peak -- one page's worth of
+      // TextBlocks, freed as onPageComplete serializes each page -- for a pair long enough to span
+      // several pages, instead of holding object + arena + control block for every line of both
+      // columns at once on top of the page being built.
+      sourceLines[i].reset();
     }
-    if (i < rightLines.size()) {
-      currentPage->elements.push_back(std::make_shared<PageLine>(rightLines[i], rightColX, currentPageNextY));
+    if (i < transLines.size()) {
+      auto transLine = std::make_shared<PageLine>(transLines[i], transColX, currentPageNextY);
+      transLine->paragraphIdx = bufferedOriginalParagraphIdx;
+      // THE colour hook for this mode. The role resolves to the body font (see above), so this is
+      // purely "which stream is this line", read back at draw time by PageFontSet::inkForRole to
+      // colour the translation column and nothing else. It is written into the page (one byte per
+      // PageLine), so a section cached by a build that predates this line keeps Body and draws the
+      // column black until it is rebuilt for some other reason -- deliberate: a colour must not be
+      // worth a cache invalidation.
+      transLine->fontRole = LineFontRole::Translation;
+      currentPage->elements.push_back(std::move(transLine));
+      transLines[i].reset();  // same handoff as the source column above
+    }
+
+    // Both columns belong to the same original paragraph; keep the page's paragraph range current
+    // (also fixes up firstParagraphIdx on a page freshly reset by the break above).
+    if (bufferedOriginalParagraphIdx >= 0) {
+      if (currentPage->firstParagraphIdx < 0) {
+        currentPage->firstParagraphIdx = bufferedOriginalParagraphIdx;
+      }
+      currentPage->lastParagraphIdx = bufferedOriginalParagraphIdx;
     }
 
     currentPageNextY += lineHeight;
   }
 
-  // Apply bottom spacing
+  // Same end-of-block net makePages keeps: every entry in the installed ledger belongs to the SOURCE
+  // column just emitted (the caller parked the in-flight block's ledger before this call), so flushing
+  // it to the current page can never touch another paragraph's entry. The per-line drain above already
+  // covers the normal case — an anchor index can never exceed the block's pre-layout word count, and
+  // hyphenation only ADDS post-layout words — so this fires only when the source column produced fewer
+  // lines than the anchors need (a line dropped to a TextBlock arena OOM).
+  flushPendingFootnotesToCurrentPage();
+
+  // Bottom spacing + the usual half-line paragraph gap after the pair.
   if (bs.marginBottom > 0) currentPageNextY += bs.marginBottom;
   if (bs.paddingBottom > 0) currentPageNextY += bs.paddingBottom;
   if (extraParagraphSpacing) {
     currentPageNextY += lineHeight / 2;
+  }
+}
+
+void ChapterHtmlSlimParser::appendSideBySideNoTranslationMarkerIfUnpaired() {
+  // Only PtLayout::SideBySide surfaces the inline marker; every other layout either drops or
+  // pairs content elsewhere.
+  if (ptLayout != PtLayout::SideBySide) return;
+  // currentBlockIsTranslated reflects the most-recently-opened outermost block. If it was a
+  // translation, the preceding original is already paired — no marker. If it was an original,
+  // the caller has determined nothing will pair with it (next outermost block is also an
+  // original, or we reached EOF), so it is unpaired.
+  if (currentBlockIsTranslated) return;
+  // No outermost block has opened yet (nothing to mark), or the block is empty/whitespace-only
+  // (which the layout parser never counts as a paragraph — see ParagraphBoundary.h).
+  if (currentBlockParagraphIdx < 0) return;
+  if (!currentTextBlock || currentTextBlock->isEmpty()) return;
+
+  // Option C (unpaired original): append a short "not translated" marker inline after the source
+  // text so the gap is visible but unobtrusive. RAM-cheap: a few extra addWord() calls on the block
+  // already being flushed, no new buffers.
+  //
+  // ITALICS, not a gray level. The fork dimmed this marker and v2 first copied that by tagging it
+  // EpdFontFamily::TRANSLATED, the per-word bit the renderer maps through modeToGray(). That does
+  // not work here, in either direction:
+  //   * the bit is a MODE-wide switch. Turning it on for Side by Side also greys the source column
+  //     of any book with inline lang= runs, every unpaired translation paragraph, the soft-flush
+  //     escape, and the translation column of every chapter cached before it had a line role — see
+  //     the leak list on modeToGray() in src/main.cpp. The marker cannot be singled out.
+  //   * a LINE role, the vehicle the two Translation Colour sub-settings use, cannot reach it
+  //     either: the marker deliberately shares its line with the source text it annotates.
+  // Italic is per-word, is set nowhere else on this path, needs no grayscale pass (so it survives
+  // Text Anti-Aliasing being off, which grey does not), and reads as editorial furniture in every
+  // colour setting. EpdFontFamily::getFont() falls back to the regular face when a family ships no
+  // italic, which is exactly the old appearance rather than a wrong one.
+  const char* marker = tr(STR_NO_TRANSLATION);
+  std::string markerWord;
+  for (const char* p = marker;; ++p) {
+    if (*p == ' ' || *p == '\0') {
+      if (!markerWord.empty()) {
+        currentTextBlock->addWord(markerWord, EpdFontFamily::ITALIC);
+        markerWord.clear();
+      }
+      if (*p == '\0') break;
+    } else {
+      markerWord.push_back(*p);
+    }
+  }
+}
+
+// ── Pre-Translation (PtLayout::Interlinear) ───────────────────────────────────
+//
+// Route one flushed outermost block to the interlinear builder. Identical buffering shape to
+// makePagesTableMode (see there for why currentBlockIsTranslated / currentBlockParagraphIdx are
+// still the FLUSHED block's state at this point).
+void ChapterHtmlSlimParser::makePagesInterlinearMode() {
+  if (!currentTextBlock || currentTextBlock->isEmpty()) return;
+
+  if (currentBlockIsTranslated) {
+    // Translation paragraph: pair it with the buffered original if one is waiting, otherwise fall
+    // back to a full-width layout (a translation with no preceding original — unusual).
+    if (bufferedOriginalBlock) {
+      // Same ledger handover as makePagesTableMode: emitInterlinearPair drains against the SOURCE
+      // rows, i.e. the buffered original, so that block's ledger is the one installed while it runs.
+      FootnoteLedger parkedFootnotes = adoptBufferedFootnoteLedger();
+      renderInterlinear(std::move(bufferedOriginalBlock), std::move(currentTextBlock));
+      releaseFootnoteLedger(parkedFootnotes);
+    } else {
+      makePages();
+    }
+  } else {
+    // Original paragraph: a previous original still buffered never got a translation, so lay it out
+    // full-width (flushBufferedOriginal; the "not translated" marker is SideBySide-only, so an
+    // unpaired original here simply appears with no annotation row) before buffering this one.
+    if (bufferedOriginalBlock) {
+      flushBufferedOriginal();
+    }
+    bufferedOriginalParagraphIdx = currentBlockParagraphIdx;
+    // The block's footnote ledger goes into the buffer WITH it — see makePagesTableMode.
+    bufferedOriginalFootnotes.swap(pendingFootnotes);
+    bufferedOriginalWordsExtracted = wordsExtractedInBlock;
+    bufferedOriginalBlock = std::move(currentTextBlock);
+  }
+}
+
+namespace {
+
+// The WORD stream of a block whose token stream may not be one token per word.
+//
+// Focus Reading (ParsedText::addWord) splits every word into a BOLD PREFIX plus a regular tail
+// marked wordIsFocusSuffix, so "Ok" is stored as "O" + "k". extractLine concatenates the tail back
+// before a line leaves ParsedText, which is why the tooltip — which reads laid-out page words — and
+// every earlier version of the Interlinear pairing saw whole words. Feeding the raw token array to
+// the sentence pairing instead gives it a DIFFERENT text: "Ok." becomes "O" "k" ".", whose match key
+// is "O k" (3 bytes) rather than "Ok" (2), so mergeJunkSentences stops folding it and the sentence
+// gets an annotation row and a forced line break the tooltip does not give it. The two consumers
+// SentencePairing.h promises one answer to then disagree, and only when Focus Reading is on.
+//
+// So: merge exactly what extractLine merges, and keep the token index of each merged word so the
+// annotations coming back in merged-word space can be turned into the token indices layout needs.
+struct MergedWordStream {
+  std::string arena;              // NUL-separated merged words; EMPTY on the no-split fast path
+  std::vector<const char*> ptrs;  // one entry per merged WORD, pointing at arena or at the block
+  std::vector<uint16_t> toToken;  // merged index -> first token index; EMPTY means the two coincide
+
+  // Token index for merged index `merged`. Also correct for an EXCLUSIVE end index: merged word
+  // `merged` starts at the token one past the end of merged word `merged - 1`, and a past-the-end
+  // index maps to the token count.
+  size_t tokenAt(const size_t merged, const size_t tokenCount) const {
+    if (toToken.empty()) return std::min(merged, tokenCount);
+    return merged < toToken.size() ? toToken[merged] : tokenCount;
+  }
+};
+
+void buildMergedWordStream(const ParsedText& block, MergedWordStream& out) {
+  const size_t tokenCount = block.size();
+  out.arena.clear();
+  out.ptrs.clear();
+  out.toToken.clear();
+
+  size_t suffixTokens = 0;
+  size_t textBytes = 0;
+  for (size_t w = 0; w < tokenCount; w++) {
+    textBytes += block.wordAt(w).size();
+    if (block.wordIsFocusSuffixAt(w)) suffixTokens++;
+  }
+
+  // FAST PATH — Focus Reading off, or a block it did not split (already-bold or CJK text). Nothing
+  // to merge, so point straight at the block's own word strings and copy no bytes at all. This is
+  // every reader who has not turned the setting on, i.e. the default.
+  if (suffixTokens == 0) {
+    out.ptrs.reserve(tokenCount);
+    for (size_t w = 0; w < tokenCount; w++) out.ptrs.push_back(block.wordAt(w).c_str());
+    return;
+  }
+
+  // SLOW PATH — one flat NUL-separated arena rather than a vector<std::string>: the paragraph's own
+  // text is a few KB, whereas one std::string header per word is 24 B before any heap the long words
+  // would need. Sized EXACTLY (every byte of text, one NUL per merged word) and reserved up front, so
+  // no append can reallocate; the pointers are still built from offsets afterwards rather than as we
+  // go, which keeps that a performance property and not a correctness one.
+  const size_t mergedCount = tokenCount - suffixTokens;
+  out.arena.reserve(textBytes + mergedCount);
+  out.toToken.reserve(mergedCount);
+  out.ptrs.reserve(mergedCount);
+  std::vector<uint32_t> offsets;
+  offsets.reserve(mergedCount);
+  for (size_t w = 0; w < tokenCount; w++) {
+    if (block.wordIsFocusSuffixAt(w) && !offsets.empty()) {
+      out.arena.pop_back();  // drop the terminator: this token continues the word before it
+      out.arena += block.wordAt(w);
+      out.arena.push_back('\0');
+      continue;
+    }
+    offsets.push_back(static_cast<uint32_t>(out.arena.size()));
+    out.toToken.push_back(static_cast<uint16_t>(w));
+    out.arena += block.wordAt(w);
+    out.arena.push_back('\0');
+  }
+  for (const uint32_t offset : offsets) out.ptrs.push_back(out.arena.data() + offset);
+}
+
+}  // namespace
+
+void ChapterHtmlSlimParser::buildAnnotationRuns(const InterlinearAnnotation& annotation, const ParsedText& transBlock,
+                                                const InterlinearBands& bands, const uint16_t measureWidth,
+                                                const int annotationFont, std::vector<InterlinearRun>& runs) {
+  runs.clear();
+  const size_t slots = bands.slots;
+  // A sentence whose translation is empty contributes no run at all; its slots stay blank.
+  if (annotation.transEndWord <= annotation.transStartWord || slots == 0) return;
+
+  BlockStyle annStyle;
+  // ALWAYS Left. The row is positioned by an x read off the real laid-out source — the source
+  // block's alignment is already baked into that number, so inheriting it here would apply it twice.
+  //
+  // textAlignDefined is deliberately left FALSE. It is read in exactly one place — extractLine's
+  // "resolved RTL + no explicit text-align + Left" rule, which flips the row to Right — and that is
+  // exactly what an RTL TARGET language needs here: the row is laid out at its BAND's width and then
+  // placed as a whole box at the band's start, so flipping it right puts a Hebrew / Arabic / Persian
+  // translation's first glyph on the band's right edge, i.e. on the reading-order start of the span
+  // its source sentence occupies. An RTL SOURCE paragraph never reaches here at all:
+  // renderInterlinear's guard refuses to annotate one.
+  annStyle.alignment = CssTextAlign::Left;
+  // NO first-line indent. Sentence sync used to be an indent on chunk 0, which only works for an LTR
+  // target (an RTL row is measured against `measure - indent` and flipped right, so the indent moved
+  // it backwards, away from its sentence — and resolveFirstLineIndent discarded it anyway, because
+  // isNaturalAlign is false for a Left-aligned RTL block). Placing the whole box at the band start
+  // instead is direction-agnostic and gives every row, not just the first, a band of its own.
+  //
+  // textIndentDefined MUST stay true. With it false and extraParagraphSpacing false,
+  // resolveFirstLineIndent falls through to its three-space default and every row is inset.
+  annStyle.textIndent = 0;
+  annStyle.textIndentDefined = true;
+
+  // extraParagraphSpacing=false keeps resolveFirstLineIndent on the branch that returns the explicit
+  // value above verbatim rather than the paragraph-gap branch. hyphenationEnabled=false keeps a long
+  // compound wrapping early instead of being broken at 8pt, and focusReading is a body-text
+  // affordance that has no business in an annotation.
+  ParsedText annotationText(/*extraParagraphSpacing=*/false, /*hyphenationEnabled=*/false,
+                            /*focusReadingEnabled=*/false, annStyle);
+  // One growth step for the whole span. This block is constructed per SENTENCE, so without it five
+  // parallel vectors double from zero for every sentence of every paragraph on the background build
+  // path — the variable-size DRAM churn the reserve-before-push_back rule exists to prevent. The span
+  // length is the exact token count for every target but CJK, where per-character splitting can add
+  // more and the vectors simply fall back to doubling.
+  annotationText.reserveAdditionalWords(static_cast<size_t>(annotation.transEndWord) -
+                                        static_cast<size_t>(annotation.transStartWord));
+  for (uint16_t w = annotation.transStartWord; w < annotation.transEndWord && w < transBlock.size(); w++) {
+    // REGULAR explicitly: the 8pt family ships a single face, so bold/italic would resolve back to
+    // regular anyway, and dropping the inherited EpdFontFamily::TRANSLATED bit keeps the row plain
+    // black rather than the Interleaved gray.
+    //
+    // attachToPrevious MUST be carried across the re-emit, exactly as flushPartWordBuffer carries it
+    // for the parser's own re-emit: the buffered translation is not one token per visual word (see
+    // ParsedText::wordAttachesToPrevious), and a dropped flag renders every continuation boundary in
+    // the span as a full space. The span's FIRST word is forced false — there is no previous word in
+    // this row for it to attach to, so a span that happens to start mid-run does not open with a
+    // stray glue.
+    const bool attach = w > annotation.transStartWord && transBlock.wordAttachesToPrevious(w);
+    annotationText.addWord(transBlock.wordAt(w), EpdFontFamily::REGULAR, /*underline=*/false, attach);
+  }
+  if (annotationText.isEmpty()) return;
+
+  const int measure = static_cast<int>(measureWidth);
+  const int gap = renderer.getSpaceWidth(annotationFont, EpdFontFamily::REGULAR);
+
+  // ONE measuring pass over the whole span, before anything is laid out. `remaining` drives the
+  // proportional fill below and `widestToken` is the floor every band width is held to: a width
+  // under it sends computeLineBreaks into its oversized-word pre-pass, which splits the word and
+  // appends a HYPHEN — a fabricated "continues overleaf" mark on text that does not continue.
+  int remaining = 0;
+  int widestToken = 0;
+  for (size_t w = 0; w < annotationText.size(); w++) {
+    const int advance =
+        renderer.getTextAdvanceX(annotationFont, annotationText.wordAt(w).c_str(), annotationText.getWordStyleAt(w));
+    remaining += advance;
+    if (w > 0 && !annotationText.wordAttachesToPrevious(w)) remaining += gap;
+    if (advance > widestToken) widestToken = advance;
+  }
+
+  // The x a CONTINUATION row syncs to: the left edge of the source line it sits over, so the strip
+  // tracks the source line by line. Zero for every left-aligned and justified block — the
+  // overwhelming majority of body text — and non-zero only for a centred or right-aligned one.
+  const auto srcLineStart = [&bands](const size_t slot) -> int {
+    if (bands.srcLines == nullptr) return 0;
+    const size_t index = bands.firstLine + slot;
+    if (index >= bands.srcLines->size()) return 0;
+    const std::shared_ptr<TextBlock>& line = (*bands.srcLines)[index];
+    if (!line || line->wordCount() == 0) return 0;
+    return std::max<int>(0, line->wordXpos(0));
+  };
+
+  runs.reserve(std::min<size_t>(slots, 4));
+  for (size_t j = 0; j < slots && !annotationText.isEmpty(); j++) {
+    const bool lastSlot = j + 1 == slots;
+    // Slot 0 syncs to the SENTENCE's x and may have to clear ink the previous sentence left on that
+    // strip; every later slot sits on a strip this sentence owns alone and syncs to the source
+    // LINE's own left edge. Only the LAST slot can be shortened by the next source sentence's head,
+    // because that is the only line the two can share.
+    const int floorX = (j == 0 && bands.floorX > 0) ? bands.floorX + gap : 0;
+    const int syncX = std::max<int>((j == 0) ? bands.headX : srcLineStart(j), floorX);
+    const int softEnd = lastSlot ? std::max<int>(bands.tailX, syncX + 1) : measure;
+    const int slotRoom = std::max(1, softEnd - syncX);
+    // How far right this row may run when it stretches. The panel edge always — TextBlock::render
+    // does no x culling and GfxRenderer::drawPixel LOG_ERRs every out-of-panel pixel — and only
+    // HALFWAY into the next sentence's band when that sentence's head is due on this same strip. A
+    // row allowed to eat the whole strip would leave that head a width no token fits, and the DP
+    // answers such a width by forcing the oversized token onto the line anyway, past the margin.
+    const int hardEnd = (lastSlot && bands.tailX < measure) ? (static_cast<int>(bands.tailX) + measure) / 2 : measure;
+    const int hardRoom = hardEnd - floorX;
+    // Nothing worth placing is left on this strip. Leaving the slot blank keeps the text in the
+    // block for the next one instead of wrapping it at a width no token can fit.
+    if (hardRoom <= gap) continue;
+
+    // PROPORTIONAL FILL. Every remaining slot takes the same fraction of its own band, so a
+    // translation that would wrap into two rows at the full measure is instead spread over all three
+    // strips its source sentence occupies. Packing it into the fewest rows is what left a blank band
+    // above roughly every third source line, which reads as two source lines with a gap between
+    // them. Recomputed per slot, so an under-full row is made up by the ones after it.
+    int capacity = slotRoom;
+    if (!lastSlot) capacity += static_cast<int>(slots - j - 2) * measure + std::max<int>(bands.tailX, 1);
+
+    int width;
+    if (remaining >= capacity) {
+      // The translation is wider than every band this sentence owns. Rule: let it stretch. Take what
+      // the text actually needs, up to the whole strip, rather than lose its tail at the band edge —
+      // it eats the space the next sentence's annotation would have had, and that sentence is pushed
+      // right off this run's rightEdge instead of being overprinted. Asking for exactly `remaining`
+      // rather than the whole strip keeps a mildly over-long row on its sentence's x; only a row
+      // that cannot fit either way is pulled left off it.
+      width = std::min(hardRoom, std::max(slotRoom, remaining));
+    } else {
+      width = static_cast<int>((static_cast<int64_t>(slotRoom) * remaining) / std::max(capacity, 1));
+    }
+    width = std::max(width, widestToken);
+    width = std::min(width, hardRoom);
+    width = std::max(width, 1);
+
+    std::shared_ptr<TextBlock> row;
+    annotationText.extractNextLine(renderer, annotationFont, static_cast<uint16_t>(width),
+                                   [&row](const std::shared_ptr<TextBlock>& line) { row = line; });
+    if (!row || row->wordCount() == 0) continue;  // dropped to an arena OOM: the slot stays blank
+
+    // Ink extent, scanned rather than read off word 0 and word N-1: an RTL row's x table descends
+    // when BidiUtils declines to reorder it, so neither end is at a fixed index.
+    int inkLeft = row->wordXpos(0);
+    int inkRight = inkLeft;
+    for (uint16_t i = 0; i < row->wordCount(); i++) {
+      const int wordX = row->wordXpos(i);
+      if (wordX < inkLeft) inkLeft = wordX;
+      const int wordRight = wordX + renderer.getTextAdvanceX(annotationFont, row->wordText(i), row->wordStyle(i));
+      if (wordRight > inkRight) inkRight = wordRight;
+    }
+
+    // Place the whole BOX at the band start. The row was wrapped at the band's width, so an LTR
+    // row's first glyph lands on syncX and an RTL row's last one lands on the band's right edge.
+    // Clamped against the INK rather than the box: the DP forces an unbreakable oversized token onto
+    // a line when nothing can be hyphenated to fit it, so a row can be wider than what it was
+    // measured against, and it is the ink that must stay on the panel.
+    // Pulled left against hardEnd rather than the panel edge, so a stretched row also stays out of
+    // the half of the next sentence's band that was reserved for it. `width <= hardEnd - floorX` and
+    // `inkRight <= width` for every row the DP could actually fit, so this can never land left of
+    // floorX; the clamp below is for the row it could not.
+    int x = syncX;
+    if (x + inkRight > hardEnd) x = hardEnd - inkRight;
+    if (x < floorX) x = floorX;
+    if (x < 0) x = 0;
+    if (x + inkRight > measure) {
+      // Unplaceable: a token wider than everything left on this strip. Drawing it would show nothing
+      // legible and cost one GfxRenderer LOG_ERR per out-of-panel pixel.
+      LOG_ERR("ILN", "Annotation row wider than its strip; row dropped");
+      continue;
+    }
+
+    InterlinearRun run;
+    run.row = std::move(row);
+    run.x = static_cast<int16_t>(x);
+    run.rightEdge = static_cast<int16_t>(std::min(x + inkRight, measure));
+    run.slot = static_cast<uint16_t>(j);
+    runs.push_back(std::move(run));
+
+    remaining -= (inkRight - inkLeft) + gap;
+    if (remaining < 0) remaining = 0;
+  }
+
+  // The only place a translation can still lose text: it did not fit the sentence's whole on-page
+  // region even with every row stretched to the panel edge. A further row is not available -- it
+  // would put two annotation rows over one source line, the doubling this layout forbids.
+  if (!annotationText.isEmpty()) {
+    LOG_ERR("ILN", "Annotation overflows %u line(s); %u token(s) dropped", static_cast<unsigned>(slots),
+            static_cast<unsigned>(annotationText.size()));
+  }
+}
+
+void ChapterHtmlSlimParser::placeInterlinearRow(const std::shared_ptr<TextBlock>& row, const int16_t xPos,
+                                                const int16_t yPos, const LineFontRole role) {
+  auto pageLine = std::make_shared<PageLine>(row, xPos, yPos);
+  // Both the source lines and the annotation strips carry the ORIGINAL paragraph's index, so the
+  // line->paragraph mapping the overlays and the reader rely on still resolves (same as
+  // renderSideBySide: currentBlockParagraphIdx has already advanced past the pair by now).
+  pageLine->paragraphIdx = bufferedOriginalParagraphIdx;
+  pageLine->fontRole = role;
+  if (bufferedOriginalParagraphIdx >= 0) {
+    if (currentPage->firstParagraphIdx < 0) {
+      currentPage->firstParagraphIdx = bufferedOriginalParagraphIdx;
+    }
+    currentPage->lastParagraphIdx = bufferedOriginalParagraphIdx;
+  }
+  currentPage->elements.push_back(std::move(pageLine));
+}
+
+void ChapterHtmlSlimParser::emitInterlinearPair(const std::vector<InterlinearRun>& runs,
+                                                const std::shared_ptr<TextBlock>& srcLine, const int stripHeight,
+                                                const int srcRowHeight, const int16_t leftInset) {
+  // ATOMIC FIT, over a FIXED group: exactly one strip plus one source line, every time. The
+  // !elements.empty() guard is the one emitHorizontalRule already uses -- an EMPTY page must never be
+  // completed or it reaches section.bin as a blank page the reader then displays, and it is also the
+  // anti-loop guard: an empty page never breaks, so a group taller than the whole viewport still
+  // lands instead of spinning. With the group height now constant there is no degenerate per-row
+  // fallback to keep.
+  const int groupHeight = stripHeight + srcRowHeight;
+  if (!currentPage->elements.empty() && currentPageNextY + groupHeight > viewportHeight) {
+    completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex);
+    completedPageCount++;
+    currentPage.reset(new Page());
+    currentPageNextY = 0;
+  }
+
+  // THE STRIP. Reserved unconditionally, drawn only if something landed on it. A blank strip emits
+  // no PageLine at all -- no arena, no serialized bytes, no render call -- while still advancing y,
+  // which is what keeps the annotation/source pitch dead even and stops two source lines ever
+  // becoming adjacent. Two runs at ONE y is the shape renderSideBySide already writes for its two
+  // columns, and it is still one visual annotation line.
+  const int16_t stripY = static_cast<int16_t>(currentPageNextY);
+  for (const InterlinearRun& run : runs) {
+    if (run.row)
+      placeInterlinearRow(run.row, static_cast<int16_t>(leftInset + run.x), stripY, LineFontRole::Annotation);
+  }
+  currentPageNextY += stripHeight;
+
+  placeInterlinearRow(srcLine, leftInset, static_cast<int16_t>(currentPageNextY), LineFontRole::Body);
+  currentPageNextY += srcRowHeight;
+
+  // FOOTNOTES, attributed to the page carrying the anchor exactly as addLineToPage (:1828-1834) does
+  // it. Interlinear needs its own copy because a PAIRED paragraph never reaches addLineToPage, and
+  // under this layout essentially every paragraph pairs: without this, pendingFootnotes accumulated
+  // for the whole chapter and was either dumped wholesale onto whatever page happened to be current at
+  // the next unpaired paragraph (the end-of-block net, flushPendingFootnotesToCurrentPage) or never
+  // delivered at all, since finishParse does not drain it.
+  //
+  // Driven by the SOURCE line only: an annotation strip is synthetic and must not consume source
+  // word indices.
+  //
+  // Every entry here comes from an ORIGINAL block. A translated paragraph is written into the sidecar
+  // as a fresh <p> holding nothing but the ESCAPED plain text of the translation
+  // (TranslatingHtmlRewriter's write-out loop, via appendEscaped), so it carries no
+  // <a epub:type="noteref"> and can never push a pending footnote — which is why one counter over the
+  // source lines is the whole story here.
+  //
+  // The indices and this counter share the SOURCE block's base because makePagesInterlinearMode
+  // installed that block's ledger (adoptBufferedFootnoteLedger) before calling renderInterlinear: both
+  // the entries and the base below are the buffered original's own, and the in-flight block's are parked
+  // out of reach. See the matching drain in renderSideBySide for why the old "startNewTextBlock zeroed
+  // it" reasoning was not sound. The pre-layout anchor index vs post-layout wordCount() mismatch is
+  // addLineToPage's own approximation, kept identical here.
+  wordsExtractedInBlock += srcLine->wordCount();
+  auto footnoteIt = pendingFootnotes.begin();
+  while (footnoteIt != pendingFootnotes.end() && footnoteIt->first <= wordsExtractedInBlock) {
+    currentPage->addFootnote(footnoteIt->second.number, footnoteIt->second.href);
+    ++footnoteIt;
+  }
+  pendingFootnotes.erase(pendingFootnotes.begin(), footnoteIt);
+}
+
+// Lay an original paragraph and its paired translation out as ONE full-width flow of STRICTLY
+// ALTERNATING rows: annotation strip, source line, annotation strip, source line, all the way down.
+//
+// THE MODEL, in four rules that are load-bearing and not preferences:
+//
+// 1. THE SOURCE FLOWS COMPLETELY NORMALLY. It is laid out exactly as PtLayout::OriginalOnly would
+//    lay it out — same DP, same hyphenation, same justification, same indent, no constraint of any
+//    kind. Sentences do NOT each start a new line. Line breaking of the source is left alone and the
+//    TRANSLATION is the thing made to fit.
+// 2. STRICT ALTERNATION. Every source line of an annotated paragraph gets a strip above it, blank or
+//    not, so a source line never directly follows a source line and a strip never follows a strip.
+//    The eye tracks one fixed pitch down the page, which is the whole reason an interlinear layout
+//    is readable.
+// 3. EXACTLY ONE STRIP PER SOURCE LINE — not one per sentence. A sentence spanning three source
+//    lines has its translation DISTRIBUTED across the three strips above them: the translation flows
+//    too, in small type, one line of it per line of source. Distributed, not packed — wrapping the
+//    translation at the full measure and letting it stop when it runs out fills two of those three
+//    strips and leaves the third an empty band, which on the page reads as two source lines with a
+//    gap between them. buildAnnotationRuns therefore wraps each row at a fraction of its own band, so
+//    the text reaches the sentence's last source line.
+// 4. SENTENCE SYNC. A sentence's translation begins at the x its SOURCE sentence begins, not wherever
+//    the previous translation happened to stop. When a source line holds the tail of one sentence and
+//    the head of the next, its strip carries two runs at one y — still one strip, still one y advance
+//    — and the two runs are held to disjoint horizontal BANDS, mirroring the split the source line
+//    itself has at that x, so they can never print on top of each other.
+// 5. OVERFLOW STRETCHES; IT IS NEVER A SECOND ROW AND IS NEVER SILENTLY CUT. A translation longer than
+//    its band takes the room it needs, up to the free width of its strip: it eats the space the next
+//    sentence's annotation would have had, and that sentence's run is pushed right off this one's
+//    rightEdge. A second row is forbidden — it would break rule 2 — so text is lost only when the
+//    translation exceeds the sentence's ENTIRE on-page region with every row already stretched to the
+//    panel edge, and that case is logged rather than passing silently.
+//
+// WHY THE PAIRING STILL RUNS FIRST: sentence boundaries are what rule 4 is defined in terms of, and
+// they can only be read off the PRE-layout token stream in logical order (buildMergedWordStream).
+// What changed is only what the resulting indices are USED for — they no longer constrain line
+// breaking, they are handed to layout as TRACKED WORDS (ParsedText::setTrackedWords) whose final
+// line and x layout reports back.
+//
+// GEOMETRY: the strip is placed at the pre-advance currentPageNextY and y advances by exactly the
+// strip height whether or not anything was drawn on it; the source line then follows at the new y.
+// Same tiling invariant addLineToPage documents, so the two type sizes meet edge to edge with no
+// overlap and no gap.
+//
+// COST: exactly (bodyLineHeight + annotationLineHeight) / bodyLineHeight, about +57% pages at the
+// 14pt/8pt portrait default. It no longer degrades with short-sentence prose, because nothing
+// short-changes a line any more.
+void ChapterHtmlSlimParser::renderInterlinear(std::unique_ptr<ParsedText> origBlock,
+                                              std::unique_ptr<ParsedText> transBlock) {
+  if (!origBlock || !transBlock) return;
+
+  if (!currentPage) {
+    currentPage.reset(new Page());
+    currentPageNextY = 0;
+  }
+
+  const int annotationFont = fontIdForRole(LineFontRole::Annotation);
+  // BY VALUE, not by reference: origBlock is released the moment its lines are out (see there), and
+  // the spacing reads below would dangle against a reference into the freed block.
+  const BlockStyle blockStyle = origBlock->getBlockStyle();
+  const int horizontalInset = blockStyle.totalHorizontalInset();
+  const uint16_t effectiveWidth =
+      (horizontalInset < viewportWidth) ? static_cast<uint16_t>(viewportWidth - horizontalInset) : viewportWidth;
+  const int16_t leftInset = blockStyle.leftInset();
+
+  // Guards, evaluated BEFORE layout now that the pairing has to run first.
+  //
+  // RTL source: extractLine permutes words into VISUAL order for BiDi, so a flat word index is not
+  // the logical sentence order — the paragraph renders as plain unannotated source rather than being
+  // cut in the wrong places. BOTH RTL flags are needed, because extractLine reorders on
+  // `isRtl || hasRtlWord`: blockStyle.isRtl covers a wholly RTL paragraph, containsRtlWord() covers
+  // an LTR paragraph carrying an inline Hebrew/Arabic span, which the paragraph probe (first
+  // RTL_PARAGRAPH_PROBE_WORDS words only) misses.
+  //
+  // Reading isRtl here rather than after layout is EQUIVALENT, not an approximation:
+  // layoutAndExtractLines only ever auto-resolves isRtl inside `!directionDefined && hasRtlWord`, so
+  // when hasRtlWord is false isRtl cannot change, and when it is true the conjunction is already
+  // false either way. containsRtlWord() is final as soon as the words are in.
+  //
+  // The token-count bound is the other half of a uint16_t contract: every index that leaves the
+  // pairing (InterlinearAnnotation's three fields, and therefore the tracked-word list) is a
+  // uint16_t, and a token index past 65535 would wrap into a valid-looking small one. A paragraph
+  // that large cannot occur — the parser soft-flushes at TEXT_BLOCK_SOFT_FLUSH_WORDS — so this is a
+  // guard, not a code path.
+  const bool annotate = interlinearPairFn != nullptr && !blockStyle.isRtl && !origBlock->containsRtlWord() &&
+                        !transBlock->isEmpty() && origBlock->size() <= UINT16_MAX && transBlock->size() <= UINT16_MAX;
+
+  // STEP 0 — pair sentences, then hand their start indices to layout as TRACKED words. They
+  // constrain nothing; layout simply reports back which line each landed on and at what x.
+  //
+  // The word arrays are read PRE-layout, straight out of both blocks in logical order. For the
+  // source that is a change of input (it used to be the laid-out lines) and a strictly cleaner one:
+  // no "dun-" hyphen fragments exist yet, which is the caveat the post-layout comment used to
+  // explain away. What it must NOT change is the tokenization, so both sides go through
+  // buildMergedWordStream: with Focus Reading on the raw token array is not words (see there), and
+  // the pairing has to be given the same words the tooltip splits or the two disagree about where a
+  // sentence begins. Both blocks, and the arenas, outlive this scope's use of the pointers and die
+  // well before layoutAndExtractLines mutates or erases the words.
+  int annotationCount = 0;
+  // Filled by layout: where annotation k's source sentence actually starts (line, x, and whether it
+  // opens that line).
+  std::vector<ParsedText::TrackedWordPos> sentencePos;
+  if (annotate) {
+    MergedWordStream srcWords;
+    buildMergedWordStream(*origBlock, srcWords);
+    MergedWordStream transWords;
+    buildMergedWordStream(*transBlock, transWords);
+
+    if (interlinearAnnotations.empty()) interlinearAnnotations.resize(INTERLINEAR_MAX_ANNOTATIONS);
+    if (!srcWords.ptrs.empty() && !transWords.ptrs.empty()) {
+      annotationCount = interlinearPairFn(srcWords.ptrs.data(), static_cast<int>(srcWords.ptrs.size()),
+                                          transWords.ptrs.data(), static_cast<int>(transWords.ptrs.size()),
+                                          interlinearAnnotations.data(), INTERLINEAR_MAX_ANNOTATIONS);
+    }
+
+    // Back from merged-word space into TOKEN space, which is the only space the rest of this
+    // function speaks: tracked words index the block's tokens, and buildAnnotationChunks re-emits
+    // transBlock tokens. A no-op when nothing was merged (toToken empty => identity). The mapping is
+    // strictly increasing, so the ascending contract checked below is neither created nor destroyed
+    // by it, and an empty translation span (start == end) stays empty.
+    const size_t srcTokenCount = origBlock->size();
+    const size_t transTokenCount = transBlock->size();
+    for (int k = 0; k < annotationCount; k++) {
+      InterlinearAnnotation& annotation = interlinearAnnotations[k];
+      annotation.sourceStartWord = static_cast<uint16_t>(srcWords.tokenAt(annotation.sourceStartWord, srcTokenCount));
+      annotation.transStartWord = static_cast<uint16_t>(transWords.tokenAt(annotation.transStartWord, transTokenCount));
+      annotation.transEndWord = static_cast<uint16_t>(transWords.tokenAt(annotation.transEndWord, transTokenCount));
+    }
+
+    // ONE tracked word per annotation, in the same order, including a leading 0 (which reports
+    // line 0 / x = the paragraph indent, and still needs its slot so annotation k lines up with
+    // sentencePos[k]). The engine contracts for ascending order; verify rather than trust it,
+    // because a non-ascending list would silently break the binary search in ParsedText. A violation
+    // drops the whole paragraph back to plain source, the same graceful answer the RTL guard gives.
+    std::vector<uint16_t> tracked;
+    tracked.reserve(static_cast<size_t>(annotationCount));
+    for (int k = 0; k < annotationCount; k++) {
+      if (k > 0 && interlinearAnnotations[k].sourceStartWord <= interlinearAnnotations[k - 1].sourceStartWord) {
+        LOG_ERR("ILN", "Non-ascending sentence starts; paragraph left unannotated");
+        annotationCount = 0;
+        tracked.clear();
+        break;
+      }
+      tracked.push_back(interlinearAnnotations[k].sourceStartWord);
+    }
+    origBlock->setTrackedWords(std::move(tracked));  // layout sizes + fills sentencePos itself
+  }
+
+  // STEP 1 — lay the SOURCE out, completely unconstrained. This is byte-for-byte the layout
+  // PtLayout::OriginalOnly would produce for the same paragraph; the tracked words only ride along.
+  std::vector<std::shared_ptr<TextBlock>> srcLines;
+  srcLines.reserve(8);
+  origBlock->layoutAndExtractLines(
+      renderer, fontId, effectiveWidth,
+      [&srcLines](const std::shared_ptr<TextBlock>& line) { srcLines.push_back(line); },
+      /*includeLastLine=*/true, &sentencePos);
+  if (srcLines.empty()) return;
+
+  // The out-param is 1:1 with the tracked list by construction; if it somehow is not, drop the
+  // annotations rather than index past the end of it below.
+  if (sentencePos.size() != static_cast<size_t>(annotationCount)) {
+    annotationCount = 0;
+  }
+
+  // Release the SOURCE block now. layoutAndExtractLines erases the consumed words but `erase` never
+  // shrinks capacity, so its five parallel token vectors — including one std::string header per word,
+  // 24 B each before any long word's own heap block — would otherwise stay pinned through every page
+  // this paragraph serializes. Nothing below reads it: the block style was copied by value above and
+  // all remaining geometry comes from srcLines and sentencePos.
+  origBlock.reset();
+
+  // Top spacing comes from the original block, before the paragraph's first annotation strip, so that
+  // strip sits below the margin rather than inside it. It COLLAPSES at the very top of a page: there is
+  // nothing above it there for the margin to separate the paragraph from, and it is the ONLY way
+  // currentPageNextY can be > 0 on a page with no committed element -- which is precisely the state
+  // that would make the atomic fit test below complete a BLANK page (a forced break, e.g. a TOC
+  // anchor in flushPendingAnchor, leaves exactly such a page). Collapsing here is also what the
+  // common case already does implicitly: when the previous paragraph ended at the page bottom, this
+  // spacing is added to the OLD page's y and thrown away with it by the break below.
+  if (!currentPage->elements.empty()) {
+    if (blockStyle.marginTop > 0) currentPageNextY += blockStyle.marginTop;
+    if (blockStyle.paddingTop > 0) currentPageNextY += blockStyle.paddingTop;
+  }
+
+  // THE STRIP HEIGHT, and the one place the alternation rule is switched on. A paragraph with NO
+  // annotation at all (no pairing function, an RTL source, an empty translation, an unpaired
+  // original) reserves nothing and flows as plain source: rules 2 and 3 govern the PAIR, and
+  // reserving a blank strip over every line of an untranslated paragraph would burn half the page
+  // for nothing.
+  const int stripHeight = (annotationCount > 0) ? renderer.getLineHeight(annotationFont, lineCompression) : 0;
+  const int bodyLineHeight = renderer.getLineHeight(fontId, lineCompression);
+  const int bodyAscender = renderer.getFontAscenderSize(fontId);
+
+  // Runs waiting for the source line they belong to. At most one per sentence that starts on that
+  // line — normally one, two when a line carries a tail and a head.
+  std::vector<InterlinearRun> pending;
+  pending.reserve(2);
+  // Right edge of the ink already on the strip `nextLine` is waiting for. What the next sentence's
+  // opening row has to clear, so a run that stretched past its band pushes the following sentence
+  // right instead of printing on top of it.
+  int16_t pendingRightEdge = 0;
+  std::vector<InterlinearRun> sentenceRuns;
+  sentenceRuns.reserve(4);
+  size_t nextLine = 0;  // the next source line to emit
+
+  // Emit source lines up to (not including) `upTo`, each with whatever runs have accumulated for it.
+  const auto flushUpTo = [&](const size_t upTo) {
+    while (nextLine < upTo && nextLine < srcLines.size()) {
+      // Unchanged source pitch, ruby shift included, so furigana headroom survives on annotated
+      // lines. Annotation blocks carry no ruby, so a strip's pitch is just the small line height.
+      const int srcRowHeight = bodyLineHeight + srcLines[nextLine]->getRubyShift(bodyAscender);
+      emitInterlinearPair(pending, srcLines[nextLine], stripHeight, srcRowHeight, leftInset);
+      pending.clear();
+      pendingRightEdge = 0;
+      // The page owns this line now, so release our reference instead of pinning every line of the
+      // paragraph until the call returns. Nothing below reads an earlier line. That restores the
+      // makePages peak -- one page's worth of TextBlocks, freed as onPageComplete serializes each
+      // page -- for a paragraph long enough to span several pages, which is exactly the shape this
+      // layout produces most of (see the page-cost estimate in PtLayout.h).
+      srcLines[nextLine].reset();
+      nextLine++;
+    }
+  };
+
+  // STEP 2 — per sentence, read its band geometry off the SOURCE, then flow its translation through
+  // the strips above its own source lines, one row per line.
+  for (int s = 0; s < annotationCount; s++) {
+    const ParsedText::TrackedWordPos& here = sentencePos[s];
+    if (here.line == ParsedText::TrackedWordPos::NOT_PLACED || here.line >= srcLines.size()) continue;
+    const size_t firstLine = here.line;
+
+    // The next PLACED sentence bounds this one. `startsLine` is the whole shared-line question and
+    // it is exact — no x comparison, no heuristic: if the next sentence opens its line then this one
+    // ended on the line before, otherwise the two share that line, and the x the next sentence
+    // starts at is where this one's last annotation row wants to stop.
+    size_t lastLine = srcLines.size() - 1;
+    int16_t tailX = static_cast<int16_t>(effectiveWidth);
+    for (int n = s + 1; n < annotationCount; n++) {
+      const ParsedText::TrackedWordPos& next = sentencePos[n];
+      if (next.line == ParsedText::TrackedWordPos::NOT_PLACED || next.line >= srcLines.size()) continue;
+      if (next.startsLine && next.line > firstLine) {
+        lastLine = next.line - 1;  // this sentence ended on the line before, and owns it to the margin
+      } else {
+        lastLine = std::max<size_t>(next.line, firstLine);
+        tailX = next.x;  // the two share `lastLine`
+      }
+      break;
+    }
+    // Ascending sentence starts were validated before layout and layout preserves their order, so
+    // this cannot fire; clamp anyway rather than let `slots` underflow a size_t.
+    if (lastLine < firstLine) lastLine = firstLine;
+    const size_t slots = lastLine - firstLine + 1;
+
+    InterlinearBands bands;
+    bands.srcLines = &srcLines;
+    bands.firstLine = firstLine;
+    bands.slots = slots;
+    bands.headX = here.x;
+    bands.tailX = tailX;
+    // The strip this sentence opens on may already carry the previous sentence's closing row.
+    bands.floorX = (nextLine == firstLine && !pending.empty()) ? pendingRightEdge : 0;
+
+    buildAnnotationRuns(interlinearAnnotations[s], *transBlock, bands, effectiveWidth, annotationFont, sentenceRuns);
+
+    for (InterlinearRun& run : sentenceRuns) {
+      // run.slot, not the run's index: a slot whose strip had no room left is skipped, so the two
+      // are not the same number once that happens.
+      const size_t line = firstLine + run.slot;
+      if (line >= srcLines.size()) break;  // defensive: slots are bounded by lastLine
+      if (line < nextLine) continue;       // defensive: that line already went out
+      flushUpTo(line);                     // everything before it is complete, with its own runs
+      pending.push_back(std::move(run));
+      pendingRightEdge = pending.back().rightEdge;
+    }
+    sentenceRuns.clear();
+  }
+
+  // Trailing source lines: an unannotated paragraph, the tail past the last sentence, and the line
+  // the last pending run is waiting for.
+  flushUpTo(srcLines.size());
+
+  // Same end-of-block net makePages keeps: every entry in the installed ledger belongs to the SOURCE
+  // paragraph just emitted (the caller parked the in-flight block's ledger before this call), so
+  // flushing it to the current page can never touch another paragraph's entry. The per-line drain
+  // already covers the normal case — an anchor index can never exceed the block's pre-layout word
+  // count, and hyphenation only ADDS post-layout words — so this fires only when a line was dropped (a
+  // TextBlock arena OOM).
+  flushPendingFootnotesToCurrentPage();
+
+  // Bottom spacing + the usual half-line paragraph gap after the pair.
+  if (blockStyle.marginBottom > 0) currentPageNextY += blockStyle.marginBottom;
+  if (blockStyle.paddingBottom > 0) currentPageNextY += blockStyle.paddingBottom;
+  if (extraParagraphSpacing) {
+    currentPageNextY += bodyLineHeight / 2;
   }
 }

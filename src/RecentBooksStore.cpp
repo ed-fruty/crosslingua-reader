@@ -1,25 +1,50 @@
 #include "RecentBooksStore.h"
 
 #include <Epub.h>
+#include <FsHelpers.h>
 #include <HalStorage.h>
 #include <Logging.h>
-#include <Serialization.h>
 #include <Xtc.h>
 
 #include <algorithm>
+#include <iterator>
 
-#include "util/StringUtils.h"
+void RecentBooksStore::toJson(JsonDocument& doc) const {
+  JsonArray arr = doc["books"].to<JsonArray>();
+  for (const auto& book : recentBooks) {
+    JsonObject obj = arr.add<JsonObject>();
+    obj["path"] = book.path;
+    obj["title"] = book.title;
+    obj["author"] = book.author;
+    obj["coverBmpPath"] = book.coverBmpPath;
+  }
+}
 
-namespace {
-constexpr uint8_t RECENT_BOOKS_FILE_VERSION = 3;
-constexpr char RECENT_BOOKS_FILE[] = "/.crosspoint/recent.bin";
-constexpr int MAX_RECENT_BOOKS = 10;
-}  // namespace
+bool RecentBooksStore::fromJson(JsonVariantConst doc) {
+  // Tolerate a missing/invalid 'books' key (treat as empty list); only a
+  // JSON parse error is fatal. A null JsonArray iterates zero times.
+  recentBooks.clear();
+  JsonArrayConst arr = doc["books"].as<JsonArrayConst>();
+  recentBooks.reserve(std::min(arr.size(), static_cast<size_t>(MAX_RECENT_BOOKS)));
+  for (JsonObjectConst obj : arr) {
+    if (getCount() >= MAX_RECENT_BOOKS) break;
+    RecentBook book;
+    book.path = obj["path"] | "";
+    book.title = obj["title"] | "";
+    book.author = obj["author"] | "";
+    book.coverBmpPath = obj["coverBmpPath"] | "";
+    recentBooks.push_back(book);
+  }
 
-RecentBooksStore RecentBooksStore::instance;
+  LOG_DBG("RBS", "Recent books loaded from file (%d entries)", getCount());
+  return true;
+}
 
 void RecentBooksStore::addBook(const std::string& path, const std::string& title, const std::string& author,
                                const std::string& coverBmpPath) {
+  // Drop stale entries first so a new add can't evict a valid book in their stead.
+  pruneMissing();
+
   // Remove existing entry if present
   auto it =
       std::find_if(recentBooks.begin(), recentBooks.end(), [&](const RecentBook& book) { return book.path == path; });
@@ -51,29 +76,39 @@ void RecentBooksStore::updateBook(const std::string& path, const std::string& ti
   }
 }
 
-bool RecentBooksStore::saveToFile() const {
-  // Make sure the directory exists
-  Storage.mkdir("/.crosspoint");
-
-  FsFile outputFile;
-  if (!Storage.openFileForWrite("RBS", RECENT_BOOKS_FILE, outputFile)) {
+bool RecentBooksStore::removeByPath(const std::string& path) {
+  auto it =
+      std::find_if(recentBooks.begin(), recentBooks.end(), [&](const RecentBook& book) { return book.path == path; });
+  if (it == recentBooks.end()) {
     return false;
   }
-
-  serialization::writePod(outputFile, RECENT_BOOKS_FILE_VERSION);
-  const uint8_t count = static_cast<uint8_t>(recentBooks.size());
-  serialization::writePod(outputFile, count);
-
-  for (const auto& book : recentBooks) {
-    serialization::writeString(outputFile, book.path);
-    serialization::writeString(outputFile, book.title);
-    serialization::writeString(outputFile, book.author);
-    serialization::writeString(outputFile, book.coverBmpPath);
+  recentBooks.erase(it);
+  if (!saveToFile()) {
+    LOG_ERR("RBS", "Failed to persist removal of recent book: %s", path.c_str());
   }
-
-  outputFile.close();
-  LOG_DBG("RBS", "Recent books saved to file (%d entries)", count);
   return true;
+}
+
+void RecentBooksStore::updatePath(const std::string& oldPath, const std::string& newPath,
+                                  const std::string& oldCachePath, const std::string& newCachePath) {
+  auto it = std::find_if(recentBooks.begin(), recentBooks.end(),
+                         [&](const RecentBook& book) { return book.path == oldPath; });
+  if (it == recentBooks.end()) {
+    return;
+  }
+  it->path = newPath;
+  if (!oldCachePath.empty() && !it->coverBmpPath.empty() && it->coverBmpPath.rfind(oldCachePath, 0) == 0) {
+    it->coverBmpPath = newCachePath + it->coverBmpPath.substr(oldCachePath.size());
+  }
+  saveToFile();
+}
+
+bool RecentBooksStore::isMissing(const RecentBook& book) { return !Storage.exists(book.path.c_str()); }
+
+bool RecentBooksStore::pruneMissing() {
+  const size_t before = recentBooks.size();
+  recentBooks.erase(std::remove_if(recentBooks.begin(), recentBooks.end(), &isMissing), recentBooks.end());
+  return recentBooks.size() != before;
 }
 
 RecentBook RecentBooksStore::getDataFromBook(std::string path) const {
@@ -85,79 +120,21 @@ RecentBook RecentBooksStore::getDataFromBook(std::string path) const {
 
   LOG_DBG("RBS", "Loading recent book: %s", path.c_str());
 
-  // If epub, try to load the metadata for title/author and cover
-  if (StringUtils::checkFileExtension(lastBookFileName, ".epub")) {
+  // If epub, try to load the metadata for title/author and cover.
+  // Use buildIfMissing=false to avoid heavy epub loading on boot; getTitle()/getAuthor() may be
+  // blank until the book is opened, and entries with missing title are omitted from recent list.
+  if (FsHelpers::hasEpubExtension(lastBookFileName)) {
     Epub epub(path, "/.crosspoint");
     epub.load(false, true);
     return RecentBook{path, epub.getTitle(), epub.getAuthor(), epub.getThumbBmpPath()};
-  } else if (StringUtils::checkFileExtension(lastBookFileName, ".xtch") ||
-             StringUtils::checkFileExtension(lastBookFileName, ".xtc")) {
+  } else if (FsHelpers::hasXtcExtension(lastBookFileName)) {
     // Handle XTC file
     Xtc xtc(path, "/.crosspoint");
     if (xtc.load()) {
       return RecentBook{path, xtc.getTitle(), xtc.getAuthor(), xtc.getThumbBmpPath()};
     }
-  } else if (StringUtils::checkFileExtension(lastBookFileName, ".txt") ||
-             StringUtils::checkFileExtension(lastBookFileName, ".md")) {
+  } else if (FsHelpers::hasTxtExtension(lastBookFileName) || FsHelpers::hasMarkdownExtension(lastBookFileName)) {
     return RecentBook{path, lastBookFileName, "", ""};
   }
   return RecentBook{path, "", "", ""};
-}
-
-bool RecentBooksStore::loadFromFile() {
-  FsFile inputFile;
-  if (!Storage.openFileForRead("RBS", RECENT_BOOKS_FILE, inputFile)) {
-    return false;
-  }
-
-  uint8_t version;
-  serialization::readPod(inputFile, version);
-  if (version != RECENT_BOOKS_FILE_VERSION) {
-    if (version == 1 || version == 2) {
-      // Old version, just read paths
-      uint8_t count;
-      serialization::readPod(inputFile, count);
-      recentBooks.clear();
-      recentBooks.reserve(count);
-      for (uint8_t i = 0; i < count; i++) {
-        std::string path;
-        serialization::readString(inputFile, path);
-
-        // load book to get missing data
-        RecentBook book = getDataFromBook(path);
-        if (book.title.empty() && book.author.empty() && version == 2) {
-          // Fall back to loading what we can from the store
-          std::string title, author;
-          serialization::readString(inputFile, title);
-          serialization::readString(inputFile, author);
-          recentBooks.push_back({path, title, author, ""});
-        } else {
-          recentBooks.push_back(book);
-        }
-      }
-    } else {
-      LOG_ERR("RBS", "Deserialization failed: Unknown version %u", version);
-      inputFile.close();
-      return false;
-    }
-  } else {
-    uint8_t count;
-    serialization::readPod(inputFile, count);
-
-    recentBooks.clear();
-    recentBooks.reserve(count);
-
-    for (uint8_t i = 0; i < count; i++) {
-      std::string path, title, author, coverBmpPath;
-      serialization::readString(inputFile, path);
-      serialization::readString(inputFile, title);
-      serialization::readString(inputFile, author);
-      serialization::readString(inputFile, coverBmpPath);
-      recentBooks.push_back({path, title, author, coverBmpPath});
-    }
-  }
-
-  inputFile.close();
-  LOG_DBG("RBS", "Recent books loaded from file (%d entries)", recentBooks.size());
-  return true;
 }

@@ -1,22 +1,13 @@
 #include "ConfirmationActivity.h"
 
-#include <EpdFontFamily.h>
-#include <GfxRenderer.h>
-#include <HalDisplay.h>
 #include <I18n.h>
 
-#include "MappedInputManager.h"
+#include "HalDisplay.h"
 #include "components/UITheme.h"
 
 ConfirmationActivity::ConfirmationActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                           const std::string& heading, const std::string& body,
-                                           const std::function<void()>& onConfirm,
-                                           const std::function<void()>& onCancel)
-    : Activity("Confirmation", renderer, mappedInput),
-      heading(heading),
-      body(body),
-      onConfirm(onConfirm),
-      onCancel(onCancel) {}
+                                           const std::string& heading, const std::string& body)
+    : Activity("Confirmation", renderer, mappedInput), heading(heading), body(body) {}
 
 void ConfirmationActivity::onEnter() {
   Activity::onEnter();
@@ -31,46 +22,48 @@ void ConfirmationActivity::onEnter() {
     safeBody = renderer.truncatedText(fontId, body.c_str(), maxWidth, EpdFontFamily::REGULAR);
   }
 
-  int totalHeight = 0;
-  if (!safeHeading.empty()) totalHeight += lineHeight;
-  if (!safeBody.empty()) totalHeight += lineHeight;
-  if (!safeHeading.empty() && !safeBody.empty()) totalHeight += spacing;
+  // Text sits in the upper part of the screen so the confirmation popup
+  // (centered) doesn't cover it.
+  startY = renderer.getScreenHeight() / 6;
 
-  startY = (renderer.getScreenHeight() - totalHeight) / 2;
+  const char* options[] = {I18N.get(StrId::STR_CANCEL), I18N.get(StrId::STR_CONFIRM)};
+  confirmPopup.show(safeHeading.c_str(), options, 2, 0, [this](int idx) {
+    ActivityResult res;
+    res.isCancelled = (idx != 1);
+    setResult(std::move(res));
+    finish();
+  });
 
-  requestUpdate();
+  requestUpdate(true);
 }
 
 void ConfirmationActivity::render(RenderLock&& lock) {
   renderer.clearScreen();
 
   int currentY = startY;
-  // Draw heading
+  LOG_DBG("CONF", "currentY: %d", currentY);
+  // Draw Heading
   if (!safeHeading.empty()) {
     renderer.drawCenteredText(fontId, currentY, safeHeading.c_str(), true, EpdFontFamily::BOLD);
     currentY += lineHeight + spacing;
   }
 
-  // Draw body
+  // Draw Body
   if (!safeBody.empty()) {
     renderer.drawCenteredText(fontId, currentY, safeBody.c_str(), true, EpdFontFamily::REGULAR);
   }
 
-  // Button hints: Left = Cancel, Right = Confirm
-  const auto labels = mappedInput.mapLabels("", "", I18N.get(StrId::STR_CANCEL), I18N.get(StrId::STR_CONFIRM));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  if (confirmPopup.processRender(renderer, mappedInput)) return;
 
   renderer.displayBuffer(HalDisplay::RefreshMode::FAST_REFRESH);
 }
 
 void ConfirmationActivity::loop() {
-  if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
-    if (onConfirm) onConfirm();
-    return;
-  }
+  if (confirmPopup.handleInput(mappedInput, [this] { requestUpdate(); })) return;
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
-    if (onCancel) onCancel();
-    return;
-  }
+  // Popup dismissed without a selection (Back button or tap outside): cancel.
+  ActivityResult res;
+  res.isCancelled = true;
+  setResult(std::move(res));
+  finish();
 }

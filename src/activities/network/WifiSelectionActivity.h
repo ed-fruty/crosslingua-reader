@@ -6,15 +6,20 @@
 #include <string>
 #include <vector>
 
-#include "activities/ActivityWithSubactivity.h"
+#include "activities/Activity.h"
 #include "util/ButtonNavigator.h"
+
+struct Rect;
+struct ThemeMetrics;
+struct WifiCredential;
 
 // Structure to hold WiFi network information
 struct WifiNetworkInfo {
   std::string ssid;
   int32_t rssi;
   bool isEncrypted;
-  bool hasSavedPassword;  // Whether we have saved credentials for this network
+  bool hasSavedPassword;             // Whether we have saved credentials for this network
+  bool isHiddenPlaceholder = false;  // Synthetic "Add hidden network..." list entry
 };
 
 // WiFi selection states
@@ -22,6 +27,7 @@ enum class WifiSelectionState {
   AUTO_CONNECTING,    // Trying to connect to the last known network
   SCANNING,           // Scanning for networks
   NETWORK_LIST,       // Displaying available networks
+  HIDDEN_SSID_ENTRY,  // Entering SSID for a hidden network
   PASSWORD_ENTRY,     // Entering password for selected network
   CONNECTING,         // Attempting to connect
   CONNECTED,          // Successfully connected
@@ -41,13 +47,14 @@ enum class WifiSelectionState {
  *
  * The onComplete callback receives true if connected successfully, false if cancelled.
  */
-class WifiSelectionActivity final : public ActivityWithSubactivity {
+class WifiSelectionActivity final : public Activity {
   ButtonNavigator buttonNavigator;
 
   WifiSelectionState state = WifiSelectionState::SCANNING;
-  int selectedNetworkIndex = 0;
+  size_t selectedNetworkIndex = 0;
   std::vector<WifiNetworkInfo> networks;
-  const std::function<void(bool connected)> onComplete;
+  // Number of real (scanned) networks, excluding the synthetic hidden-network entry
+  size_t realNetworkCount = 0;
 
   // Selected network for connection
   std::string selectedSSID;
@@ -69,8 +76,14 @@ class WifiSelectionActivity final : public ActivityWithSubactivity {
   // Whether to attempt auto-connect on entry
   const bool allowAutoConnect;
 
-  // Whether we are attempting to auto-connect
+  // Whether we are attempting to auto-connect or auto-scan saved networks.
   bool autoConnecting = false;
+
+  // True when the user stopped auto-connect and asked to see the scan result.
+  bool manualNetworkListRequested = false;
+
+  // Saved SSIDs already attempted during the current auto-connect session.
+  std::vector<std::string> autoAttemptedSsids;
 
   // Save/forget prompt selection (0 = Yes, 1 = No)
   int savePromptSelection = 0;
@@ -78,34 +91,39 @@ class WifiSelectionActivity final : public ActivityWithSubactivity {
 
   // Connection timeout
   static constexpr unsigned long CONNECTION_TIMEOUT_MS = 15000;
+  static constexpr unsigned long AUTO_CONNECTION_TIMEOUT_MS = 7000;
   unsigned long connectionStartTime = 0;
 
-  void renderNetworkList() const;
-  void renderPasswordEntry() const;
-  void renderConnecting() const;
-  void renderConnected() const;
-  void renderSavePrompt() const;
-  void renderConnectionFailed() const;
-  void renderForgetPrompt() const;
+  void renderNetworkList(const Rect* screen, const ThemeMetrics* metrics) const;
+  void renderPasswordEntry(const Rect* screen, const ThemeMetrics* metrics) const;
+  void renderConnecting(const Rect* screen, const ThemeMetrics* metrics) const;
+  void renderConnected(const Rect* screen, const ThemeMetrics* metrics) const;
+  void renderSavePrompt(const Rect* screen, const ThemeMetrics* metrics) const;
+  void renderConnectionFailed(const Rect* screen, const ThemeMetrics* metrics) const;
+  void renderForgetPrompt(const Rect* screen, const ThemeMetrics* metrics) const;
 
-  void startWifiScan();
+  void startWifiScan(bool autoScan = false);
   void processWifiScanResults();
+  void appendHiddenNetworkEntry();
   void selectNetwork(int index);
+  void promptHiddenSsid();
+  void promptPasswordEntry();
   void attemptConnection();
   void checkConnectionStatus();
+  bool tryAutoConnectCredential(const WifiCredential& cred);
+  bool tryNextSavedNetworkFromScan();
+  void handleAutoConnectFailure();
+  void showNetworkListFromAutoConnect();
+  bool hasAttemptedAutoSsid(const std::string& ssid) const;
   std::string getSignalStrengthIndicator(int32_t rssi) const;
 
+  void onComplete(bool connected);
+
  public:
-  explicit WifiSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                 const std::function<void(bool connected)>& onComplete, bool autoConnect = true)
-      : ActivityWithSubactivity("WifiSelection", renderer, mappedInput),
-        onComplete(onComplete),
-        allowAutoConnect(autoConnect) {}
+  explicit WifiSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool autoConnect = true)
+      : Activity("WifiSelection", renderer, mappedInput), allowAutoConnect(autoConnect) {}
   void onEnter() override;
   void onExit() override;
   void loop() override;
-  void render(Activity::RenderLock&&) override;
-
-  // Get the IP address after successful connection
-  const std::string& getConnectedIP() const { return connectedIP; }
+  void render(RenderLock&&) override;
 };

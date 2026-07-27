@@ -5,26 +5,36 @@
 #include <I18n.h>
 #include <Logging.h>
 
-#include <vector>
-
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/BookCacheUtils.h"
 
 void ClearCacheActivity::onEnter() {
-  ActivityWithSubactivity::onEnter();
+  Activity::onEnter();
 
   state = WARNING;
+  const char* options[] = {tr(STR_CANCEL), tr(STR_CLEAR_BUTTON)};
+  confirmPopup.show(tr(STR_CLEAR_READING_CACHE), options, 2, 0, [this](int idx) {
+    if (idx == 1) {
+      beginClear();
+    } else {
+      goBack();
+    }
+  });
   requestUpdate();
 }
 
-void ClearCacheActivity::onExit() { ActivityWithSubactivity::onExit(); }
+void ClearCacheActivity::onExit() { Activity::onExit(); }
 
-void ClearCacheActivity::render(Activity::RenderLock&&) {
+void ClearCacheActivity::render(RenderLock&&) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
 
   renderer.clearScreen();
-  renderer.drawCenteredText(UI_12_FONT_ID, 15, tr(STR_CLEAR_READING_CACHE), true, EpdFontFamily::BOLD);
+
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_CLEAR_READING_CACHE));
 
   if (state == WARNING) {
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 - 60, tr(STR_CLEAR_CACHE_WARNING_1), true);
@@ -33,6 +43,8 @@ void ClearCacheActivity::render(Activity::RenderLock&&) {
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 10, tr(STR_CLEAR_CACHE_WARNING_3), true);
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 30, tr(STR_CLEAR_CACHE_WARNING_4), true);
 
+    if (confirmPopup.processRender(renderer, mappedInput)) return;
+
     const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), tr(STR_CLEAR_BUTTON), "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
     renderer.displayBuffer();
@@ -40,7 +52,7 @@ void ClearCacheActivity::render(Activity::RenderLock&&) {
   }
 
   if (state == CLEARING) {
-    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_CLEARING_CACHE), true, EpdFontFamily::BOLD);
+    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_CLEARING_CACHE));
     renderer.displayBuffer();
     return;
   }
@@ -71,47 +83,56 @@ void ClearCacheActivity::render(Activity::RenderLock&&) {
   }
 }
 
+void ClearCacheActivity::beginClear() {
+  LOG_DBG("CLEAR_CACHE", "User confirmed, starting cache clear");
+  {
+    RenderLock lock(*this);
+    state = CLEARING;
+  }
+  requestUpdateAndWait();
+  clearCache();
+}
+
 void ClearCacheActivity::clearCache() {
   LOG_DBG("CLEAR_CACHE", "Clearing cache...");
 
-  // Phase 1: collect cache directory names.
-  // Deleting dirs while iterating corrupts the FAT32 directory iterator.
-  std::vector<String> cacheDirs;
-  {
-    auto root = Storage.open("/.crosspoint");
-    if (!root || !root.isDirectory()) {
-      LOG_DBG("CLEAR_CACHE", "Failed to open cache directory");
-      if (root) root.close();
-      state = FAILED;
-      requestUpdate();
-      return;
-    }
-    char name[128];
-    for (auto file = root.openNextFile(); file; file = root.openNextFile()) {
-      file.getName(name, sizeof(name));
-      String itemName(name);
-      bool isDir = file.isDirectory();
-      file.close();
-      if (isDir && (itemName.startsWith("epub_") || itemName.startsWith("xtc_"))) {
-        cacheDirs.push_back(itemName);
-      }
-    }
-    root.close();
+  // Open .crosspoint directory
+  auto root = Storage.open("/.crosspoint");
+  if (!root || !root.isDirectory()) {
+    LOG_DBG("CLEAR_CACHE", "Failed to open cache directory");
+    if (root) root.close();
+    state = FAILED;
+    requestUpdate();
+    return;
   }
 
-  // Phase 2: delete collected directories
   clearedCount = 0;
   failedCount = 0;
-  for (const auto& itemName : cacheDirs) {
-    String fullPath = "/.crosspoint/" + itemName;
-    LOG_DBG("CLEAR_CACHE", "Removing cache: %s", fullPath.c_str());
-    if (Storage.forceRemoveDir(fullPath.c_str())) {
-      clearedCount++;
+  char name[128];
+
+  // Iterate through all entries in the directory
+  for (auto file = root.openNextFile(); file; file = root.openNextFile()) {
+    file.getName(name, sizeof(name));
+    String itemName(name);
+
+    // Only delete directories matching known book cache names.
+    if (file.isDirectory() && isBookCacheDirectoryName(itemName.c_str())) {
+      String fullPath = "/.crosspoint/" + itemName;
+      LOG_DBG("CLEAR_CACHE", "Removing cache: %s", fullPath.c_str());
+
+      file.close();  // Close before attempting to delete
+
+      if (Storage.removeDir(fullPath.c_str())) {
+        clearedCount++;
+      } else {
+        LOG_ERR("CLEAR_CACHE", "Failed to remove: %s", fullPath.c_str());
+        failedCount++;
+      }
     } else {
-      LOG_ERR("CLEAR_CACHE", "Failed to remove: %s", fullPath.c_str());
-      failedCount++;
+      file.close();
     }
   }
+  root.close();
 
   LOG_DBG("CLEAR_CACHE", "Cache cleared: %d removed, %d failed", clearedCount, failedCount);
 
@@ -121,15 +142,10 @@ void ClearCacheActivity::clearCache() {
 
 void ClearCacheActivity::loop() {
   if (state == WARNING) {
-    if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-      LOG_DBG("CLEAR_CACHE", "User confirmed, starting cache clear");
-      {
-        RenderLock lock(*this);
-        state = CLEARING;
-      }
-      requestUpdateAndWait();
+    if (confirmPopup.handleInput(mappedInput, [this] { requestUpdate(); })) return;
 
-      clearCache();
+    if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+      beginClear();
     }
 
     if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
@@ -140,7 +156,9 @@ void ClearCacheActivity::loop() {
   }
 
   if (state == SUCCESS || state == FAILED) {
-    if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+    int x = 0;
+    int y = 0;
+    if (mappedInput.wasPressed(MappedInputManager::Button::Back) || mappedInput.wasScreenTapped(x, y)) {
       goBack();
     }
     return;

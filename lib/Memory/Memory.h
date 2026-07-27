@@ -20,18 +20,16 @@
 //   someApi(buf.get(), size);
 //
 
-// NOTE: GCC 8.4 (espressif32 @ 6.12.0 toolchain) lacks C++20 concepts and
-// std::is_unbounded_array_v, so this uses enable_if/is_array SFINAE instead of
-// v1.3's requires-clauses. Behaviour is identical.
 template <typename T, typename... Args>
-typename std::enable_if<!std::is_array<T>::value, std::unique_ptr<T>>::type makeUniqueNoThrow(Args&&... args) {
+  requires(!std::is_array_v<T>)
+std::unique_ptr<T> makeUniqueNoThrow(Args&&... args) {
   return std::unique_ptr<T>(new (std::nothrow) T(std::forward<Args>(args)...));
 }
 
 template <typename T>
-typename std::enable_if<std::is_array<T>::value && std::extent<T>::value == 0, std::unique_ptr<T>>::type
-makeUniqueNoThrow(size_t count) {
-  using Elem = typename std::remove_extent<T>::type;
+  requires std::is_unbounded_array_v<T>
+std::unique_ptr<T> makeUniqueNoThrow(size_t count) {
+  using Elem = std::remove_extent_t<T>;
   return std::unique_ptr<T>(new (std::nothrow) Elem[count]());
 }
 

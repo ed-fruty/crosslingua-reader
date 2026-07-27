@@ -44,8 +44,21 @@ jobs:
         with:
           python-version: '3.14'
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: false
+
       - name: Install PlatformIO Core
-        run: pip install --upgrade platformio
+        run: uv pip install --system -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: pio-${{ runner.os }}-
 
       - name: Run cppcheck
         run: pio check --fail-on-defect low --fail-on-defect medium --fail-on-defect high
@@ -61,13 +74,30 @@ jobs:
         with:
           python-version: '3.14'
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: false
+
       - name: Install PlatformIO Core
-        run: pip install --upgrade platformio
+        run: uv pip install --system -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: pio-${{ runner.os }}-
 
       - name: Build CrossPoint
+        # Both envs in ONE pio invocation: a second `pio run` can wipe the whole
+        # .pio/build tree (project-checksum mismatch after the S3 toolchain
+        # installs into the restored cache), deleting the default firmware.bin
+        # before the artifact upload.
         run: |
           set -euo pipefail
-          pio run | tee pio.log
+          pio run -e default -e sticky | tee pio.log
 
       - name: Extract firmware stats
 
@@ -90,6 +120,33 @@ jobs:
           path: .pio/build/default/firmware.bin
           if-no-files-found: error
 
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
+
+      - name: Cache googletest source
+        uses: actions/cache@v4
+        with:
+          path: build/test/_deps/googletest-src
+          key: ${{ runner.os }}-googletest-${{ hashFiles('test/CMakeLists.txt') }}
+
+      - name: Configure
+        run: cmake -S test -B build/test -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build/test
+
+      - name: Run tests
+        run: ctest --test-dir build/test --output-on-failure -j
+
   # This job is used as the PR required actions check, allows for changes to other steps in the future without breaking
   # PR requirements.
   test-status:
@@ -98,6 +155,7 @@ jobs:
       - build
       - clang-format
       - cppcheck
+      - unit-tests
     if: always()
     runs-on: ubuntu-latest
     steps:

@@ -1,42 +1,281 @@
 #pragma once
 #include <functional>
 #include <memory>
+#include <optional>
+#include <string>
+#include <vector>
 
 #include "Epub.h"
+#include "ReaderRenderSpec.h"
 
 class Page;
 class GfxRenderer;
+class ChapterHtmlSlimParser;
+class CssParser;
 
 class Section {
   std::shared_ptr<Epub> epub;
   const int spineIndex;
   GfxRenderer& renderer;
   std::string filePath;
-  FsFile file;
+  HalFile file;
 
-  void writeSectionFileHeader(int fontId, float lineCompression, bool extraParagraphSpacing, uint8_t paragraphAlignment,
-                              uint16_t viewportWidth, uint16_t viewportHeight, bool hyphenationEnabled,
-                              bool embeddedStyle, uint8_t translationMode);
+  // `translatedSource` is hasTranslation() at build time -- "the HTML these pages were laid out
+  // from contained translated content", from EITHER source (a reader-produced `.translated.html`
+  // sidecar or translations embedded in the chapter's own XHTML). It is stamped into the header and
+  // is part of the cache key (see effectiveLayout).
+  // `embeddedTranslation` is the second, IMMUTABLE half of that answer on its own ("the chapter's
+  // own XHTML embeds translations"), stamped purely so the next load can recombine it with one
+  // sidecar stat instead of re-scanning the chapter HTML. Not a cache key.
+  void writeSectionFileHeader(const ReaderRenderSpec& spec, bool translatedSource, bool embeddedTranslation);
   uint32_t onPageComplete(std::unique_ptr<Page> page);
+
+  // Pre-Translation per-chapter fallback: a filtering/pairing layout on a chapter with no committed
+  // translated HTML would filter for translated words that do not exist and render a blank chapter,
+  // so such a chapter is laid out (and cache-keyed) as PtLayout::Both instead -- which on an
+  // untranslated chapter is simply the plain original. This is the single source of truth for the
+  // fallback, shared by loadSectionFile() (cache-key match) and startBuild() (layout) so the .bin is
+  // written and looked up under the SAME effective layout -- an untranslated chapter caches under
+  // Both and reloads as a cache HIT, never a permanent key mismatch that forces a rebuild on every
+  // visit. The fallback is per-chapter only: it never touches the persisted display-mode setting,
+  // so re-entering a translated chapter restores the mode.
+  //
+  // The layout is only HALF the Pre-Translation cache key: Both is what an untranslated chapter and
+  // a chapter merely requesting Normal both resolve to, so `translatedSource` (hasTranslation()) is
+  // stamped into the header alongside it and compared on load. Taken as a parameter rather than
+  // read inside, so each caller resolves the presence once and keys the layout and the source flag
+  // off the SAME observation.
+  static PtLayout effectiveLayout(PtLayout requested, bool translatedSource);
+
+  // Page-offset table entry, kept in RAM while an incremental build is running so
+  // already-built pages can be located in the partially-written .bin.
+  struct PageLutEntry {
+    uint32_t fileOffset;
+    uint16_t paragraphIndex;
+    uint16_t listItemIndex;
+  };
+  // Held only while an incremental build is in progress (see startBuild). Carries the
+  // live parser plus the strings it references (the parser stores them by reference)
+  // and the in-RAM page-offset table.
+  struct BuildContext {
+    std::unique_ptr<ChapterHtmlSlimParser> parser;
+    std::vector<PageLutEntry> lut;
+    std::string parsePath;
+    std::string contentBase;
+    std::string imageBasePath;
+    std::string htmlPath;
+    std::string tmpHtmlPath;
+    bool reusedHtml = false;
+    CssParser* cssParser = nullptr;
+    // HTML byte progress, for estimating the section's total page count while it's still building.
+    uint32_t bytesConsumed = 0;
+    uint32_t totalBytes = 0;
+    // Exponentially-smoothed page-count estimate (0 = not yet seeded) and the bytesConsumed at its
+    // last update. The raw byte-ratio estimate jitters as the build crosses dense/sparse regions;
+    // the EMA is stepped once per build advance (not per redraw) to damp that wobble.
+    float smoothedEstimate = 0;
+    uint32_t smoothedAtConsumed = 0;
+  };
+  std::unique_ptr<BuildContext> build_;
+  bool buildComplete_ = false;
+  // Pages laid out by the active build (== build_->lut.size()). Distinct from pageCount,
+  // which is the pages *available to read* and also counts a loaded partial file's pages.
+  uint16_t builtPageCount_ = 0;
+  // A partial section file (suspended build from a previous session) is loaded at filePath.
+  // Its pages 0..partialPageCount_-1 are readable while a rebuild extends past them.
+  bool partial_ = false;
+  uint16_t partialPageCount_ = 0;
+  // Parse watermark from the partial's trailer, for estimating the total page count.
+  uint32_t partialBytesConsumed_ = 0;
+  uint32_t partialTotalBytes_ = 0;
+  // Source the available pages were laid out from; see builtFromTranslatedSource().
+  bool translatedSource_ = false;
+  // Memoized answer to hasTranslation(). Resolving it can cost a SAX scan of the chapter HTML, and
+  // the reader asks several times per chapter load (fallback gate, cache key, reposition
+  // compatibility, build-popup hint), so it is computed at most once per Section -- i.e. at most
+  // once per chapter entry, never on a page-turn or redraw path. `Unknown` is the pre-scan state;
+  // see hasTranslation() for what it answers while unknown and why.
+  enum class TranslationPresence : uint8_t { Unknown, No, Yes };
+  mutable TranslationPresence translationPresence_ = TranslationPresence::Unknown;
+  // `<cache>/html/<spineIndex>.html` -- this spine's unzipped chapter HTML.
+  std::string getCachedHtmlPath() const;
+  // Inflate the chapter HTML into the per-book html cache if it isn't already there. On success
+  // `outParsePath` names the file to read and `outPromoted` says whether it is the persistent cache
+  // (true) or an un-promoted temp the caller must clean up (false, rename failed). Shared by
+  // startBuild() and resolveTranslationPresence() so the inflate happens exactly once.
+  bool ensureChapterHtml(std::string& outParsePath, bool& outPromoted);
+  // True only for a translation the READER produced: `<spine>.translated.html` exists. This is
+  // "which file does the build parse", NOT "does this chapter have a translation" -- see
+  // hasTranslation().
+  bool hasTranslatedSidecar() const;
+  bool finalizeBuild();
+  // Write the LUTs/anchor map (and, for a partial, the watermark trailer), patch the
+  // header, stamp the version byte, and swap the tmp .bin over filePath.
+  bool commitBuildFile(uint8_t version, uint32_t bytesConsumed, uint32_t totalBytes);
+  // Builds write here and are swapped over filePath only on commit, so a prior
+  // partial/finalized file stays readable while a rebuild is in progress.
+  std::string binTmpPath() const { return filePath + ".part"; }
+  std::unique_ptr<Page> loadPageAt(int page) const;
+  // Read a page already laid out by the in-progress build (page < build LUT size), from
+  // the partially-written tmp .bin without disturbing the build's write cursor.
+  std::unique_ptr<Page> loadPageDuringBuild(int page);
 
  public:
   uint16_t pageCount = 0;
   int currentPage = 0;
 
-  explicit Section(const std::shared_ptr<Epub>& epub, const int spineIndex, GfxRenderer& renderer)
-      : epub(epub),
-        spineIndex(spineIndex),
-        renderer(renderer),
-        filePath(epub->getCachePath() + "/sections/" + std::to_string(spineIndex) + ".bin") {}
-  ~Section() { file.close(); }
-  bool loadSectionFile(int fontId, float lineCompression, bool extraParagraphSpacing, uint8_t paragraphAlignment,
-                       uint16_t viewportWidth, uint16_t viewportHeight, bool hyphenationEnabled, bool embeddedStyle,
-                       uint8_t translationMode);
-  bool hasTranslatedHtml() const;
-  std::string getTranslatedHtmlPath() const;
+  // Constructor and destructor are out-of-line: BuildContext holds a unique_ptr to the
+  // forward-declared ChapterHtmlSlimParser, whose full definition is only visible in the .cpp.
+  explicit Section(const std::shared_ptr<Epub>& epub, int spineIndex, GfxRenderer& renderer);
+  ~Section();
+  bool loadSectionFile(const ReaderRenderSpec& spec);
   bool clearCache() const;
-  bool createSectionFile(int fontId, float lineCompression, bool extraParagraphSpacing, uint8_t paragraphAlignment,
-                         uint16_t viewportWidth, uint16_t viewportHeight, bool hyphenationEnabled, bool embeddedStyle,
-                         uint8_t translationMode, const std::function<void()>& popupFn = nullptr);
-  std::unique_ptr<Page> loadPageFromSectionFile();
+  bool createSectionFile(const ReaderRenderSpec& spec, const std::function<void()>& popupFn = nullptr);
+
+  // Pre-Translation: path to the persisted bilingual HTML for this spine
+  // (`<cache>/sections/<spineIndex>.translated.html`). The translator subsystem writes it;
+  // startBuild() prefers it over the unzipped chapter HTML when present, and it survives
+  // layout-cache invalidation (font/size/mode changes only invalidate the `.bin`).
+  std::string getTranslatedHtmlPath() const;
+
+  // Does this chapter have a translation to display? True for EITHER source:
+  //   • a reader-produced `.translated.html` sidecar, or
+  //   • translations embedded in the chapter's own XHTML (a Calibre-plugin book interleaves
+  //     `<p lang="uk">` after each `lang="en"` original; there is no sidecar and no marker
+  //     attribute -- the language tag is the whole signal).
+  // Answering only the first question is what locked plugin-translated books out of every
+  // bilingual display mode: the reader's per-chapter fallback fired on every chapter and persisted
+  // the mode back to Normal. See TranslationDetection.h for the shared rule.
+  //
+  // Memoized (translationPresence_): the first call may SAX-scan the chapter HTML, later calls are
+  // free. Callers may treat this as a per-chapter-load cost.
+  //
+  // While the answer is not yet knowable for free -- no sidecar and no unzipped chapter HTML, i.e.
+  // a chapter never opened on this device -- it returns TRUE, and the presence stays Unknown so a
+  // later call re-resolves. True is the safe direction at every call site: it declines to downgrade
+  // the display mode (a wrong `false` there is sticky -- it PERSISTS Normal, the reported bug),
+  // makes the cache key conservative (a wrong `true` only forces a rebuild), and only drops a
+  // reposition anchor. The reader closes the gap by calling resolveTranslationPresence() inside the
+  // build's popup/framebuffer-loan window before it reads the answer for real.
+  bool hasTranslation() const;
+  // True once hasTranslation() is answering from an observation rather than the safe default.
+  bool isTranslationPresenceKnown() const { return translationPresence_ != TranslationPresence::Unknown; }
+  // Force hasTranslation() to a definitive answer, inflating this spine's chapter HTML if that is
+  // what it takes. Costs at most the zip inflate a build of this chapter would pay moments later --
+  // and never pays it twice, because the inflate is promoted to the html cache startBuild() reuses.
+  // Call it from a context that can afford (and indicate) that inflate; see EpubReaderActivity.
+  void resolveTranslationPresence();
+
+  // Incremental build: lay out the section a few pages at a time so a large chapter
+  // can show its first page immediately and keep the UI responsive while the rest
+  // builds. createSectionFile() above is the one-shot wrapper over these.
+  //   if (!startBuild(...)) fail;
+  //   each tick: buildSomeMore(N); render up to pageCount; when isBuildComplete() stop.
+  bool startBuild(const ReaderRenderSpec& spec, const std::function<void()>& popupFn = nullptr);
+  // Lay out up to maxPages more pages (maxPages <= 0 = build to completion). Returns
+  // false on error (the build is abandoned). Sets isBuildComplete() when finished.
+  bool buildSomeMore(int maxPages);
+  bool isBuilding() const { return static_cast<bool>(build_); }
+  bool isBuildComplete() const { return buildComplete_; }
+  // Best-known total page count: the exact pageCount once finalized, or a smoothed byte-based
+  // estimate (pages so far scaled by totalBytes/bytesConsumed, damped by an EMA) while a giant spine
+  // is still building, so "page X of Y" / progress don't read off the small build watermark.
+  uint16_t estimatedTotalPages() const;
+  void abandonBuild();
+  // Persist an in-progress build as a partial section file (version sentinel + LUTs +
+  // watermark trailer) instead of discarding it, so the next open of this spine can show
+  // its pages instantly and only rebuild in the background. Called by the destructor, so
+  // any teardown path (exit, sleep, navigation) keeps the work already done. Keeps a
+  // pre-existing partial when it covers more pages than this build reached.
+  void suspendBuild();
+  // True when a partial file was loaded: pageCount is a watermark, not the chapter total.
+  bool isPartial() const { return partial_; }
+  // Whether the HTML the pages currently available were laid out from CONTAINED TRANSLATIONS --
+  // the bilingual `.translated.html` sidecar, or a chapter whose own XHTML embeds them. Set by both
+  // entry points (loadSectionFile's cache-key check and startBuild), so a caller can record the
+  // source a position was measured against without re-resolving it on every page turn.
+  bool builtFromTranslatedSource() const { return translatedSource_; }
+
+  // Unified page read: from the active build if it has reached the page, otherwise from
+  // the on-disk file (finalized section, or a partial the rebuild hasn't caught up to).
+  std::unique_ptr<Page> loadPage(int page);
+
+  std::string getTextFromSectionFile();
+
+  // Resolve an anchor from the in-progress build first, then the on-disk anchor map
+  // (covers finalized sections and partials from a previous session).
+  std::optional<uint16_t> findAnchor(const std::string& anchor) const;
+
+  // True if this spine's unzipped HTML is already cached, so a build won't pay the (multi-second on a
+  // giant spine) zip inflation. Lets the reader skip the indexing popup on a fast reopen/rebuild.
+  bool hasHtmlCache() const;
+
+  // Look up the page number for an anchor id from the section cache file.
+  std::optional<uint16_t> getPageForAnchor(const std::string& anchor) const;
+
+  // Look up an anchor among the pages built so far by the in-progress build, so an anchor jump
+  // (TOC / chapter select, usually the chapter top = page 0) can resolve without laying out the
+  // whole chapter. Returns nullopt if the anchor hasn't been reached yet (build more) or no build.
+  std::optional<uint16_t> findAnchorDuringBuild(const std::string& anchor) const;
+
+  // Get the page count from the section cache file without fully loading it.
+  std::optional<uint16_t> getCachedPageCount() const;
+
+  // Look up the page number for a synthetic paragraph index from XPath p[N].
+  std::optional<uint16_t> getPageForParagraphIndex(uint16_t pIndex) const;
+
+  // Look up the page number for a running list-item index from the li LUT.
+  std::optional<uint16_t> getPageForListItemIndex(uint16_t liIndex) const;
+
+  // Look up the synthetic paragraph index for the given rendered page.
+  std::optional<uint16_t> getParagraphIndexForPage(uint16_t page) const;
+
+  // --- Reposition anchors ---------------------------------------------------------------------
+  // The paragraph LUT is the only layout-INDEPENDENT handle on a reading position this cache has,
+  // and it is a NARROW one. entry[page] is ChapterHtmlSlimParser::xpathParagraphIndex as of the
+  // flush of `page`: the running count of literal `<p>` OPEN TAGS, incremented nowhere else
+  // (ChapterHtmlSlimParser::startElement). That is the same counter the KOSync xpath mapper uses,
+  // and it is NOT the parser's other paragraph counter -- `paragraphCounter`, which backs
+  // Page::firstParagraphIdx, advances on every content-bearing block (p, li, div, blockquote,
+  // headers) and deliberately does NOT advance for a translated block. The distinction decides real
+  // behaviour, so do not swap one for the other:
+  //   * A chapter that marks its paragraphs with <div> (no <p> anywhere) has entry[page] == 0 on
+  //     every page and can NEVER be anchored. Every reposition in such a chapter falls back to the
+  //     page-ratio remap in EpubReaderActivity, which is a guess.
+  //   * Because the counter includes the `<p lang="xx">` blocks of the bilingual
+  //     `.translated.html` sidecar, the count roughly DOUBLES when a translation appears. An anchor
+  //     is therefore only comparable while the source HTML is unchanged -- which is what
+  //     ReaderPosition's FLAG_TRANSLATED_SOURCE records. (Under `paragraphCounter` the count would
+  //     be unchanged and that flag would look unnecessary. It is not.)
+  // Widening coverage to div/li/header-marked paragraphs means giving Page::firstParagraphIdx
+  // (which already carries `paragraphCounter`) a LUT of its own in the .bin, i.e. a
+  // SECTION_FILE_VERSION bump that invalidates every cached layout on every device.
+  //
+  // What the LUT does buy: it is a pure function of the source HTML, so within its coverage it
+  // survives every re-layout (font family/size, line and paragraph spacing, margins, orientation,
+  // Pre-Translation layout), unlike a page number or a page ratio. The three wrappers below extend
+  // the on-disk lookups above to a build in PROGRESS, whose pages exist only in build_->lut -- the
+  // state a re-layout is always in, since the cache-key mismatch that triggered it deleted the
+  // committed .bin.
+
+  // Paragraph index stamped on `page`: from the in-progress build's table when it reaches that far,
+  // otherwise from the committed file (finalized section, or a partial that already covers it).
+  std::optional<uint16_t> findParagraphIndexForPage(uint16_t page) const;
+
+  // The anchor to persist for `page`, or nullopt when this page cannot be anchored. See
+  // ParagraphAnchor.h for the rule and why each half of it is shaped that way; in short, `page`
+  // anchors on the first paragraph it OPENS (an exact round-trip under an unchanged pagination), or
+  // failing that on the paragraph running through it provided that one started no more than
+  // ParagraphAnchor::MAX_BACKWARD_DRIFT_PAGES pages earlier.
+  //
+  // nullopt -- the caller must have a fallback -- for: page 0 (which needs no anchor, being the
+  // chapter top under every pagination), a chapter with no `<p>` at all, a page deep inside one
+  // enormous paragraph, and any LUT read that fails.
+  std::optional<uint16_t> paragraphAnchorForPage(uint16_t page) const;
+
+  // First page on which paragraph `pIndex` has begun. While a build is running this sees only the
+  // pages laid out so far, so nullopt means "not reached yet -- build more" (the same contract as
+  // findAnchorDuringBuild): a caller can build incrementally toward the landing page instead of
+  // laying out the whole chapter to learn its final page count.
+  std::optional<uint16_t> findPageForParagraphIndex(uint16_t pIndex) const;
 };

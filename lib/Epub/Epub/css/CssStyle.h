@@ -5,6 +5,7 @@
 // Matches order of PARAGRAPH_ALIGNMENT in CrossPointSettings
 enum class CssTextAlign : uint8_t { Justify = 0, Left = 1, Center = 2, Right = 3, None = 4 };
 enum class CssUnit : uint8_t { Pixels = 0, Em = 1, Rem = 2, Points = 3, Percent = 4 };
+enum class CssTextDirection : uint8_t { Ltr = 0, Rtl = 1 };
 
 // Represents a CSS length value with its unit, allowing deferred resolution to pixels
 struct CssLength {
@@ -51,8 +52,25 @@ enum class CssFontStyle : uint8_t { Normal = 0, Italic = 1 };
 // Font weight options - CSS supports 100-900, we simplify to normal/bold
 enum class CssFontWeight : uint8_t { Normal = 0, Bold = 1 };
 
-// Text decoration options
-enum class CssTextDecoration : uint8_t { None = 0, Underline = 1 };
+// Text decoration options. Values are bit flags so CSS can combine multiple line decorations.
+enum class CssTextDecoration : uint8_t { None = 0, Underline = 1, LineThrough = 2 };
+
+constexpr CssTextDecoration operator|(const CssTextDecoration a, const CssTextDecoration b) {
+  return static_cast<CssTextDecoration>(static_cast<uint8_t>(a) | static_cast<uint8_t>(b));
+}
+
+constexpr CssTextDecoration operator&(const CssTextDecoration a, const CssTextDecoration b) {
+  return static_cast<CssTextDecoration>(static_cast<uint8_t>(a) & static_cast<uint8_t>(b));
+}
+
+constexpr uint8_t CSS_TEXT_DECORATION_MASK =
+    static_cast<uint8_t>(CssTextDecoration::Underline) | static_cast<uint8_t>(CssTextDecoration::LineThrough);
+
+// Display options - only None and Block are relevant for e-ink rendering
+enum class CssDisplay : uint8_t { Block = 0, None = 1 };
+
+// Vertical alignment options for inline elements (e.g. superscript/subscript)
+enum class CssVerticalAlign : uint8_t { Baseline = 0, Super = 1, Sub = 2 };
 
 // Bitmask for tracking which properties have been explicitly set
 struct CssPropertyFlags {
@@ -69,7 +87,11 @@ struct CssPropertyFlags {
   uint16_t paddingBottom : 1;
   uint16_t paddingLeft : 1;
   uint16_t paddingRight : 1;
-  uint16_t color : 1;
+  uint16_t imageHeight : 1;
+  uint16_t imageWidth : 1;
+  uint16_t display : 1;
+  uint16_t direction : 1;
+  uint16_t verticalAlign : 1;
 
   CssPropertyFlags()
       : textAlign(0),
@@ -85,19 +107,29 @@ struct CssPropertyFlags {
         paddingBottom(0),
         paddingLeft(0),
         paddingRight(0),
-        color(0) {}
+        imageHeight(0),
+        imageWidth(0),
+        display(0),
+        direction(0),
+        verticalAlign(0) {}
 
   [[nodiscard]] bool anySet() const {
     return textAlign || fontStyle || fontWeight || textDecoration || textIndent || marginTop || marginBottom ||
-           marginLeft || marginRight || paddingTop || paddingBottom || paddingLeft || paddingRight || color;
+           marginLeft || marginRight || paddingTop || paddingBottom || paddingLeft || paddingRight || imageHeight ||
+           imageWidth || display || direction || verticalAlign;
   }
 
   void clearAll() {
     textAlign = fontStyle = fontWeight = textDecoration = textIndent = 0;
     marginTop = marginBottom = marginLeft = marginRight = 0;
-    paddingTop = paddingBottom = paddingLeft = paddingRight = color = 0;
+    paddingTop = paddingBottom = paddingLeft = paddingRight = 0;
+    imageHeight = imageWidth = display = direction = verticalAlign = 0;
   }
 };
+
+// Cache serializes defined flags as uint32_t with bit indices 0..17.
+static_assert(sizeof(CssPropertyFlags) <= sizeof(uint32_t),
+              "CssPropertyFlags exceeds 32 bits; update cache read/write in CssParser.cpp");
 
 // Represents a collection of CSS style properties
 // Only stores properties relevant to e-ink text rendering
@@ -107,7 +139,7 @@ struct CssStyle {
   CssFontStyle fontStyle = CssFontStyle::Normal;
   CssFontWeight fontWeight = CssFontWeight::Normal;
   CssTextDecoration textDecoration = CssTextDecoration::None;
-  uint8_t textGrayLevel = 0;  // 0=black, 1=dark gray, 2=light gray, 3=white
+  CssTextDirection direction = CssTextDirection::Ltr;
 
   CssLength textIndent;     // First-line indent (deferred resolution)
   CssLength marginTop;      // Vertical spacing before block
@@ -118,6 +150,10 @@ struct CssStyle {
   CssLength paddingBottom;  // Padding after
   CssLength paddingLeft;    // Padding left
   CssLength paddingRight;   // Padding right
+  CssLength imageHeight;    // Height for img (e.g. 2em) – width derived from aspect ratio when only height set
+  CssLength imageWidth;     // Width for img when both or only width set
+  CssDisplay display = CssDisplay::Block;                       // display property (Block or None)
+  CssVerticalAlign verticalAlign = CssVerticalAlign::Baseline;  // vertical-align (super/sub positioning)
 
   CssPropertyFlags defined;  // Tracks which properties were explicitly set
 
@@ -176,9 +212,25 @@ struct CssStyle {
       paddingRight = base.paddingRight;
       defined.paddingRight = 1;
     }
-    if (base.hasColor()) {
-      textGrayLevel = base.textGrayLevel;
-      defined.color = 1;
+    if (base.hasImageHeight()) {
+      imageHeight = base.imageHeight;
+      defined.imageHeight = 1;
+    }
+    if (base.hasImageWidth()) {
+      imageWidth = base.imageWidth;
+      defined.imageWidth = 1;
+    }
+    if (base.hasDisplay()) {
+      display = base.display;
+      defined.display = 1;
+    }
+    if (base.hasDirection()) {
+      direction = base.direction;
+      defined.direction = 1;
+    }
+    if (base.hasVerticalAlign()) {
+      verticalAlign = base.verticalAlign;
+      defined.verticalAlign = 1;
     }
   }
 
@@ -195,17 +247,24 @@ struct CssStyle {
   [[nodiscard]] bool hasPaddingBottom() const { return defined.paddingBottom; }
   [[nodiscard]] bool hasPaddingLeft() const { return defined.paddingLeft; }
   [[nodiscard]] bool hasPaddingRight() const { return defined.paddingRight; }
-  [[nodiscard]] bool hasColor() const { return defined.color; }
+  [[nodiscard]] bool hasImageHeight() const { return defined.imageHeight; }
+  [[nodiscard]] bool hasImageWidth() const { return defined.imageWidth; }
+  [[nodiscard]] bool hasDisplay() const { return defined.display; }
+  [[nodiscard]] bool hasDirection() const { return defined.direction; }
+  [[nodiscard]] bool hasVerticalAlign() const { return defined.verticalAlign; }
 
   void reset() {
     textAlign = CssTextAlign::Left;
     fontStyle = CssFontStyle::Normal;
     fontWeight = CssFontWeight::Normal;
     textDecoration = CssTextDecoration::None;
-    textGrayLevel = 0;
+    direction = CssTextDirection::Ltr;
     textIndent = CssLength{};
     marginTop = marginBottom = marginLeft = marginRight = CssLength{};
     paddingTop = paddingBottom = paddingLeft = paddingRight = CssLength{};
+    imageHeight = imageWidth = CssLength{};
+    display = CssDisplay::Block;
+    verticalAlign = CssVerticalAlign::Baseline;
     defined.clearAll();
   }
 };

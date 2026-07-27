@@ -1,8 +1,11 @@
 #include "PngToBmpConverter.h"
 
+#include <HalDisplay.h>
 #include <HalStorage.h>
+#include <InflateStream.h>
 #include <Logging.h>
-#include <miniz.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #include <cstdio>
 #include <cstring>
@@ -16,39 +19,7 @@ constexpr bool USE_8BIT_OUTPUT = false;
 constexpr bool USE_ATKINSON = true;
 constexpr bool USE_FLOYD_STEINBERG = false;
 constexpr bool USE_PRESCALE = true;
-constexpr int TARGET_MAX_WIDTH = 480;
-constexpr int TARGET_MAX_HEIGHT = 800;
 // ============================================================================
-
-// PNG constants
-static constexpr uint8_t PNG_SIGNATURE[8] = {137, 80, 78, 71, 13, 10, 26, 10};
-
-// PNG color types
-enum PngColorType : uint8_t {
-  PNG_COLOR_GRAYSCALE = 0,
-  PNG_COLOR_RGB = 2,
-  PNG_COLOR_PALETTE = 3,
-  PNG_COLOR_GRAYSCALE_ALPHA = 4,
-  PNG_COLOR_RGBA = 6,
-};
-
-// PNG filter types
-enum PngFilter : uint8_t {
-  PNG_FILTER_NONE = 0,
-  PNG_FILTER_SUB = 1,
-  PNG_FILTER_UP = 2,
-  PNG_FILTER_AVERAGE = 3,
-  PNG_FILTER_PAETH = 4,
-};
-
-// Read a big-endian 32-bit value from file
-static bool readBE32(FsFile& file, uint32_t& value) {
-  uint8_t buf[4];
-  if (file.read(buf, 4) != 4) return false;
-  value = (static_cast<uint32_t>(buf[0]) << 24) | (static_cast<uint32_t>(buf[1]) << 16) |
-          (static_cast<uint32_t>(buf[2]) << 8) | buf[3];
-  return true;
-}
 
 // BMP writing helpers (same as JpegToBmpConverter)
 inline void write16(Print& out, const uint16_t value) {
@@ -70,7 +41,55 @@ inline void write32Signed(Print& out, const int32_t value) {
   out.write((value >> 24) & 0xFF);
 }
 
-static void writeBmpHeader8bit(Print& bmpOut, const int width, const int height) {
+// Paeth predictor function per PNG spec
+inline uint8_t paethPredictor(uint8_t a, uint8_t b, uint8_t c) {
+  int p = static_cast<int>(a) + b - c;
+  int pa = p > a ? p - a : a - p;
+  int pb = p > b ? p - b : b - p;
+  int pc = p > c ? p - c : c - p;
+  if (pa <= pb && pa <= pc) return a;
+  if (pb <= pc) return b;
+  return c;
+}
+
+namespace {
+// PNG constants
+uint8_t PNG_SIGNATURE[8] = {137, 80, 78, 71, 13, 10, 26, 10};
+
+// PNG color types
+enum PngColorType : uint8_t {
+  PNG_COLOR_GRAYSCALE = 0,
+  PNG_COLOR_RGB = 2,
+  PNG_COLOR_PALETTE = 3,
+  PNG_COLOR_GRAYSCALE_ALPHA = 4,
+  PNG_COLOR_RGBA = 6,
+};
+
+// PNG filter types
+enum PngFilter : uint8_t {
+  PNG_FILTER_NONE = 0,
+  PNG_FILTER_SUB = 1,
+  PNG_FILTER_UP = 2,
+  PNG_FILTER_AVERAGE = 3,
+  PNG_FILTER_PAETH = 4,
+};
+
+void yieldDuringDecode(uint8_t& rowsSinceYield) {
+  if (++rowsSinceYield < 8) return;
+  rowsSinceYield = 0;
+  vTaskDelay(1);
+}
+
+// Read a big-endian 32-bit value from file
+bool readBE32(HalFile& file, uint32_t& value) {
+  uint8_t buf[4];
+  if (file.read(buf, 4) != 4) return false;
+  value = (static_cast<uint32_t>(buf[0]) << 24) | (static_cast<uint32_t>(buf[1]) << 16) |
+          (static_cast<uint32_t>(buf[2]) << 8) | buf[3];
+  return true;
+}
+
+void writeBmpHeader8bit(Print& bmpOut, const int width, const int height) {
   const int bytesPerRow = (width + 3) / 4 * 4;
   const int imageSize = bytesPerRow * height;
   const uint32_t paletteSize = 256 * 4;
@@ -102,7 +121,7 @@ static void writeBmpHeader8bit(Print& bmpOut, const int width, const int height)
   }
 }
 
-static void writeBmpHeader1bit(Print& bmpOut, const int width, const int height) {
+void writeBmpHeader1bit(Print& bmpOut, const int width, const int height) {
   const int bytesPerRow = (width + 31) / 32 * 4;
   const int imageSize = bytesPerRow * height;
   const uint32_t fileSize = 62 + imageSize;
@@ -131,7 +150,7 @@ static void writeBmpHeader1bit(Print& bmpOut, const int width, const int height)
   }
 }
 
-static void writeBmpHeader2bit(Print& bmpOut, const int width, const int height) {
+void writeBmpHeader2bit(Print& bmpOut, const int width, const int height) {
   const int bytesPerRow = (width * 2 + 31) / 32 * 4;
   const int imageSize = bytesPerRow * height;
   const uint32_t fileSize = 70 + imageSize;
@@ -160,21 +179,12 @@ static void writeBmpHeader2bit(Print& bmpOut, const int width, const int height)
     bmpOut.write(i);
   }
 }
-
-// Paeth predictor function per PNG spec
-static inline uint8_t paethPredictor(uint8_t a, uint8_t b, uint8_t c) {
-  int p = static_cast<int>(a) + b - c;
-  int pa = p > a ? p - a : a - p;
-  int pb = p > b ? p - b : b - p;
-  int pc = p > c ? p - c : c - p;
-  if (pa <= pb && pa <= pc) return a;
-  if (pb <= pc) return b;
-  return c;
-}
+}  // namespace
 
 // Context for streaming PNG decompression
 struct PngDecodeContext {
-  FsFile& file;
+  InflateStream reader;
+  HalFile* file;
 
   // PNG image properties
   uint32_t width;
@@ -188,15 +198,11 @@ struct PngDecodeContext {
   uint8_t* currentRow;   // current defiltered scanline
   uint8_t* previousRow;  // previous defiltered scanline
 
-  // zlib decompression state
-  mz_stream zstream;
-  bool zstreamInitialized;
-
   // Chunk reading state
   uint32_t chunkBytesRemaining;  // bytes left in current IDAT chunk
   bool idatFinished;             // no more IDAT chunks
 
-  // File read buffer for feeding zlib
+  // File read buffer for feeding the inflate stream
   uint8_t readBuf[2048];
 
   // Palette for indexed color (type 3)
@@ -209,10 +215,10 @@ struct PngDecodeContext {
 static bool findNextIdatChunk(PngDecodeContext& ctx) {
   while (true) {
     uint32_t chunkLen;
-    if (!readBE32(ctx.file, chunkLen)) return false;
+    if (!readBE32(*ctx.file, chunkLen)) return false;
 
     uint8_t chunkType[4];
-    if (ctx.file.read(chunkType, 4) != 4) return false;
+    if (ctx.file->read(chunkType, 4) != 4) return false;
 
     if (memcmp(chunkType, "IDAT", 4) == 0) {
       ctx.chunkBytesRemaining = chunkLen;
@@ -221,7 +227,7 @@ static bool findNextIdatChunk(PngDecodeContext& ctx) {
 
     // Skip this chunk's data + 4-byte CRC
     // Use seek to skip efficiently
-    if (!ctx.file.seekCur(chunkLen + 4)) return false;
+    if (!ctx.file->seekCur(chunkLen + 4)) return false;
 
     // If we hit IEND, there are no more chunks
     if (memcmp(chunkType, "IEND", 4) == 0) {
@@ -230,72 +236,47 @@ static bool findNextIdatChunk(PngDecodeContext& ctx) {
   }
 }
 
-// Feed compressed data to zlib from IDAT chunks
-// Returns number of bytes made available in zstream, or -1 on error
-static int feedZlibInput(PngDecodeContext& ctx) {
-  if (ctx.idatFinished) return 0;
+// Fill callback: reads the next batch of IDAT data from the file
+static size_t pngIdatFillCallback(void* vctx, const uint8_t** data) {
+  auto* ctx = static_cast<PngDecodeContext*>(vctx);
 
-  // If current IDAT chunk is exhausted, skip its CRC and find next
-  while (ctx.chunkBytesRemaining == 0) {
-    // Skip 4-byte CRC of previous IDAT
-    if (!ctx.file.seekCur(4)) return -1;
+  if (ctx->idatFinished) return 0;
 
-    if (!findNextIdatChunk(ctx)) {
-      ctx.idatFinished = true;
+  // Skip 4-byte CRC and find next IDAT chunk when current chunk is exhausted
+  while (ctx->chunkBytesRemaining == 0) {
+    if (!ctx->file->seekCur(4)) {  // skip 4-byte CRC of previous IDAT
+      ctx->idatFinished = true;
+      return 0;
+    }
+    if (!findNextIdatChunk(*ctx)) {
+      ctx->idatFinished = true;
       return 0;
     }
   }
 
-  // Read from current IDAT chunk
-  size_t toRead = sizeof(ctx.readBuf);
-  if (toRead > ctx.chunkBytesRemaining) toRead = ctx.chunkBytesRemaining;
+  // Read from current IDAT chunk into the read buffer
+  size_t toRead = sizeof(ctx->readBuf);
+  if (toRead > ctx->chunkBytesRemaining) toRead = ctx->chunkBytesRemaining;
 
-  int bytesRead = ctx.file.read(ctx.readBuf, toRead);
-  if (bytesRead <= 0) return -1;
-
-  ctx.chunkBytesRemaining -= bytesRead;
-  ctx.zstream.next_in = ctx.readBuf;
-  ctx.zstream.avail_in = bytesRead;
-
-  return bytesRead;
-}
-
-// Decompress exactly 'needed' bytes into 'dest'
-static bool decompressBytes(PngDecodeContext& ctx, uint8_t* dest, size_t needed) {
-  ctx.zstream.next_out = dest;
-  ctx.zstream.avail_out = needed;
-
-  while (ctx.zstream.avail_out > 0) {
-    if (ctx.zstream.avail_in == 0) {
-      int fed = feedZlibInput(ctx);
-      if (fed < 0) return false;
-      if (fed == 0) {
-        // Try one more inflate to flush
-        int ret = mz_inflate(&ctx.zstream, MZ_SYNC_FLUSH);
-        if (ctx.zstream.avail_out == 0) break;
-        return false;
-      }
-    }
-
-    int ret = mz_inflate(&ctx.zstream, MZ_SYNC_FLUSH);
-    if (ret != MZ_OK && ret != MZ_STREAM_END && ret != MZ_BUF_ERROR) {
-      LOG_ERR("PNG", "zlib inflate error: %d", ret);
-      return false;
-    }
-    if (ret == MZ_STREAM_END) break;
+  const int bytesRead = ctx->file->read(ctx->readBuf, toRead);
+  if (bytesRead <= 0) {
+    ctx->idatFinished = true;
+    return 0;
   }
 
-  return ctx.zstream.avail_out == 0;
+  ctx->chunkBytesRemaining -= bytesRead;
+  *data = ctx->readBuf;
+  return static_cast<size_t>(bytesRead);
 }
 
 // Decode one scanline: decompress filter byte + raw bytes, then unfilter
 static bool decodeScanline(PngDecodeContext& ctx) {
   // Decompress filter byte
   uint8_t filterType;
-  if (!decompressBytes(ctx, &filterType, 1)) return false;
+  if (!ctx.reader.read(&filterType, 1)) return false;
 
   // Decompress raw row data into currentRow
-  if (!decompressBytes(ctx, ctx.currentRow, ctx.rawRowBytes)) return false;
+  if (!ctx.reader.read(ctx.currentRow, ctx.rawRowBytes)) return false;
 
   // Apply reverse filter
   const int bpp = ctx.bytesPerPixel;
@@ -418,7 +399,7 @@ static void convertScanlineToGray(const PngDecodeContext& ctx, uint8_t* grayRow)
   }
 }
 
-bool PngToBmpConverter::pngFileToBmpStreamInternal(FsFile& pngFile, Print& bmpOut, int targetWidth, int targetHeight,
+bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpOut, int targetWidth, int targetHeight,
                                                    bool oneBit, bool crop) {
   LOG_DBG("PNG", "Converting PNG to %s BMP (target: %dx%d)", oneBit ? "1-bit" : "2-bit", targetWidth, targetHeight);
 
@@ -521,22 +502,15 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(FsFile& pngFile, Print& bmpOu
   }
 
   // Initialize decode context
-  PngDecodeContext ctx = {.file = pngFile,
-                          .width = width,
-                          .height = height,
-                          .bitDepth = bitDepth,
-                          .colorType = colorType,
-                          .bytesPerPixel = bytesPerPixel,
-                          .rawRowBytes = rawRowBytes,
-                          .currentRow = nullptr,
-                          .previousRow = nullptr,
-                          .zstream = {},
-                          .zstreamInitialized = false,
-                          .chunkBytesRemaining = 0,
-                          .idatFinished = false,
-                          .readBuf = {},
-                          .palette = {},
-                          .paletteSize = 0};
+  PngDecodeContext ctx = {};
+  ctx.file = &pngFile;
+  ctx.width = width;
+  ctx.height = height;
+  ctx.bitDepth = bitDepth;
+  ctx.colorType = colorType;
+  ctx.bytesPerPixel = bytesPerPixel;
+  ctx.rawRowBytes = rawRowBytes;
+  ctx.paletteSize = 0;
 
   // Allocate scanline buffers
   ctx.currentRow = static_cast<uint8_t*>(malloc(rawRowBytes));
@@ -585,15 +559,16 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(FsFile& pngFile, Print& bmpOu
     return false;
   }
 
-  // Initialize zlib decompression
-  memset(&ctx.zstream, 0, sizeof(ctx.zstream));
-  if (mz_inflateInit(&ctx.zstream) != MZ_OK) {
-    LOG_ERR("PNG", "Failed to initialize zlib");
+  // Initialize streaming decompressor with 32KB window for back-reference history
+  if (!ctx.reader.init(true)) {
+    LOG_ERR("PNG", "Failed to init inflate stream");
     free(ctx.currentRow);
     free(ctx.previousRow);
     return false;
   }
-  ctx.zstreamInitialized = true;
+  ctx.reader.setFill(pngIdatFillCallback, &ctx);
+  // PNG IDAT data is zlib-wrapped (2-byte header + trailing adler32)
+  ctx.reader.setZlibWrapped();
 
   // Calculate output dimensions (same logic as JpegToBmpConverter)
   int outWidth = width;
@@ -618,11 +593,11 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(FsFile& pngFile, Print& bmpOu
     if (outWidth < 1) outWidth = 1;
     if (outHeight < 1) outHeight = 1;
 
-    scaleX_fp = (static_cast<uint32_t>(width) << 16) / outWidth;
-    scaleY_fp = (static_cast<uint32_t>(height) << 16) / outHeight;
+    scaleX_fp = (width << 16) / outWidth;
+    scaleY_fp = (height << 16) / outHeight;
     needsScaling = true;
 
-    LOG_DBG("PNG", "Pre-scaling %ux%u -> %dx%d (fit to %dx%d)", width, height, outWidth, outHeight, targetWidth,
+    LOG_DBG("PNG", "Scaling %ux%u -> %dx%d (target %dx%d)", width, height, outWidth, outHeight, targetWidth,
             targetHeight);
   }
 
@@ -643,7 +618,6 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(FsFile& pngFile, Print& bmpOu
   auto* rowBuffer = static_cast<uint8_t*>(malloc(bytesPerRow));
   if (!rowBuffer) {
     LOG_ERR("PNG", "Failed to allocate row buffer");
-    mz_inflateEnd(&ctx.zstream);
     free(ctx.currentRow);
     free(ctx.previousRow);
     return false;
@@ -687,13 +661,13 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(FsFile& pngFile, Print& bmpOu
     delete fsDitherer;
     delete atkinson1BitDitherer;
     free(rowBuffer);
-    mz_inflateEnd(&ctx.zstream);
     free(ctx.currentRow);
     free(ctx.previousRow);
     return false;
   }
 
   bool success = true;
+  uint8_t rowsSinceYield = 0;
 
   // Process each scanline
   for (uint32_t y = 0; y < height; y++) {
@@ -745,6 +719,7 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(FsFile& pngFile, Print& bmpOu
           fsDitherer->nextRow();
       }
       bmpOut.write(rowBuffer, bytesPerRow);
+      yieldDuringDecode(rowsSinceYield);
     } else {
       // Area-averaging scaling (same as JpegToBmpConverter)
       for (int outX = 0; outX < outWidth; outX++) {
@@ -767,9 +742,11 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(FsFile& pngFile, Print& bmpOu
         rowCount[outX] += count;
       }
 
-      // Check if we've crossed into the next output row
+      // Check if we've crossed into the next output row(s)
       const uint32_t srcY_fp = static_cast<uint32_t>(y + 1) << 16;
 
+      // Output all rows whose boundaries we've crossed (handles both up and downscaling)
+      // For upscaling, one source row may produce multiple output rows
       while (srcY_fp >= nextOutY_srcStart && currentOutY < outHeight) {
         memset(rowBuffer, 0, bytesPerRow);
 
@@ -811,11 +788,19 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(FsFile& pngFile, Print& bmpOu
 
         bmpOut.write(rowBuffer, bytesPerRow);
         currentOutY++;
-
-        memset(rowAccum, 0, outWidth * sizeof(uint32_t));
-        memset(rowCount, 0, outWidth * sizeof(uint16_t));
+        yieldDuringDecode(rowsSinceYield);
 
         nextOutY_srcStart = static_cast<uint32_t>(currentOutY + 1) * scaleY_fp;
+
+        // For upscaling: don't reset accumulators if next output row uses same source data
+        // Only reset when we'll move to a new source row
+        if (srcY_fp >= nextOutY_srcStart) {
+          // More output rows to emit from same source - keep accumulator data
+          continue;
+        }
+        // Moving to next source row - reset accumulators
+        memset(rowAccum, 0, outWidth * sizeof(uint32_t));
+        memset(rowCount, 0, outWidth * sizeof(uint16_t));
       }
     }
 
@@ -833,7 +818,6 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(FsFile& pngFile, Print& bmpOu
   delete fsDitherer;
   delete atkinson1BitDitherer;
   free(rowBuffer);
-  mz_inflateEnd(&ctx.zstream);
   free(ctx.currentRow);
   free(ctx.previousRow);
 
@@ -843,16 +827,19 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(FsFile& pngFile, Print& bmpOu
   return success;
 }
 
-bool PngToBmpConverter::pngFileToBmpStream(FsFile& pngFile, Print& bmpOut, bool crop) {
-  return pngFileToBmpStreamInternal(pngFile, bmpOut, TARGET_MAX_WIDTH, TARGET_MAX_HEIGHT, false, crop);
+bool PngToBmpConverter::pngFileToBmpStream(HalFile& pngFile, Print& bmpOut, bool crop) {
+  // Use runtime display dimensions (swapped for portrait cover sizing)
+  const int targetWidth = display.getDisplayHeight();
+  const int targetHeight = display.getDisplayWidth();
+  return pngFileToBmpStreamInternal(pngFile, bmpOut, targetWidth, targetHeight, false, crop);
 }
 
-bool PngToBmpConverter::pngFileToBmpStreamWithSize(FsFile& pngFile, Print& bmpOut, int targetMaxWidth,
+bool PngToBmpConverter::pngFileToBmpStreamWithSize(HalFile& pngFile, Print& bmpOut, int targetMaxWidth,
                                                    int targetMaxHeight) {
   return pngFileToBmpStreamInternal(pngFile, bmpOut, targetMaxWidth, targetMaxHeight, false);
 }
 
-bool PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(FsFile& pngFile, Print& bmpOut, int targetMaxWidth,
+bool PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(HalFile& pngFile, Print& bmpOut, int targetMaxWidth,
                                                        int targetMaxHeight) {
   return pngFileToBmpStreamInternal(pngFile, bmpOut, targetMaxWidth, targetMaxHeight, true, true);
 }

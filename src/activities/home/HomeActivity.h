@@ -2,8 +2,8 @@
 #include <functional>
 #include <vector>
 
-#include "../Activity.h"
-#include "./MyLibraryActivity.h"
+#include "./FileBrowserActivity.h"
+#include "activities/Activity.h"
 #include "util/ButtonNavigator.h"
 
 struct RecentBook;
@@ -15,18 +15,59 @@ class HomeActivity final : public Activity {
   bool recentsLoading = false;
   bool recentsLoaded = false;
   bool firstRenderDone = false;
-  bool hasOpdsUrl = false;
+  bool hasOpdsServers = false;
   bool coverRendered = false;      // Track if cover has been rendered once
   bool coverBufferStored = false;  // Track if cover buffer is stored
+  // Home can be entered while Back is still held (e.g. leaving Settings with
+  // Back): ignore that stale release until a fresh press is seen here.
+  bool backPressSeen = false;
   uint8_t* coverBuffer = nullptr;  // HomeActivity's own buffer for cover image
+  size_t coverBufferSize = 0;      // Bytes allocated to coverBuffer
+  // Logical rect last passed to drawRecentBookCover. The cover snapshot only
+  // needs to cover this region, not the entire framebuffer, so we cache the
+  // tile instead of all 48 KB. Set in render() before the call.
+  int coverRectX = 0;
+  int coverRectY = 0;
+  int coverRectW = 0;
+  int coverRectH = 0;
   std::vector<RecentBook> recentBooks;
-  const std::function<void(const std::string& path)> onSelectBook;
-  const std::function<void()> onMyLibraryOpen;
-  const std::function<void()> onLibraryOpen;
-  const std::function<void()> onRecentsOpen;
-  const std::function<void()> onSettingsOpen;
-  const std::function<void()> onFileTransferOpen;
-  const std::function<void()> onOpdsBrowserOpen;
+  const HomeMenuItem initialMenuItem;
+
+  // Convert HomeMenuItem to menu index (used in onEnter)
+  static int menuItemToIndex(HomeMenuItem item, bool hasOpdsUrl) {
+    int i = 0;
+    if (item == HomeMenuItem::FILE_BROWSER) return i;
+    ++i;
+    if (item == HomeMenuItem::BOOKSHELF) return i;
+    ++i;
+    if (item == HomeMenuItem::RECENTS) return i;
+    ++i;
+    if (item == HomeMenuItem::OPDS_BROWSER) return hasOpdsUrl ? i : 0;
+    if (hasOpdsUrl) ++i;
+    if (item == HomeMenuItem::FILE_TRANSFER) return i;
+    ++i;
+    if (item == HomeMenuItem::SETTINGS_MENU) return i;
+    return 0;
+  }
+
+  // Convert menu index to HomeMenuItem (used in loop)
+  static HomeMenuItem indexToMenuItem(int idx, bool hasOpdsUrl) {
+    int i = 0;
+    if (idx == i++) return HomeMenuItem::FILE_BROWSER;
+    if (idx == i++) return HomeMenuItem::BOOKSHELF;
+    if (idx == i++) return HomeMenuItem::RECENTS;
+    if (hasOpdsUrl && idx == i++) return HomeMenuItem::OPDS_BROWSER;
+    if (idx == i++) return HomeMenuItem::FILE_TRANSFER;
+    if (idx == i) return HomeMenuItem::SETTINGS_MENU;
+    return HomeMenuItem::NONE;
+  }
+  void onSelectBook(const std::string& path);
+  void onFileBrowserOpen();
+  void onBookShelfOpen();
+  void onRecentsOpen();
+  void onSettingsOpen();
+  void onFileTransferOpen();
+  void onOpdsBrowserOpen();
 
   int getMenuItemCount() const;
   bool storeCoverBuffer();    // Store frame buffer for cover image
@@ -37,21 +78,11 @@ class HomeActivity final : public Activity {
 
  public:
   explicit HomeActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                        const std::function<void(const std::string& path)>& onSelectBook,
-                        const std::function<void()>& onMyLibraryOpen, const std::function<void()>& onLibraryOpen,
-                        const std::function<void()>& onRecentsOpen, const std::function<void()>& onSettingsOpen,
-                        const std::function<void()>& onFileTransferOpen,
-                        const std::function<void()>& onOpdsBrowserOpen)
-      : Activity("Home", renderer, mappedInput),
-        onSelectBook(onSelectBook),
-        onMyLibraryOpen(onMyLibraryOpen),
-        onLibraryOpen(onLibraryOpen),
-        onRecentsOpen(onRecentsOpen),
-        onSettingsOpen(onSettingsOpen),
-        onFileTransferOpen(onFileTransferOpen),
-        onOpdsBrowserOpen(onOpdsBrowserOpen) {}
+                        HomeMenuItem initialMenuItemValue = HomeMenuItem::NONE)
+      : Activity("Home", renderer, mappedInput), initialMenuItem(initialMenuItemValue) {}
   void onEnter() override;
   void onExit() override;
   void loop() override;
-  void render(Activity::RenderLock&&) override;
+  void render(RenderLock&&) override;
+  bool isHomeActivity() const override { return true; }
 };

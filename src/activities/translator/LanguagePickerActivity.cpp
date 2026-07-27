@@ -4,8 +4,13 @@
 #include <I18n.h>
 
 #include "MappedInputManager.h"
+#include "activities/ActivityResult.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+
+// Sentinel value used by SETTINGS.sourceTranslationLanguage to mean "auto-detect".
+// Matches the encoding in CrossPointSettings.
+static constexpr uint8_t AUTO_DETECT_SENTINEL = 0xFF;
 
 const LanguagePickerActivity::Language LanguagePickerActivity::LANGUAGES[] = {
     {"Arabic", "ar"},
@@ -49,23 +54,37 @@ const LanguagePickerActivity::Language LanguagePickerActivity::LANGUAGES[] = {
     {"Ukrainian", "uk"},
     {"Vietnamese", "vi"},
 };
-const int LanguagePickerActivity::NUM_LANGUAGES =
-    static_cast<int>(sizeof(LANGUAGES) / sizeof(LANGUAGES[0]));
+const int LanguagePickerActivity::NUM_LANGUAGES = static_cast<int>(sizeof(LANGUAGES) / sizeof(LANGUAGES[0]));
 
 const char* LanguagePickerActivity::itemName(int idx) const {
   if (includeAutoDetect) {
-    if (idx == 0) return "Auto Detect";
+    if (idx == 0) return tr(STR_AUTO_DETECT);
     return LANGUAGES[idx - 1].name;
   }
   return LANGUAGES[idx].name;
 }
 
-const char* LanguagePickerActivity::itemCode(int idx) const {
+void LanguagePickerActivity::setInitialSelection(uint8_t initialSelection) {
   if (includeAutoDetect) {
-    if (idx == 0) return "auto";
-    return LANGUAGES[idx - 1].code;
+    if (initialSelection == AUTO_DETECT_SENTINEL) {
+      selectedIndex = 0;  // Auto-detect entry sits at visible index 0
+      return;
+    }
+    // Concrete language: shift by +1 because Auto-detect occupies index 0
+    const int target = static_cast<int>(initialSelection) + 1;
+    selectedIndex = (target >= 0 && target < itemCount()) ? target : 0;
+    return;
   }
-  return LANGUAGES[idx].code;
+  // No auto-detect: visible index == LANGUAGES[] index
+  selectedIndex = (initialSelection < NUM_LANGUAGES) ? static_cast<int>(initialSelection) : 0;
+}
+
+int LanguagePickerActivity::resultIndexFor(int visibleIdx) const {
+  if (includeAutoDetect) {
+    if (visibleIdx == 0) return AUTO_DETECT_SENTINEL;
+    return visibleIdx - 1;
+  }
+  return visibleIdx;
 }
 
 void LanguagePickerActivity::onEnter() {
@@ -87,14 +106,16 @@ void LanguagePickerActivity::loop() {
   });
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    auto cb = onSelect;
-    auto code = itemCode(selectedIndex);
-    cb(code);
+    setResult(MenuResult{resultIndexFor(selectedIndex), 0, 0});
+    finish();
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    auto cb = onCancel;
-    cb();
+    ActivityResult cancelled;
+    cancelled.isCancelled = true;
+    cancelled.data = MenuResult{-1, 0, 0};
+    setResult(std::move(cancelled));
+    finish();
     return;
   }
 }
@@ -104,10 +125,10 @@ void LanguagePickerActivity::render(RenderLock&&) {
   const int pageWidth = renderer.getScreenWidth();
   const int pageHeight = renderer.getScreenHeight();
 
-  const char* title = customTitle ? customTitle : tr(STR_SELECT_TRANSLATE_LANG);
+  const char* title = customTitle ? customTitle : tr(STR_TARGET_LANGUAGE);
   renderer.drawCenteredText(UI_12_FONT_ID, 15, title, true, EpdFontFamily::BOLD);
 
-  // Scrolling list — show a window of entries centred on selection
+  // Scrolling list - show a window of entries centred on the selection
   constexpr int LINE_H = 28;
   const int startY = 55;
   const int count = itemCount();

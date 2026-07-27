@@ -2,32 +2,33 @@
 
 #include <functional>
 
-#include "activities/ActivityWithSubactivity.h"
+#include "activities/Activity.h"
 
 /**
- * Activity for testing KOReader credentials.
- * Connects to WiFi and authenticates with the KOReader sync server.
+ * Activity for testing KOReader credentials, or — in sign-up mode — creating a
+ * new account on the sync server with the entered username/password.
+ * Connects to WiFi, then authenticates or registers.
  */
-class KOReaderAuthActivity final : public ActivityWithSubactivity {
+class KOReaderAuthActivity final : public Activity {
  public:
-  explicit KOReaderAuthActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                const std::function<void()>& onComplete)
-      : ActivityWithSubactivity("KOReaderAuth", renderer, mappedInput), onComplete(onComplete) {}
+  enum class Mode { AUTHENTICATE, SIGN_UP };
+
+  explicit KOReaderAuthActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, Mode mode = Mode::AUTHENTICATE)
+      : Activity("KOReaderAuth", renderer, mappedInput), mode(mode) {}
 
   void onEnter() override;
   void onExit() override;
   void loop() override;
-  void render(Activity::RenderLock&&) override;
+  void render(RenderLock&&) override;
   bool preventAutoSleep() override { return state == CONNECTING || state == AUTHENTICATING; }
 
  private:
   enum State { WIFI_SELECTION, CONNECTING, AUTHENTICATING, SUCCESS, FAILED };
 
+  Mode mode = Mode::AUTHENTICATE;
   State state = WIFI_SELECTION;
   std::string statusMessage;
   std::string errorMessage;
-
-  const std::function<void()> onComplete;
 
   void onWifiSelectionComplete(bool success);
   void performAuthentication();

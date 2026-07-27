@@ -1,6 +1,12 @@
 #pragma once
 
+#include <Arduino.h>
 #include <HardwareSerial.h>
+#if defined(ARDUINO_USB_CDC_ON_BOOT) && ARDUINO_USB_CDC_ON_BOOT
+#include <HWCDC.h>
+#endif
+
+#include <string>
 
 /*
 Define ENABLE_SERIAL_LOG to enable logging
@@ -25,25 +31,31 @@ won't trigger deprecation warnings.
 #define LOG_LEVEL 0
 #endif
 
+#if defined(ARDUINO_USB_CDC_ON_BOOT) && ARDUINO_USB_CDC_ON_BOOT
 static HWCDC& logSerial = Serial;
+#define LOG_SERIAL_HAS_TX_TIMEOUT 1
+#else
+static HardwareSerial& logSerial = Serial;
+#define LOG_SERIAL_HAS_TX_TIMEOUT 0
+#endif
 
 void logPrintf(const char* level, const char* origin, const char* format, ...);
 
 #ifdef ENABLE_SERIAL_LOG
 #if LOG_LEVEL >= 0
-#define LOG_ERR(origin, format, ...) logPrintf("[ERR]", origin, format "\n", ##__VA_ARGS__)
+#define LOG_ERR(origin, format, ...) logPrintf("ERR", origin, format "\n", ##__VA_ARGS__)
 #else
 #define LOG_ERR(origin, format, ...)
 #endif
 
 #if LOG_LEVEL >= 1
-#define LOG_INF(origin, format, ...) logPrintf("[INF]", origin, format "\n", ##__VA_ARGS__)
+#define LOG_INF(origin, format, ...) logPrintf("INF", origin, format "\n", ##__VA_ARGS__)
 #else
 #define LOG_INF(origin, format, ...)
 #endif
 
 #if LOG_LEVEL >= 2
-#define LOG_DBG(origin, format, ...) logPrintf("[DBG]", origin, format "\n", ##__VA_ARGS__)
+#define LOG_DBG(origin, format, ...) logPrintf("DBG", origin, format "\n", ##__VA_ARGS__)
 #else
 #define LOG_DBG(origin, format, ...)
 #endif
@@ -52,6 +64,14 @@ void logPrintf(const char* level, const char* origin, const char* format, ...);
 #define LOG_ERR(origin, format, ...)
 #define LOG_INF(origin, format, ...)
 #endif
+
+std::string getLastLogs();
+void clearLastLogs();
+// Validates the RTC log state (magic word + logHead range). Returns true if
+// corruption was detected (magic mismatch or logHead out of range), meaning
+// logMessages is untrusted garbage. Callers should call clearLastLogs() when
+// this returns true so getLastLogs() does not dump corrupt data into crash reports.
+bool sanitizeLogHead();
 
 class MySerialImpl : public Print {
  public:
@@ -68,4 +88,7 @@ class MySerialImpl : public Print {
   static MySerialImpl instance;
 };
 
+#ifdef Serial
+#undef Serial
+#endif
 #define Serial MySerialImpl::instance

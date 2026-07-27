@@ -1,0 +1,27 @@
+Eds Lab
+=======
+
+The following is transcribed verbatim from the `name` table of the shipped
+TTF files (EdsLab-Regular / -Bold / -Italic / -BoldItalic, Version 4.0.6).
+No separate licence file accompanied the font sources.
+
+    Copyright (c) 2026 Eds Lab. All rights reserved.
+
+    Licence description (name ID 13):
+        Free for personal and commercial use.
+
+    Designer / Manufacturer / Trademark (name IDs 7, 8, 9):
+        Eds Lab
+
+    Embedding permissions (OS/2 fsType): 0 — Installable Embedding.
+    The font imposes no technical restriction on embedding or on deriving
+    bitmap subsets such as the `.cpfont` files this repository generates.
+
+NOTE FOR REDISTRIBUTORS
+-----------------------
+This is NOT the SIL Open Font Licence used by the other font families in
+this directory. The grant above ("free for personal and commercial use")
+covers *use*; it does not spell out redistribution of the font files
+themselves or of derived works. Before publishing the generated `.cpfont`
+binaries or these TTFs outside this project, confirm the intended terms
+with the copyright holder.

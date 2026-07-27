@@ -30,16 +30,12 @@ class Epub {
   // CSS files
   std::vector<std::string> cssFiles;
 
-  bool hasCalibreTranslation_ = false;
-
   bool findContentOpfFile(std::string* contentOpfFile) const;
-  bool parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, bool metadataOnly = false);
+  bool parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, bool writeSpineEntries = true);
   bool parseTocNcxFile() const;
   bool parseTocNavFile() const;
+  void discoverCssFilesFromZip();
   void parseCssFiles() const;
-
-  bool saveMetadataFile(const BookMetadataCache::BookMetadata& metadata) const;
-  bool loadMetadataFile();
 
  public:
   explicit Epub(std::string filepath, const std::string& cacheDir) : filepath(std::move(filepath)) {
@@ -49,7 +45,6 @@ class Epub {
   ~Epub() = default;
   std::string& getBasePath() { return contentBasePath; }
   bool load(bool buildIfMissing = true, bool skipLoadingCss = false);
-  bool loadMetadataOnly();
   bool clearCache() const;
   void setupCacheDir() const;
   const std::string& getCachePath() const;
@@ -64,7 +59,10 @@ class Epub {
   bool generateThumbBmp(int height) const;
   uint8_t* readItemContentsToBytes(const std::string& itemHref, size_t* size = nullptr,
                                    bool trailingNullByte = false) const;
-  bool readItemContentsToStream(const std::string& itemHref, Print& out, size_t chunkSize) const;
+  bool readItemContentsToStream(const std::string& itemHref, Print& out, size_t chunkSize,
+                                bool allowEarlyStop = false) const;
+  // Extract an item to a file on SD. On failure the partial file is removed.
+  bool extractItemToFile(const std::string& itemHref, const std::string& destPath) const;
   bool getItemSize(const std::string& itemHref, size_t* size) const;
   BookMetadataCache::SpineEntry getSpineItem(int spineIndex) const;
   BookMetadataCache::TocEntry getTocItem(int tocIndex) const;
@@ -78,5 +76,5 @@ class Epub {
   size_t getBookSize() const;
   float calculateProgress(int currentSpineIndex, float currentSpineRead) const;
   CssParser* getCssParser() const { return cssParser.get(); }
-  bool hasCalibreTranslation() const { return hasCalibreTranslation_; }
+  int resolveHrefToSpineIndex(const std::string& href) const;
 };

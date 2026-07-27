@@ -2,6 +2,7 @@
 #include <Print.h>
 
 #include <algorithm>
+#include <deque>
 #include <vector>
 
 #include "Epub.h"
@@ -17,7 +18,6 @@ class ContentOpfParser final : public Print {
     IN_BOOK_TITLE,
     IN_BOOK_AUTHOR,
     IN_BOOK_LANGUAGE,
-    IN_BOOK_SUBJECT,
     IN_MANIFEST,
     IN_SPINE,
     IN_GUIDE,
@@ -29,19 +29,18 @@ class ContentOpfParser final : public Print {
   XML_Parser parser = nullptr;
   ParserState state = START;
   BookMetadataCache* cache;
-  FsFile tempItemStore;
+  HalFile tempItemStore;
   std::string coverItemId;
+  bool hasExplicitStartReference = false;
 
-  // Index for fast idref→href lookup (used only for large EPUBs)
+  // Index for fast idref→href lookup (binary search over .items.bin)
   struct ItemIndexEntry {
     uint32_t idHash;      // FNV-1a hash of itemId
     uint16_t idLen;       // length for collision reduction
     uint32_t fileOffset;  // offset in .items.bin
   };
-  std::vector<ItemIndexEntry> itemIndex;
+  std::deque<ItemIndexEntry> itemIndex;
   bool useItemIndex = false;
-
-  static constexpr uint16_t LARGE_SPINE_THRESHOLD = 400;
 
   // FNV-1a hash function
   static uint32_t fnvHash(const std::string& s) {
@@ -67,7 +66,6 @@ class ContentOpfParser final : public Print {
   std::string guideCoverPageHref;  // Guide reference with type="cover" or "cover-page" (points to XHTML wrapper)
   std::string textReferenceHref;
   std::vector<std::string> cssFiles;  // CSS stylesheet paths
-  bool hasCalibreTranslation = false;  // Calibre Ebook Translator plugin detected via dc:subject
 
   explicit ContentOpfParser(const std::string& cachePath, const std::string& baseContentPath, const size_t xmlSize,
                             BookMetadataCache* cache)

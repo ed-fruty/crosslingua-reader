@@ -3,13 +3,33 @@
 #include <FsHelpers.h>
 #include <Logging.h>
 #include <Serialization.h>
+#include <XmlParserUtils.h>
 
-#include "../BookMetadataCache.h"
+#include <cctype>
+
+#include "Epub/BookMetadataCache.h"
 
 namespace {
 constexpr char MEDIA_TYPE_NCX[] = "application/x-dtbncx+xml";
 constexpr char MEDIA_TYPE_CSS[] = "text/css";
+constexpr char MEDIA_TYPE_IMAGE_PREFIX[] = "image/";
 constexpr char itemCacheFile[] = "/.items.bin";
+
+bool startsWithImageMediaType(const std::string& mediaType) {
+  constexpr size_t prefixLen = sizeof(MEDIA_TYPE_IMAGE_PREFIX) - 1;
+  if (mediaType.size() < prefixLen) {
+    return false;
+  }
+
+  for (size_t i = 0; i < prefixLen; ++i) {
+    const char c = static_cast<char>(std::tolower(static_cast<unsigned char>(mediaType[i])));
+    if (c != MEDIA_TYPE_IMAGE_PREFIX[i]) {
+      return false;
+    }
+  }
+
+  return true;
+}
 }  // namespace
 
 bool ContentOpfParser::setup() {
@@ -26,22 +46,14 @@ bool ContentOpfParser::setup() {
 }
 
 ContentOpfParser::~ContentOpfParser() {
-  if (parser) {
-    XML_StopParser(parser, XML_FALSE);                // Stop any pending processing
-    XML_SetElementHandler(parser, nullptr, nullptr);  // Clear callbacks
-    XML_SetCharacterDataHandler(parser, nullptr);
-    XML_ParserFree(parser);
-    parser = nullptr;
-  }
+  destroyXmlParser(parser);
   if (tempItemStore) {
     tempItemStore.close();
   }
-  if (Storage.exists((cachePath + itemCacheFile).c_str())) {
-    Storage.remove((cachePath + itemCacheFile).c_str());
+  const auto itemCachePath = cachePath + itemCacheFile;
+  if (Storage.exists(itemCachePath.c_str())) {
+    Storage.remove(itemCachePath.c_str());
   }
-  itemIndex.clear();
-  itemIndex.shrink_to_fit();
-  useItemIndex = false;
 }
 
 size_t ContentOpfParser::write(const uint8_t data) { return write(&data, 1); }
@@ -57,11 +69,7 @@ size_t ContentOpfParser::write(const uint8_t* buffer, const size_t size) {
 
     if (!buf) {
       LOG_ERR("COF", "Couldn't allocate memory for buffer");
-      XML_StopParser(parser, XML_FALSE);                // Stop any pending processing
-      XML_SetElementHandler(parser, nullptr, nullptr);  // Clear callbacks
-      XML_SetCharacterDataHandler(parser, nullptr);
-      XML_ParserFree(parser);
-      parser = nullptr;
+      destroyXmlParser(parser);
       return 0;
     }
 
@@ -71,11 +79,7 @@ size_t ContentOpfParser::write(const uint8_t* buffer, const size_t size) {
     if (XML_ParseBuffer(parser, static_cast<int>(toRead), remainingSize == toRead) == XML_STATUS_ERROR) {
       LOG_DBG("COF", "Parse error at line %lu: %s", XML_GetCurrentLineNumber(parser),
               XML_ErrorString(XML_GetErrorCode(parser)));
-      XML_StopParser(parser, XML_FALSE);                // Stop any pending processing
-      XML_SetElementHandler(parser, nullptr, nullptr);  // Clear callbacks
-      XML_SetCharacterDataHandler(parser, nullptr);
-      XML_ParserFree(parser);
-      parser = nullptr;
+      destroyXmlParser(parser);
       return 0;
     }
 
@@ -102,7 +106,10 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
   }
 
   if (self->state == IN_METADATA && strcmp(name, "dc:title") == 0) {
-    self->state = IN_BOOK_TITLE;
+    // Only capture the first dc:title element; subsequent ones are subtitles
+    if (self->title.empty()) {
+      self->state = IN_BOOK_TITLE;
+    }
     return;
   }
 
@@ -113,11 +120,6 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
 
   if (self->state == IN_METADATA && strcmp(name, "dc:language") == 0) {
     self->state = IN_BOOK_LANGUAGE;
-    return;
-  }
-
-  if (self->state == IN_METADATA && strcmp(name, "dc:subject") == 0) {
-    self->state = IN_BOOK_SUBJECT;
     return;
   }
 
@@ -135,8 +137,10 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
       LOG_ERR("COF", "Couldn't open temp items file for reading. This is probably going to be a fatal error.");
     }
 
-    // Sort item index for binary search if we have enough items
-    if (self->itemIndex.size() >= LARGE_SPINE_THRESHOLD) {
+    // Sort the (unconditionally-built) item index so every idref lookup uses binary
+    // search. Without this, small/medium manifests fell back to an O(spine × manifest)
+    // linear rescan of .items.bin per itemref (up to ~200ms/item at large scale).
+    if (!self->itemIndex.empty()) {
       std::sort(self->itemIndex.begin(), self->itemIndex.end(), [](const ItemIndexEntry& a, const ItemIndexEntry& b) {
         return a.idHash < b.idHash || (a.idHash == b.idHash && a.idLen < b.idLen);
       });
@@ -184,7 +188,7 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
       if (strcmp(atts[i], "id") == 0) {
         itemId = atts[i + 1];
       } else if (strcmp(atts[i], "href") == 0) {
-        href = FsHelpers::normalisePath(self->baseContentPath + atts[i + 1]);
+        href = FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(self->baseContentPath + atts[i + 1]));
       } else if (strcmp(atts[i], "media-type") == 0) {
         mediaType = atts[i + 1];
       } else if (strcmp(atts[i], "properties") == 0) {
@@ -206,7 +210,14 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
     serialization::writeString(self->tempItemStore, href);
 
     if (itemId == self->coverItemId) {
-      self->coverItemHref = href;
+      // Some EPUBs set meta name="cover" to an XHTML wrapper item.
+      // Only treat it as a cover image when the manifest media-type is image/*.
+      if (startsWithImageMediaType(mediaType)) {
+        self->coverItemHref = href;
+      } else {
+        LOG_DBG("COF", "Ignoring meta cover item '%s' with non-image media type: %s", itemId.c_str(),
+                mediaType.c_str());
+      }
     }
 
     if (mediaType == MEDIA_TYPE_NCX) {
@@ -275,9 +286,8 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
               ++it;
             }
           } else {
-            // Slow path: linear scan (for small manifests, keeps original behavior)
-            // TODO: This lookup is slow as need to scan through all items each time.
-            //       It can take up to 200ms per item when getting to 1500 items.
+            // Fallback linear scan, only reached when the index is empty (no manifest
+            // items). The fast binary-search path above is used for all real manifests.
             self->tempItemStore.seek(0);
             std::string itemId;
             while (self->tempItemStore.available()) {
@@ -306,13 +316,17 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
       if (strcmp(atts[i], "type") == 0) {
         type = atts[i + 1];
       } else if (strcmp(atts[i], "href") == 0) {
-        guideHref = FsHelpers::normalisePath(self->baseContentPath + atts[i + 1]);
+        guideHref = FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(self->baseContentPath + atts[i + 1]));
       }
     }
     if (!guideHref.empty()) {
-      if (type == "text" || (type == "start" && !self->textReferenceHref.empty())) {
+      // EPUB 2 guides often mark every content file as "text", so that type
+      // does not identify a reliable first-reading location. Only use the
+      // explicit "start" semantic; otherwise the reader opens at spine index 0.
+      if (type == "start" && !self->hasExplicitStartReference) {
         LOG_DBG("COF", "Found %s reference in guide: %s", type.c_str(), guideHref.c_str());
         self->textReferenceHref = guideHref;
+        self->hasExplicitStartReference = type == "start";
       } else if ((type == "cover" || type == "cover-page") && self->guideCoverPageHref.empty()) {
         LOG_DBG("COF", "Found cover reference in guide: %s", guideHref.c_str());
         self->guideCoverPageHref = guideHref;
@@ -340,16 +354,6 @@ void XMLCALL ContentOpfParser::characterData(void* userData, const XML_Char* s, 
 
   if (self->state == IN_BOOK_LANGUAGE) {
     self->language.append(s, len);
-    return;
-  }
-
-  if (self->state == IN_BOOK_SUBJECT) {
-    // Detect Calibre Ebook Translator plugin: subject contains "Ebook Translator" or "bookfere"
-    const std::string text(s, len);
-    if (text.find("Ebook Translator") != std::string::npos || text.find("bookfere") != std::string::npos) {
-      self->hasCalibreTranslation = true;
-      LOG_DBG("COF", "Detected Calibre Ebook Translator via dc:subject");
-    }
     return;
   }
 }
@@ -387,11 +391,6 @@ void XMLCALL ContentOpfParser::endElement(void* userData, const XML_Char* name) 
   }
 
   if (self->state == IN_BOOK_LANGUAGE && strcmp(name, "dc:language") == 0) {
-    self->state = IN_METADATA;
-    return;
-  }
-
-  if (self->state == IN_BOOK_SUBJECT && strcmp(name, "dc:subject") == 0) {
     self->state = IN_METADATA;
     return;
   }

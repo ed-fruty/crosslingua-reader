@@ -1,128 +1,74 @@
-name: Release
-
-# Tag-triggered release pipeline for CrossLingua.
-#
-# What it does, end to end, on every version tag push (e.g. `git push origin v1.2.0`):
-#   1. Checks out the repo WITH submodules (open-x4-sdk) and FULL history + tags.
-#   2. Rewrites the [crosspoint] `version` in platformio.ini to the tag minus its
-#      leading "v" (v1.2.0 -> 1.2.0). This edits the CI working tree only; it is
-#      never committed, so local/dev builds keep their own version string.
-#   3. Builds the release firmware with `pio run -e gh_release`.
-#   4. Generates a changelog from Conventional Commits since the previous tag
-#      (git-cliff). On the very first tag it degrades to full history instead of
-#      failing.
-#   5. Publishes a real GitHub Release named "CrossLingua vX.Y.Z" with the
-#      changelog as the body and the firmware attached.
-#
-# See RELEASING.md for the human-facing guide.
-
+name: Compile Release
 on:
   push:
     tags:
-      # Only version tags trigger a release. Matches v1.2.0, v2.0.0-rc.1, etc.
-      - 'v*'
-
-# Required so softprops/action-gh-release can create/update the Release and
-# upload assets with the automatically-provided GITHUB_TOKEN.
-permissions:
-  contents: write
+      - '*'
 
 jobs:
-  release:
+  build-release:
     runs-on: ubuntu-latest
     steps:
-      # fetch-depth: 0 pulls full history AND tags, which git-cliff needs to
-      # compute "commits since the previous tag". submodules: recursive brings
-      # in open-x4-sdk, without which the PlatformIO symlink:// lib_deps fail.
-      - name: Checkout (full history + submodules)
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
-          fetch-depth: 0
 
-      # Cache the PlatformIO package/toolchain caches (NOT .pio/build), so the
-      # version-flag change still forces a recompile of the affected units and
-      # CROSSPOINT_VERSION never goes stale.
-      - name: Cache PlatformIO
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cache/pip
-            ~/.platformio/.cache
-          key: ${{ runner.os }}-pio
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.14'
 
-      - name: Set up uv
+      - name: Install uv
         uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: false
 
-      # Mirror upstream's install method exactly: the pioarduino fork of
-      # PlatformIO Core (required by `platform = espressif32 @ 6.12.0`), pinned.
-      - name: Install PlatformIO Core (pioarduino)
+      - name: Install PlatformIO Core
         run: uv pip install --system -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip
 
-      # Version-from-tag. GNU sed on ubuntu-latest. The address range scopes the
-      # substitution to the [crosspoint] block only (its header to the next
-      # section header), so a future `version =` under another section is never
-      # touched. ${GITHUB_REF_NAME#v} strips exactly one leading "v".
-      # NOTE: this edits the working tree only and is never committed.
-      - name: Set firmware version from tag
-        env:
-          GITHUB_REF_NAME: ${{ github.ref_name }}
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"        # v1.2.0 -> 1.2.0
-          sed -i "/^\[crosspoint\]/,/^\[/ s/^version = .*/version = ${VERSION}/" platformio.ini
-          echo "Building CROSSPOINT_VERSION from tag ${GITHUB_REF_NAME} -> ${VERSION}"
-          grep -n '^version = ' platformio.ini  # echo the result into the build log
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: pio-${{ runner.os }}-
 
-      - name: Build release firmware
+      - name: Build CrossPoint
         run: pio run -e gh_release
 
-      # Changelog for commits since the previous tag. `--latest` emits the range
-      # (previous_tag, current_tag]; on the first tag it falls back to full
-      # history without failing. `--strip header` drops the big "# Changelog"
-      # title since the Release name already carries the version.
-      - name: Generate changelog (since previous tag)
-        id: git_cliff
-        uses: orhun/git-cliff-action@v4
-        with:
-          config: cliff.toml
-          args: --latest --strip header
-          # version: "latest"   # optional: override the bundled git-cliff (default v2.13.1)
-        env:
-          OUTPUT: CHANGELOG.md
-          GITHUB_REPO: ${{ github.repository }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # EdsLab is built into the firmware and is the default reading font, so
+      # this zip is OPTIONAL for users -- nobody has to install anything to read
+      # in EdsLab. It is published anyway for two reasons: an updated cut of the
+      # font can reach existing devices without reflashing, and the SD build uses
+      # a wider interval set than the built-in one (it adds the numero sign, see
+      # sd-fonts.yaml). The other SD families come from release-fonts.yml.
+      - name: Install font tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y libfreetype6-dev
+          pip install freetype-py fonttools pyyaml
 
-      # Create (or, on re-run for the same tag, update) the GitHub Release.
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
+      - name: Build EdsLab SD card font
+        run: python3 lib/EpdFont/scripts/build-sd-fonts.py --only EdsLab --clean
+
+      - name: Package EdsLab for the SD card
+        run: |
+          # Lay the zip out so extracting it at the SD card root yields
+          # /fonts/EdsLab/*.cpfont, one of the two roots SdCardFontRegistry
+          # scans. The visible root is used rather than /.fonts so the folder
+          # is not invisible in the user's file manager after extraction.
+          mkdir -p dist/sdcard/fonts/EdsLab
+          cp lib/EpdFont/scripts/output/EdsLab/*.cpfont dist/sdcard/fonts/EdsLab/
+          cp lib/EpdFont/builtinFonts/source/EdsLab/LICENSE.txt dist/sdcard/fonts/EdsLab/
+          (cd dist/sdcard && zip -r ../EdsLab-sdcard-font.zip fonts)
+          ls -l dist/
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
         with:
-          # tag_name is inferred from the tag push (github.ref_name); the tag
-          # already exists, so nothing to create here.
-          name: CrossLingua ${{ github.ref_name }}   # e.g. "CrossLingua v1.2.0"
-          body: ${{ steps.git_cliff.outputs.content }}
-          draft: false
-          prerelease: false
-          make_latest: true
-          # Fail loudly if a listed asset path matches nothing — for a firmware
-          # release the binary is the whole point.
-          fail_on_unmatched_files: true
-          # ---- Optional extra assets -----------------------------------------
-          # All of these are produced by the same `pio run -e gh_release` into
-          # .pio/build/gh_release/. To attach one, copy its path onto its own
-          # line inside the `files:` block below (one real path per line).
-          # These are REAL YAML comments (they sit ABOVE `files:`), so they are
-          # NOT sent to the action. Never put `#` lines inside `files:` — there
-          # `#` is literal text, not a comment, and the release step would fail.
-          #   .pio/build/gh_release/bootloader.bin
-          #   .pio/build/gh_release/partitions.bin
-          #   .pio/build/gh_release/firmware.elf
-          #   .pio/build/gh_release/firmware.map
-          #   .pio/build/gh_release/merged-flash.bin   # only if a merge_bin step produces it
-          # --------------------------------------------------------------------
-          files: |
+          name: CrossPoint-${{ github.ref_name }}
+          path: |
+            .pio/build/gh_release/bootloader.bin
             .pio/build/gh_release/firmware.bin
+            .pio/build/gh_release/firmware.elf
+            .pio/build/gh_release/firmware.map
+            .pio/build/gh_release/partitions.bin
+            dist/EdsLab-sdcard-font.zip

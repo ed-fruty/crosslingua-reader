@@ -24,6 +24,16 @@ void NetworkModeSelectionActivity::onEnter() {
 void NetworkModeSelectionActivity::onExit() { Activity::onExit(); }
 
 void NetworkModeSelectionActivity::loop() {
+  auto selectCurrent = [this] {
+    NetworkMode mode = NetworkMode::JOIN_NETWORK;
+    if (selectedIndex == 1) {
+      mode = NetworkMode::CONNECT_CALIBRE;
+    } else if (selectedIndex == 2) {
+      mode = NetworkMode::CREATE_HOTSPOT;
+    }
+    onModeSelected(mode);
+  };
+
   // Handle back button - cancel
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     onCancel();
@@ -32,14 +42,22 @@ void NetworkModeSelectionActivity::loop() {
 
   // Handle confirm button - select current option
   if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-    NetworkMode mode = NetworkMode::JOIN_NETWORK;
-    if (selectedIndex == 1) {
-      mode = NetworkMode::CONNECT_CALIBRE;
-    } else if (selectedIndex == 2) {
-      mode = NetworkMode::CREATE_HOTSPOT;
-    }
-    onModeSelected(mode);
+    selectCurrent();
     return;
+  }
+
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int contentHeight =
+      renderer.getScreenHeight() - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
+  switch (handleListTouch(selectedIndex, MENU_ITEM_COUNT, contentTop, contentHeight, true)) {
+    case ListTouchResult::Activated:
+      selectCurrent();
+      return;
+    case ListTouchResult::Consumed:
+      return;
+    case ListTouchResult::None:
+      break;
   }
 
   // Handle navigation
@@ -54,46 +72,44 @@ void NetworkModeSelectionActivity::loop() {
   });
 }
 
-void NetworkModeSelectionActivity::render(Activity::RenderLock&&) {
+void NetworkModeSelectionActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
+  const auto& metrics = UITheme::getInstance().getMetrics();
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
 
-  // Draw header
-  renderer.drawCenteredText(UI_12_FONT_ID, 15, tr(STR_FILE_TRANSFER), true, EpdFontFamily::BOLD);
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_FILE_TRANSFER));
 
-  // Draw subtitle
-  renderer.drawCenteredText(UI_10_FONT_ID, 50, tr(STR_HOW_CONNECT));
-
+  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
   // Menu items and descriptions
   static constexpr StrId menuItems[MENU_ITEM_COUNT] = {StrId::STR_JOIN_NETWORK, StrId::STR_CALIBRE_WIRELESS,
                                                        StrId::STR_CREATE_HOTSPOT};
   static constexpr StrId menuDescs[MENU_ITEM_COUNT] = {StrId::STR_JOIN_DESC, StrId::STR_CALIBRE_DESC,
                                                        StrId::STR_HOTSPOT_DESC};
+  static constexpr UIIcon menuIcons[MENU_ITEM_COUNT] = {UIIcon::Wifi, UIIcon::Library, UIIcon::Hotspot};
 
-  // Draw menu items centered on screen
-  constexpr int itemHeight = 50;  // Height for each menu item (including description)
-  const int startY = (pageHeight - (MENU_ITEM_COUNT * itemHeight)) / 2 + 10;
-
-  for (int i = 0; i < MENU_ITEM_COUNT; i++) {
-    const int itemY = startY + i * itemHeight;
-    const bool isSelected = (i == selectedIndex);
-
-    // Draw selection highlight (black fill) for selected item
-    if (isSelected) {
-      renderer.fillRect(20, itemY - 2, pageWidth - 40, itemHeight - 6);
-    }
-
-    // Draw text: black=false (white text) when selected (on black background)
-    //            black=true (black text) when not selected (on white background)
-    renderer.drawText(UI_10_FONT_ID, 30, itemY, I18N.get(menuItems[i]), /*black=*/!isSelected);
-    renderer.drawText(SMALL_FONT_ID, 30, itemY + 22, I18N.get(menuDescs[i]), /*black=*/!isSelected);
-  }
+  GUI.drawList(
+      renderer, Rect{0, contentTop, pageWidth, contentHeight}, static_cast<int>(MENU_ITEM_COUNT), selectedIndex,
+      [](int index) { return std::string(I18N.get(menuItems[index])); },
+      [](int index) { return std::string(I18N.get(menuDescs[index])); }, [](int index) { return menuIcons[index]; });
 
   // Draw help text at bottom
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), "", "");
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   renderer.displayBuffer();
+}
+
+void NetworkModeSelectionActivity::onModeSelected(NetworkMode mode) {
+  setResult(NetworkModeResult{mode});
+  finish();
+}
+
+void NetworkModeSelectionActivity::onCancel() {
+  ActivityResult result;
+  result.isCancelled = true;
+  setResult(std::move(result));
+  finish();
 }

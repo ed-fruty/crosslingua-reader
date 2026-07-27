@@ -5,22 +5,26 @@
 #include <string>
 #include <vector>
 
-#include "activities/ActivityWithSubactivity.h"
+#include "CrossPointSettings.h"
+#include "activities/Activity.h"
+#include "components/OptionPopup.h"
 #include "util/ButtonNavigator.h"
-
-class CrossPointSettings;
 
 enum class SettingType { TOGGLE, ENUM, ACTION, VALUE, STRING };
 
 enum class SettingAction {
   None,
   RemapFrontButtons,
+  CustomiseStatusBar,
   KOReaderSync,
   OPDSBrowser,
   Network,
   ClearCache,
   CheckForUpdates,
+  SdFirmwareUpdate,
   Language,
+  DownloadFonts,
+  TextSettings,
 };
 
 struct SettingInfo {
@@ -28,6 +32,7 @@ struct SettingInfo {
   SettingType type;
   uint8_t CrossPointSettings::* valuePtr = nullptr;
   std::vector<StrId> enumValues;
+  std::vector<std::string> enumStringValues;  // runtime alternative to StrId enumValues (for SD card fonts etc.)
   SettingAction action = SettingAction::None;
 
   struct ValueRange {
@@ -39,9 +44,11 @@ struct SettingInfo {
 
   const char* key = nullptr;             // JSON API key (nullptr for ACTION types)
   StrId category = StrId::STR_NONE_OPT;  // Category for web UI grouping
+  bool obfuscated = false;               // Save/load via base64 obfuscation (passwords)
+  bool inTextSettings = false;           // Surfaced in the Text Settings screen; hidden from the flat Reader list
 
   // Direct char[] string fields (for settings stored in CrossPointSettings)
-  char* stringPtr = nullptr;
+  size_t stringOffset = 0;
   size_t stringMaxLen = 0;
 
   // Dynamic accessors (for settings stored outside CrossPointSettings, e.g. KOReaderCredentialStore)
@@ -49,6 +56,16 @@ struct SettingInfo {
   std::function<void(uint8_t)> valueSetter;
   std::function<std::string()> stringGetter;
   std::function<void(const std::string&)> stringSetter;
+
+  SettingInfo& withObfuscated() {
+    obfuscated = true;
+    return *this;
+  }
+
+  SettingInfo& withTextSettings() {
+    inTextSettings = true;
+    return *this;
+  }
 
   static SettingInfo Toggle(StrId nameId, uint8_t CrossPointSettings::* ptr, const char* key = nullptr,
                             StrId category = StrId::STR_NONE_OPT) {
@@ -98,7 +115,7 @@ struct SettingInfo {
     SettingInfo s;
     s.nameId = nameId;
     s.type = SettingType::STRING;
-    s.stringPtr = ptr;
+    s.stringOffset = (size_t)ptr - (size_t)&SETTINGS;
     s.stringMaxLen = maxLen;
     s.key = key;
     s.category = category;
@@ -133,7 +150,7 @@ struct SettingInfo {
   }
 };
 
-class SettingsActivity final : public ActivityWithSubactivity {
+class SettingsActivity final : public Activity {
   ButtonNavigator buttonNavigator;
 
   int selectedCategoryIndex = 0;  // Currently selected category
@@ -147,20 +164,25 @@ class SettingsActivity final : public ActivityWithSubactivity {
   std::vector<SettingInfo> systemSettings;
   const std::vector<SettingInfo>* currentSettings = nullptr;
 
-  const std::function<void()> onGoHome;
+  bool preserveQuickResumeTimeoutOn = false;
+  bool quickResumeTimeoutAutoEnabled = false;
+
+  OptionPopup optionPopup;
 
   static constexpr int categoryCount = 4;
   static const StrId categoryNames[categoryCount];
 
   void enterCategory(int categoryIndex);
   void toggleCurrentSetting();
+  void openSleepTimeoutPicker();
+  void rebuildSettingsLists();
+  void syncQuickResumeTimeoutForSleepScreen(bool sleepScreenChanged, bool quickResumeTimeoutChanged);
 
  public:
-  explicit SettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                            const std::function<void()>& onGoHome)
-      : ActivityWithSubactivity("Settings", renderer, mappedInput), onGoHome(onGoHome) {}
+  explicit SettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
+      : Activity("Settings", renderer, mappedInput) {}
   void onEnter() override;
   void onExit() override;
   void loop() override;
-  void render(Activity::RenderLock&&) override;
+  void render(RenderLock&&) override;
 };

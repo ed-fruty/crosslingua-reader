@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+class TranslationHttpSession;  // network/HttpDownloader.h — reusable keep-alive connection
+
 /**
  * SAX-based HTML rewriter that inserts machine-translated paragraphs after
  * each block element in an EPUB chapter.
@@ -19,8 +21,18 @@ class TranslatingHtmlRewriter {
   struct Result {
     int paragraphsTranslated = 0;
     int paragraphsSkipped = 0;
+    // Paragraphs whose translation genuinely failed after retries were exhausted (or the
+    // chapter was aborted mid-translation). Distinct from paragraphsSkipped, which also
+    // counts already-translated/empty-source blocks that were never sent to the engine.
+    int translateFailures = 0;
     bool cancelled = false;
     bool abortedOnErrors = false;
+    // Subtype of abortedOnErrors: the run was aborted specifically because the
+    // heap could not sustain the TLS handshake after repeated bounded waits.
+    // Lets the activity show the specific "not enough memory" message instead of
+    // a generic failure, while reusing the identical abort/partial-preservation
+    // path (abortedOnErrors stays true).
+    bool abortedLowMemory = false;
     char errorDetail[64] = {};  // last error message when abortedOnErrors
   };
 
@@ -28,9 +40,12 @@ class TranslatingHtmlRewriter {
   // Used for progress bar total.
   static int countBlocksInFile(const std::string& inputPath);
 
-  // Check if a chapter HTML file contains embedded translations (Calibre or CrossPoint).
-  // Lightweight SAX scan — stops at the first block element with a `lang` attribute.
-  static bool hasEmbeddedTranslations(const std::string& inputPath);
+  // "Does this chapter HTML already contain translations?" lives in
+  // <Epub/TranslationDetection.h> (translationdetect::htmlHasTranslatedBlock). It used to be
+  // duplicated here as hasEmbeddedTranslations(), keyed on "a block element has ANY lang
+  // attribute" -- a different rule from the one the layout engine renders by, which is a
+  // lang MISMATCH against the book's language. Section's per-chapter gate needs the same
+  // answer, so the check was moved into lib/Epub where both layers can share one definition.
 
   // Rewrite HTML from `inputBuf` (size `inputSize`) into `out`.
   // Returns summary of what happened.
@@ -38,11 +53,20 @@ class TranslatingHtmlRewriter {
                  uint8_t engine, const char* apiKey, volatile const bool* cancelled,
                  volatile int* progressOut = nullptr);
 
+  // Invoked at every batch boundary (after a batch's translations are written and
+  // progressOut is updated, with the batch's TLS/HTTP transients already torn down).
+  // Runs on the calling task. Lets a caller repaint progress at a point where the heap
+  // has a clean hole. C-style pointer + context to avoid std::function heap/bloat.
+  using BatchBoundaryCb = void (*)(void* ctx);
+
   // Rewrite HTML from a file on SD card into `out`, reading in 1KB chunks.
   // This avoids loading the entire chapter HTML into memory.
+  // Optional boundaryCb fires between batches (see BatchBoundaryCb); pass nullptr to
+  // opt out (whole-file/book callers that repaint only at their own boundaries).
   Result rewriteFromFile(const std::string& inputPath, Print& out, const char* sourceLang, const char* targetLang,
                          uint8_t engine, const char* apiKey, volatile const bool* cancelled,
-                         volatile int* progressOut = nullptr);
+                         volatile int* progressOut = nullptr, BatchBoundaryCb boundaryCb = nullptr,
+                         void* boundaryCtx = nullptr);
 
  private:
   Print* out = nullptr;
@@ -52,9 +76,19 @@ class TranslatingHtmlRewriter {
   const char* apiKey = nullptr;
   volatile const bool* cancelled = nullptr;
   volatile int* progressOut = nullptr;
+  BatchBoundaryCb onBatchBoundary = nullptr;  // between-batch repaint hook; null = disabled
+  void* batchBoundaryCtx = nullptr;
+
+  // Reusable keep-alive connection shared by every translate() call of one
+  // rewriteFromFile() run, so a whole chapter pays for a single TLS handshake
+  // instead of one per paragraph. Owned as a local in rewriteFromFile(); this is
+  // a non-owning pointer, valid only for that call's duration. Null on the
+  // buffer rewrite() path and whenever no session was set up (each translate()
+  // then falls back to the stateless HttpDownloader statics — prior behavior).
+  TranslationHttpSession* httpSession = nullptr;
 
   int depth = 0;
-  int blockDepth = -1;   // depth where current block element began; -1 = not in block
+  int blockDepth = -1;  // depth where current block element began; -1 = not in block
   bool insideHead = false;
   bool wroteXmlDecl = false;
 
@@ -67,12 +101,41 @@ class TranslatingHtmlRewriter {
 
   int paragraphsTranslated = 0;
   int paragraphsSkipped = 0;
-  int blocksProcessed = 0;  // all batch entries including empty blocks (for progress bar)
+  int translateFailures = 0;  // genuine translate failures (see Result::translateFailures)
+  int blocksProcessed = 0;    // all batch entries including empty blocks (for progress bar)
   bool wasCancelled = false;
-  int consecutiveFailures = 0;         // reset on success, increment on failure
-  bool abortedOnErrors = false;        // set when consecutiveFailures hits threshold
-  std::string lastError;               // last translation error message
+  int consecutiveFailures = 0;   // reset on success, increment on failure
+  bool abortedOnErrors = false;  // set when consecutiveFailures hits threshold
+  std::string lastError;         // last translation error message
   static constexpr int MAX_CONSECUTIVE_FAILURES = 20;
+
+  // ─── Heap backpressure (low-memory wait-then-retry) ─────────────────────────
+  // Before firing a batch's TLS request we wait (bounded) for the heap to support
+  // the handshake rather than allocating into a low/fragmented heap and crashing.
+  // Each exhausted wait (heap never recovered within HEAP_WAIT_TIMEOUT_MS)
+  // increments consecutiveHeapTimeouts; a healthy wait resets it. After
+  // MAX_CONSECUTIVE_HEAP_TIMEOUTS in a row the run aborts cleanly through the same
+  // abortedOnErrors machinery, flagged abortedLowMemory so the caller shows the
+  // specific message. Guarantee: progress pauses at most
+  // MAX_CONSECUTIVE_HEAP_TIMEOUTS * HEAP_WAIT_TIMEOUT_MS, then continues or ends.
+  int consecutiveHeapTimeouts = 0;
+  bool abortedLowMemory = false;
+  static constexpr int MAX_CONSECUTIVE_HEAP_TIMEOUTS = 3;
+  static constexpr uint32_t HEAP_WAIT_TIMEOUT_MS = 12000;  // ~12 s per exhausted wait
+
+  // ─── Network retry/backoff (see HttpDownloader::lastHttpCode) ───────────────
+  int consecutive429 = 0;  // consecutive HTTP 429 responses; reset on any non-429 outcome
+  static constexpr int MAX_CONSECUTIVE_429 = 3;
+
+  // Classify a failed translate attempt (httpCode = HttpDownloader::lastHttpCode captured
+  // right after the failing call). Updates consecutive429 and, on a non-retryable outcome,
+  // sets abortedOnErrors (auth failure or too many consecutive 429s).
+  // Returns true if the attempt loop should retry.
+  bool shouldRetryAfterFailure(int httpCode);
+
+  // Pure backoff delay (ms) for a given HTTP status code and 0-based retry attempt index.
+  // 429 gets a fixed ~1.5s spacing; other transient errors ramp {500, 1500, 3000} ms.
+  static int backoffDelayMs(int httpCode, int attempt);
 
   // ─── Batch buffering ─────────────────────────────────────────────────────
   struct BatchEntry {
@@ -82,8 +145,8 @@ class TranslatingHtmlRewriter {
     std::string blockClass;    // class attribute of original block (for CSS spacing)
   };
   std::vector<BatchEntry> batch;
-  std::string pendingHtml;       // accumulates writeOut() calls between block flushes
-  size_t batchTextBytes = 0;     // running total of trimmedText bytes in current batch
+  std::string pendingHtml;                            // accumulates writeOut() calls between block flushes
+  size_t batchTextBytes = 0;                          // running total of trimmedText bytes in current batch
   static constexpr size_t BATCH_TARGET_BYTES = 1500;  // flush threshold (under MAX_TEXT_BYTES=1800)
 
   static const char* BLOCK_TAGS[];
@@ -121,10 +184,4 @@ class TranslatingHtmlRewriter {
 
   // Counting-only callbacks (for countBlocksInFile)
   static void XMLCALL onStartCount(void* ud, const XML_Char* name, const XML_Char** atts);
-
-  // Detection callback (for hasEmbeddedTranslations)
-  struct EmbeddedDetectState {
-    bool found = false;
-  };
-  static void XMLCALL onStartDetectEmbedded(void* ud, const XML_Char* name, const XML_Char** atts);
 };

@@ -1,0 +1,1048 @@
+#include "TooltipOverlay.h"
+
+#include <CrossPointSettings.h>
+#include <Epub/parsers/ParagraphBoundary.h>
+#include <HalStorage.h>
+#include <I18n.h>
+#include <Logging.h>
+#include <Memory.h>
+#include <expat.h>
+
+#include <algorithm>
+#include <cstring>
+
+#include "SentencePairing.h"
+#include "TextNormalize.h"
+
+// ── Button handling ───────────────────────────────────────────────────────────
+
+bool TooltipOverlay::handleInput(MappedInputManager& input) {
+  const bool useFrontButtons = (SETTINGS.tooltipButtons == CrossPointSettings::OVERLAY_BUTTONS_FRONT);
+  const auto nextBtn = useFrontButtons ? MappedInputManager::Button::Right : MappedInputManager::Button::PageForward;
+  const auto backBtn = useFrontButtons ? MappedInputManager::Button::Left : MappedInputManager::Button::PageBack;
+  const bool pageTurnMode = (SETTINGS.tooltipBehavior == CrossPointSettings::TOOLTIP_NAV_TURN_PAGE);
+  constexpr unsigned long longPressMs = 700;
+
+  // Next button. Steps are translation units (see steps[]/groupTranslationSteps), so one
+  // press advances past a whole merged group rather than re-showing its translation.
+  if (input.wasReleased(nextBtn)) {
+    // Long press: turn page forward (like non-tooltip mode), dismiss tooltip.
+    if (input.getHeldTime() >= longPressMs) {
+      pendingPageForward = true;
+      currentStepIndex = -1;
+      return true;
+    }
+    skipDirection = 1;
+    if (currentStepIndex < 0) {
+      currentStepIndex = 0;  // activate; render lands on the first translated step
+      return true;
+    }
+    if (currentStepIndex < stepCount - 1) {
+      currentStepIndex++;
+      return true;
+    }
+    // At last step.
+    if (pageTurnMode) {
+      pendingPageForward = true;
+      activateOnNextPage = true;
+      currentStepIndex = -1;
+    } else {
+      // Loop: wrap to first.
+      currentStepIndex = 0;
+    }
+    return true;
+  }
+
+  // Back button.
+  if (input.wasReleased(backBtn)) {
+    // Long press: turn page backward (like non-tooltip mode), dismiss tooltip.
+    if (input.getHeldTime() >= longPressMs) {
+      pendingPageBack = true;
+      currentStepIndex = -1;
+      return true;
+    }
+    skipDirection = -1;
+    if (currentStepIndex < 0) {
+      currentStepIndex = 0;  // activate; render lands on the first translated step
+      return true;
+    }
+    if (currentStepIndex > 0) {
+      currentStepIndex--;
+      return true;
+    }
+    // At first step.
+    if (pageTurnMode) {
+      pendingPageBack = true;
+      activateOnNextPage = true;
+      currentStepIndex = -1;
+    } else {
+      // Loop: wrap to last.
+      currentStepIndex = std::max(0, stepCount - 1);
+    }
+    return true;
+  }
+
+  // ESC/Back button: dismiss tooltip if active.
+  if (input.wasReleased(MappedInputManager::Button::Back)) {
+    if (currentStepIndex >= 0) {
+      currentStepIndex = -1;
+      return true;
+    }
+    return false;
+  }
+
+  return false;
+}
+
+void TooltipOverlay::onPageChanged() {
+  bool shouldActivate = activateOnNextPage;
+  int8_t dir = skipDirection;
+  currentStepIndex = -1;
+  skipDirection = 1;
+  pagePrepared = false;
+  origWordCount = 0;
+  sentenceTranslations.clear();
+  splits.count = 0;
+  stepCount = 0;
+  activateOnNextPage = false;
+  activateFromEnd = false;
+  pendingPageForward = false;
+  pendingPageBack = false;
+
+  // After a tooltip-triggered page turn, auto-activate on the new page.
+  if (shouldActivate) {
+    currentStepIndex = 0;  // preparePage will run; activateFromEnd picks the end step for a back turn
+    skipDirection = dir;
+    activateFromEnd = (dir < 0);  // going back → show last step
+  }
+}
+
+// ── Chapter parsing: extract (orig, trans) paragraph pairs ───────────────────
+//
+// The paragraph-boundary rule (container block tags + <br/>) is NOT redefined
+// here: this reparse and ChapterHtmlSlimParser's layout counter both call the
+// shared paraboundary predicate (ParagraphBoundary.h) so their paragraph indices
+// cannot diverge by a tag. See that header for the full contract.
+
+struct SentEntry {
+  std::string key;          // first 6 words (normalized) of original sentence
+  std::string translation;  // mapped translation text
+};
+
+// Forward declaration — builds index entries for one paragraph pair.
+static void addPairToIndex(const std::string& origText, const std::string& transText, SentencePairScratch& scratch,
+                           std::vector<SentEntry>& index);
+
+struct ParseCtx {
+  std::vector<SentEntry>* index;
+  // The sentence aligner's fixed scratch (~800 B). Allocated ONCE per index build and reused for
+  // every paragraph pair, so it is neither a >256 B stack local nor a per-paragraph allocation.
+  SentencePairScratch* scratch = nullptr;
+  int blockDepth = 0;
+  bool inBlock = false;
+  bool isTranslation = false;
+  // >0 while inside a subtree the layout parser SKIPS after emitting a single synthetic paragraph —
+  // a <table> ("[Table omitted]") or an undecodable <img> with alt text ("[Image: …]"). Mirrors
+  // ChapterHtmlSlimParser::skipUntilDepth: nested starts bump it, nested ends drop it, the matching
+  // close returns it to 0.
+  int skipDepth = 0;
+  // The innermost open block is an <li>. ChapterHtmlSlimParser seeds every <li> block with a
+  // U+2022 bullet, so an <li> whose only content so far is that implicit bullet still flushes a
+  // (bullet-only) paragraph when its first child block opens.
+  bool currentBlockIsLi = false;
+  std::string currentText;
+  std::string lastOrigText;
+  bool hasLastOrig = false;
+  int pairCount = 0;
+  // Selective parse (mirrors PageTranslationOverlay): only build index entries for paragraphs the current
+  // page actually shows. Without this the index holds every translated sentence in the chapter,
+  // which exhausts the heap on long chapters and reboots the device.
+  int wantFirst = 0;
+  int wantLast = 0;
+  int paragraphCounter = -1;    // pre-increment on each ORIGINAL block; first original becomes idx 0
+  int lastOrigIdx = -1;         // paragraph index of the most recent original block
+  XML_Parser parser = nullptr;  // for XML_StopParser once we walk past the page
+};
+
+// Finish the current ORIGINAL paragraph: trim it, and (if non-empty) advance the
+// paragraph counter and retain the text for pairing when it falls on the page.
+// Whitespace-only text is dropped without incrementing — matching
+// ChapterHtmlSlimParser, which skips empty blocks. Factored out so <br/> handling
+// in chOnStart can reuse it (flush-in-place) as well as the block-close in chOnEnd.
+static void flushOriginalParagraph(ParseCtx* ctx) {
+  auto& t = ctx->currentText;
+  while (!t.empty() && (t.front() == ' ' || t.front() == '\n')) t.erase(0, 1);
+  while (!t.empty() && (t.back() == ' ' || t.back() == '\n')) t.pop_back();
+  if (t.empty()) {
+    ctx->currentText.clear();
+    return;
+  }
+  // Bump the paragraph counter, then decide whether it falls on the page.
+  const int idx = ++ctx->paragraphCounter;
+  ctx->lastOrigIdx = idx;
+  if (idx > ctx->wantLast) {
+    // Past the page (and the prior paragraph's translation has already been processed) — stop
+    // the parser so expat doesn't scan the rest of the chapter. Returns XML_ERROR_ABORTED,
+    // which parseAndBuildIndex treats as the success path.
+    if (ctx->parser) XML_StopParser(ctx->parser, XML_FALSE);
+    ctx->lastOrigText.clear();
+    ctx->hasLastOrig = false;
+    ctx->currentText.clear();
+    return;
+  }
+  if (idx < ctx->wantFirst) {
+    ctx->lastOrigText.clear();  // before the page — discard, never pairs
+    ctx->hasLastOrig = false;
+    ctx->currentText.clear();
+    return;
+  }
+  ctx->lastOrigText = std::move(t);
+  ctx->hasLastOrig = true;
+  ctx->currentText.clear();
+}
+
+// True if the accumulated block text holds any non-whitespace character. Used to tell an <li>
+// that has only its implicit bullet (empty currentText) from one that has real direct text.
+static bool hasVisibleText(const std::string& s) {
+  for (char c : s) {
+    if (c != ' ' && c != '\n' && c != '\r' && c != '\t') return true;
+  }
+  return false;
+}
+
+// ChapterHtmlSlimParser seeds EVERY <li> block with a U+2022 bullet (addWord), so an <li> with no
+// real direct text — empty, or holding only a media/table child (<li></li>, <li><img/></li>,
+// <li><table>…</table></li>) — is still a NON-empty block it counts as one (bullet-only) paragraph.
+// Seed the same bullet just before ANY flush of the current block so the reparser counts it too;
+// a no-op when the block is not an <li> or already has real text.
+static void seedLiBulletIfEmpty(ParseCtx* ctx) {
+  if (ctx->currentBlockIsLi && !hasVisibleText(ctx->currentText)) {
+    ctx->currentText = "\xe2\x80\xa2";
+  }
+}
+
+// Mirror ChapterHtmlSlimParser's on-device decoder gate: only .jpg/.jpeg/.png images decode
+// (ImageDecoderFactory). Any other extension — or a missing src — makes the layout parser fall
+// back to the image's alt text, which it emits as exactly ONE "[Image: …]" paragraph. Replicating
+// the extension test lets the reparser count that fallback WITHOUT counting a decodable image
+// (which produces no paragraph). NOTE: a .jpg/.png that fails to decode at RUNTIME (corrupt data,
+// dimension read failure) still falls back in the layout parser but is treated as decodable here —
+// that residual case is not detectable from the HTML alone.
+static bool imgSrcDecodable(const char* src) {
+  if (!src || !*src) return false;
+  const char* dot = strrchr(src, '.');
+  if (!dot) return false;
+  std::string ext(dot);
+  for (auto& c : ext) {
+    if (c >= 'A' && c <= 'Z') c += 32;
+  }
+  return ext == ".jpg" || ext == ".jpeg" || ext == ".png";
+}
+
+static void XMLCALL chOnStart(void* ud, const XML_Char* name, const XML_Char** atts) {
+  auto* ctx = static_cast<ParseCtx*>(ud);
+
+  // Inside a skipped subtree (table cell / undecodable-image alt content): swallow every nested
+  // element so it can never contribute a paragraph, exactly like ChapterHtmlSlimParser's
+  // skipUntilDepth. Balanced by the matching drops in chOnEnd.
+  if (ctx->skipDepth > 0) {
+    ctx->skipDepth++;
+    return;
+  }
+
+  // <br/> — a hard break is an EMPTY, NO-SCOPE element: it never opens a scope, so it must NEVER
+  // touch blockDepth (chOnEnd skips its self-close too, keeping the count balanced in ALL cases,
+  // including inside a translation block where a stray blockDepth++ would leave the <p> unclosed
+  // and drop its translation). In an ORIGINAL block it ends the current paragraph IN PLACE (flush)
+  // so the counter advances exactly as ChapterHtmlSlimParser's does on <br/>; in a TRANSLATION
+  // block it is just an internal line break (keep accumulating).
+  if (paraboundary::isHardBreak(name)) {
+    if (ctx->inBlock && !ctx->isTranslation) flushOriginalParagraph(ctx);
+    return;
+  }
+
+  // <table> — first flush the PRIOR block (a parent block's direct text for mixed content, or a
+  // bullet-only <li>), then make "[Table omitted]" the RUNNING block. Crucially it is NOT flushed
+  // now: the layout parser keeps filling the same block, so trailing text in the SAME container
+  // (e.g. <div><table>…</table>tail</div>) stays in ONE paragraph — flushing it here would emit a
+  // spurious extra paragraph. It flushes naturally at the next block-open or block-close. The
+  // table subtree is swallowed via skipDepth. A top-level table (not yet inBlock) becomes its own
+  // running block so it still flushes (at the next block or the enclosing structural close).
+  if (strcmp(name, "table") == 0) {
+    if (!ctx->isTranslation) {
+      seedLiBulletIfEmpty(ctx);
+      flushOriginalParagraph(ctx);  // counts the prior block (parent text / bullet-only li) if any
+    }
+    if (!ctx->inBlock) {
+      ctx->inBlock = true;
+      ctx->blockDepth = 1;
+    }
+    ctx->isTranslation = false;
+    ctx->currentText = "[Table omitted]";
+    ctx->currentBlockIsLi = false;  // the placeholder block is not an <li>
+    ctx->skipDepth = 1;             // swallow cell content until the matching </table>
+    return;
+  }
+
+  // <img> — a decodable image (.jpg/.jpeg/.png) renders with NO paragraph; an undecodable image
+  // (any other src, or none) WITH alt text falls back to a single "[Image: …]" paragraph. Match
+  // both so images never drift the count. An image is otherwise a no-scope empty element, so
+  // (like <br/>) it must not touch blockDepth — chOnEnd treats <img> as a no-op.
+  if (strcmp(name, "img") == 0) {
+    const char* src = nullptr;
+    const char* alt = nullptr;
+    if (atts) {
+      for (int i = 0; atts[i]; i += 2) {
+        if (strcmp(atts[i], "src") == 0)
+          src = atts[i + 1];
+        else if (strcmp(atts[i], "alt") == 0)
+          alt = atts[i + 1];
+      }
+    }
+    if (!imgSrcDecodable(src) && alt && *alt) {
+      // Same shape as <table>: flush the prior block (parent text / bullet-only li), then make
+      // "[Image: …]" the RUNNING block (deferred flush) so trailing same-container text stays in
+      // one paragraph. Swallow any image children via skipDepth.
+      if (!ctx->isTranslation) {
+        seedLiBulletIfEmpty(ctx);
+        flushOriginalParagraph(ctx);
+      }
+      if (!ctx->inBlock) {
+        ctx->inBlock = true;
+        ctx->blockDepth = 1;
+      }
+      ctx->isTranslation = false;
+      ctx->currentText = std::string("[Image: ") + alt + "]";
+      ctx->currentBlockIsLi = false;
+      ctx->skipDepth = 1;
+    }
+    return;  // decodable image / no alt: no paragraph, no scope
+  }
+
+  if (paraboundary::isContainerBlockTag(name)) {
+    // A container opening while a block is ALREADY open (mixed content, or an <li> with a nested
+    // block child): the layout parser first flushes the parent block's direct text as its own
+    // counted paragraph when the child opens — and an <li> whose only content so far is its
+    // implicit bullet flushes a bullet-only paragraph (the layout parser seeds every <li> with a
+    // U+2022 bullet, so its block is non-empty). Do that flush BEFORE (re)starting the block; the
+    // previous code cleared currentText here, discarding the parent text and dropping its count.
+    //
+    // We then start THIS container as a fresh block, re-detecting its lang, exactly like a
+    // top-level block. Handling every container independently (rather than carrying outer nesting)
+    // is what keeps a nested TRANSLATION block correctly recognized: our rewriter inserts the
+    // translated paragraph INSIDE any wrapper <div>/<blockquote>, e.g.
+    // <div><p>orig</p><p lang="fr">trad</p></div>. After the inner </p> the block is closed, so the
+    // sibling <p lang="fr"> re-enters here and its lang IS detected — a nesting-depth counter that
+    // stayed inside the div would miss it and drop the translation.
+    if (ctx->inBlock && !ctx->isTranslation) {
+      seedLiBulletIfEmpty(ctx);     // bullet-only <li> flushes a counted bullet paragraph here
+      flushOriginalParagraph(ctx);  // counts the parent's direct text (or the li bullet) if present
+    }
+    ctx->inBlock = true;
+    ctx->blockDepth = 1;
+    ctx->isTranslation = false;
+    ctx->currentBlockIsLi = (strcmp(name, "li") == 0);
+    ctx->currentText.clear();
+    if (atts) {
+      for (int i = 0; atts[i]; i += 2) {
+        if (strcmp(atts[i], "lang") == 0 || strcmp(atts[i], "xml:lang") == 0 ||
+            strcmp(atts[i], "data-translation") == 0) {
+          ctx->isTranslation = true;
+        }
+      }
+    }
+    return;
+  }
+
+  if (ctx->inBlock) {
+    ctx->blockDepth++;  // inline element (span/b/i/…) inside a block — balanced by its end
+  }
+}
+
+static void XMLCALL chOnEnd(void* ud, const XML_Char* name) {
+  auto* ctx = static_cast<ParseCtx*>(ud);
+  // Leaving a skipped subtree (table cell / undecodable-image alt content). The matching close of
+  // the <table>/<img> that opened the skip brings skipDepth back to 0. Mirrors skipUntilDepth.
+  if (ctx->skipDepth > 0) {
+    ctx->skipDepth--;
+    return;
+  }
+  // <br/> is an empty element: expat fires this end event for its self-close.
+  // It opened no scope (chOnStart handled it without touching blockDepth), so it
+  // must not decrement here either — otherwise the enclosing block closes one tag
+  // early and the text after <br/> is lost, desyncing the paragraph counter.
+  if (paraboundary::isHardBreak(name)) return;
+  // <img> is likewise a no-scope empty element on the decodable / no-alt path (the alt-text
+  // fallback set skipDepth and was consumed above), so its self-close must not touch blockDepth.
+  if (strcmp(name, "img") == 0) return;
+  if (!ctx->inBlock) return;
+  ctx->blockDepth--;
+  if (ctx->blockDepth > 0) return;
+  ctx->inBlock = false;
+
+  if (ctx->isTranslation) {
+    auto& t = ctx->currentText;
+    while (!t.empty() && (t.front() == ' ' || t.front() == '\n')) t.erase(0, 1);
+    while (!t.empty() && (t.back() == ' ' || t.back() == '\n')) t.pop_back();
+    // hasLastOrig is set only for in-range originals, so this naturally skips out-of-range pairs.
+    if (!t.empty() && ctx->hasLastOrig) {
+      // Process pair immediately — don't accumulate all pairs in memory.
+      addPairToIndex(ctx->lastOrigText, t, *ctx->scratch, *ctx->index);
+      ctx->pairCount++;
+      ctx->lastOrigText.clear();
+      ctx->hasLastOrig = false;
+    }
+    ctx->currentText.clear();
+  } else {
+    seedLiBulletIfEmpty(ctx);  // empty / media-only <li> still counts one bullet paragraph
+    flushOriginalParagraph(ctx);
+  }
+  // Block ended: no <li> context may leak to the next block-open (otherwise a following top-level
+  // <table>/<img> would wrongly seed a bullet).
+  ctx->currentBlockIsLi = false;
+}
+
+static void XMLCALL chOnChar(void* ud, const XML_Char* data, int len) {
+  auto* ctx = static_cast<ParseCtx*>(ud);
+  if (ctx->skipDepth > 0) return;  // text inside a skipped table cell / image subtree
+  if (!ctx->inBlock) return;
+  for (int i = 0; i < len; i++) {
+    char c = data[i];
+    if (c == '\n' || c == '\r' || c == '\t') c = ' ';
+    if (c == ' ' && !ctx->currentText.empty() && ctx->currentText.back() == ' ') continue;
+    ctx->currentText += c;
+  }
+}
+
+// ── Sentence index: map original sentences to translations ───────────────────
+
+// Split text into whitespace-delimited words. Separators are recognized via the shared
+// textnorm::whitespaceLenAt SSOT — the SAME set the char-offset SentenceSplitter fix and
+// foldForMatch use — so ASCII space/tab/CR/LF AND Unicode NBSP-style separators (U+00A0,
+// U+2000..200A, U+202F, U+205F) all break a token. chOnChar keeps raw NBSP in the accumulated
+// text; splitting on ASCII whitespace alone (the old behavior) left an NBSP-joined pair as ONE
+// token, so classifyTerminator — which only sees a terminator at the END of a token — never saw
+// the interior "." and undercounted the sentence, shifting every tooltip mapping by one (gap B).
+// Splitting on whitespaceLenAt guarantees no token can contain an inter-word separator, so a
+// terminator immediately before an NBSP now lands at a token boundary and is recognized.
+static std::vector<std::string> tokenizeWords(const std::string& text) {
+  std::vector<std::string> words;
+  const size_t n = text.size();
+  size_t i = 0;
+  while (i < n) {
+    int wl;
+    while (i < n && (wl = textnorm::whitespaceLenAt(text, i)) > 0) i += static_cast<size_t>(wl);
+    if (i >= n) break;
+    const size_t start = i;
+    while (i < n && textnorm::whitespaceLenAt(text, i) == 0) i++;
+    words.emplace_back(text.data() + start, i - start);
+  }
+  return words;
+}
+
+// Process one (original, translation) paragraph pair: split both into sentences, map by
+// character-midpoint, and add entries to the index. Called during HTML parsing — only one pair in
+// memory at a time, and the aligner's fixed scratch is the caller's (ParseCtx), so this frame stays
+// small.
+//
+// The alignment RULE itself lives in SentencePairing (shared with PtLayout::Interlinear and
+// host-tested); this function is now just tokenize -> align -> materialize the index strings.
+static void addPairToIndex(const std::string& origText, const std::string& transText, SentencePairScratch& scratch,
+                           std::vector<SentEntry>& index) {
+  auto origWords = tokenizeWords(origText);
+  auto transWords = tokenizeWords(transText);
+  if (origWords.empty() || transWords.empty()) return;
+
+  std::vector<const char*> origPtrs, transPtrs;
+  origPtrs.reserve(origWords.size());
+  transPtrs.reserve(transWords.size());
+  for (auto& w : origWords) origPtrs.push_back(w.c_str());
+  for (auto& w : transWords) transPtrs.push_back(w.c_str());
+
+  if (!splitSentencePair(origPtrs.data(), (int)origPtrs.size(), transPtrs.data(), (int)transPtrs.size(), scratch)) {
+    return;
+  }
+  // No junk merge here, deliberately: the index is keyed per SOURCE sentence and preparePage merges
+  // the PAGE's sentences before looking anything up, so merging here too would drop keys the page
+  // still asks for.
+  mapSentenceSpans(origPtrs.data(), transPtrs.data(), scratch);
+
+  for (int os = 0; os < scratch.origSplits.count; os++) {
+    // One contiguous span == exactly the string the previous per-sentence joining produced (see
+    // mapSentenceSpans): splitSentences' spans abut, so joining the merged span is the same text.
+    std::string trans = joinSpan(transWords, scratch.transFor[os]);
+    std::string key =
+        sentenceKey(origPtrs.data(), scratch.origSplits.spans[os].startWord, scratch.origSplits.spans[os].endWord);
+    if (!key.empty() && !trans.empty()) {
+      index.push_back({std::move(key), std::move(trans)});
+    }
+  }
+}
+
+// Parse HTML and build sentence index in one pass — no intermediate storage. Only paragraphs in
+// [wantFirst, wantLast] (the current page's range) get index entries, so peak RAM is bounded by one
+// page's worth of translations rather than the whole chapter.
+static std::vector<SentEntry> parseAndBuildIndex(const std::string& path, int wantFirst, int wantLast) {
+  std::vector<SentEntry> index;
+  if (path.empty()) return index;
+
+  // v2: all SD access goes through HalStorage (SdFat is not thread-safe). HalFile serializes every
+  // read/seek/close via storageMutex and auto-closes in its destructor (DESTRUCTOR_CLOSES_FILE=1),
+  // so no explicit close on any return path.
+  HalFile f;
+  if (!Storage.openFileForRead("TIP", path, f)) {
+    LOG_ERR("TIP", "Cannot open %s", path.c_str());
+    return index;
+  }
+
+  XML_Parser parser = XML_ParserCreate(nullptr);
+  if (!parser) {
+    LOG_ERR("TIP", "Failed to create expat parser");
+    return index;
+  }
+
+  // One aligner scratch (~800 B) for the whole parse, not one per paragraph pair and not on the
+  // stack: addPairToIndex runs inside the expat callback chain.
+  const auto scratch = makeUniqueNoThrow<SentencePairScratch>();
+  if (!scratch) {
+    LOG_ERR("TIP", "OOM: sentence pairing scratch");
+    XML_ParserFree(parser);
+    return index;
+  }
+
+  ParseCtx ctx;
+  ctx.index = &index;
+  ctx.scratch = scratch.get();
+  ctx.wantFirst = wantFirst;
+  ctx.wantLast = wantLast;
+  ctx.parser = parser;
+  XML_SetUserData(parser, &ctx);
+  XML_SetElementHandler(parser, chOnStart, chOnEnd);
+  XML_SetCharacterDataHandler(parser, chOnChar);
+
+  char buf[1024];
+  bool done = false;
+  bool stopped = false;
+  while (!done && !stopped) {
+    int n = f.read(reinterpret_cast<uint8_t*>(buf), sizeof(buf));
+    if (n < 0) n = 0;  // read error — treat as end of stream rather than feeding expat a bad length
+    done = (n < (int)sizeof(buf));
+    if (XML_Parse(parser, buf, n, done) == XML_STATUS_ERROR) {
+      // XML_StopParser() (we walked past the page) makes expat return ERROR with code
+      // XML_ERROR_ABORTED — that's our success path, not a parse failure.
+      if (XML_GetErrorCode(parser) == XML_ERROR_ABORTED) {
+        stopped = true;
+      } else {
+        LOG_ERR("TIP", "XML parse error at line %lu", XML_GetCurrentLineNumber(parser));
+      }
+      break;
+    }
+  }
+  XML_ParserFree(parser);
+
+  LOG_DBG("TIP", "Index: %d entries from %d pairs in [%d..%d]%s", (int)index.size(), ctx.pairCount, wantFirst, wantLast,
+          stopped ? " (early-stop)" : "");
+  return index;
+}
+
+// ── Page preparation ──────────────────────────────────────────────────────────
+
+void TooltipOverlay::collectPageGlyphText(const Page& page, std::string& out) {
+  preparePage(page);  // idempotent (pagePrepared guard); render() will find it already done
+  size_t need = 0;
+  for (const auto& s : sentenceTranslations) need += s.size() + 1;
+  const char* const marker = tr(STR_NO_TRANSLATION);
+  need += std::strlen(marker) + 1;
+  out.reserve(out.size() + need);
+  for (const auto& s : sentenceTranslations) {
+    out += s;
+    out += ' ';
+  }
+  out += marker;  // shown for any sentence with no mapped translation (Option C)
+}
+
+void TooltipOverlay::preparePage(const Page& page) {
+  if (pagePrepared) return;
+  pagePrepared = true;
+  origWordCount = 0;
+  sentenceTranslations.clear();
+  stepCount = 0;  // stays 0 on any early return below (no paragraph indices / empty index)
+
+  // 1. Collect original words from page, REMEMBERING WHERE EACH PARAGRAPH STARTS. v2 flattened
+  //    TextBlock word storage: iterate by index (wordCount/wordText), NOT the fork's getWords()
+  //    container. wordText(i) returns a NUL-terminated pointer into the block's arena, stable for
+  //    the block's (and page's) lifetime, which spans every render() call between page changes.
+  //
+  //    The paragraph runs are not decoration: step 3 builds the index one entry per PARAGRAPH pair,
+  //    so the page side has to be cut at the same places or the two sides count differently. Lines
+  //    of one paragraph are contiguous and carry its index (PageLine::paragraphIdx, serialized with
+  //    the page), so a change of index opens a new run — the same grouping PageTranslationOverlay
+  //    does. An old cache leaves every index at -1, which collapses to a single run and reproduces
+  //    the previous flat behaviour rather than mis-cutting.
+  //
+  //    More than MAX_SENTENCES runs cannot produce distinguishable sentences anyway (every run
+  //    yields at least one, and the split budget is MAX_SENTENCES), so the table is capped there.
+  uint16_t paraRunStarts[MAX_SENTENCES];
+  int paraRunCount = 0;
+  int16_t lastParagraphIdx = -1;
+  bool haveRun = false;  // the first line always opens a run, whatever its index
+  for (const auto& el : page.elements) {
+    if (el->getTag() != TAG_PageLine) continue;
+    const auto* line = static_cast<const PageLine*>(el.get());
+    if (!haveRun || line->paragraphIdx != lastParagraphIdx) {
+      haveRun = true;
+      if (paraRunCount < MAX_SENTENCES) paraRunStarts[paraRunCount++] = static_cast<uint16_t>(origWordCount);
+      lastParagraphIdx = line->paragraphIdx;
+    }
+    const auto& block = line->getBlock();
+    for (uint16_t i = 0; i < block->wordCount(); i++) {
+      if (origWordCount < MAX_WORDS) origWordPtrs[origWordCount++] = block->wordText(i);
+    }
+  }
+
+  // 2. Split into sentences — never across a paragraph edge — then merge any "empty" sentences
+  //    (dots, fragments) into the previous sentence so the user doesn't click through junk. The
+  //    merge gets the same run table: it folds BACKWARDS, so without it a junk-only paragraph (a
+  //    bare numeral heading) would swallow the paragraph before it and undo the split.
+  splits = splitSentencesByParagraph(origWordPtrs, origWordCount, paraRunStarts, paraRunCount);
+  mergeJunkSentences(splits, origWordPtrs, paraRunStarts, paraRunCount);
+  LOG_DBG("TIP", "Page: %d words, %d paragraphs, %d sentences (after merge)", origWordCount, paraRunCount,
+          splits.count);
+
+  // 3. Parse HTML and build sentence index in one pass (memory-efficient). Restrict to the
+  //    paragraph range this page shows — otherwise the index holds the whole chapter's
+  //    translations and exhausts the heap on long chapters.
+  if (page.firstParagraphIdx < 0 || page.lastParagraphIdx < 0) {
+    LOG_DBG("TIP", "Page has no paragraph indices (old cache?) — skipping tooltip index");
+    return;
+  }
+  auto index = parseAndBuildIndex(translatedHtmlPath, page.firstParagraphIdx, page.lastParagraphIdx);
+  if (index.empty()) {
+    LOG_DBG("TIP", "No index entries from %s", translatedHtmlPath.c_str());
+    return;
+  }
+
+  // 4. Match each page sentence against the index by key, then gap-fill neighbors.
+  sentenceTranslations.resize(splits.count);
+  std::vector<int> matchedIdx(splits.count, -1);
+  int matched = 0, lastIdx = -1;
+
+  // Pre-normalize index keys (strip dots, collapse spaces).
+  std::vector<std::string> normKeys(index.size());
+  for (int j = 0; j < (int)index.size(); j++) {
+    auto& nk = normKeys[j];
+    for (char c : index[j].key) {
+      if (c == '.') continue;
+      if (c == ' ' && (nk.empty() || nk.back() == ' ')) continue;
+      nk += c;
+    }
+    while (!nk.empty() && nk.back() == ' ') nk.pop_back();
+  }
+
+  // The page sentences that carry matchable text, in order. A sentence whose key is EMPTY has none:
+  // sentenceKey drops single-character punctuation words, so a scene-break ornament paragraph ("*",
+  // "◆") keys to nothing. Cutting the page at paragraph edges now keeps such a paragraph as a page
+  // sentence of its own instead of folding it into a neighbour, so it has to be excluded from the
+  // gap fill as well as from the match — otherwise it inherits a NEIGHBOUR's translation and becomes
+  // a navigation step that underlines a stray glyph. Left unfilled, its translation stays empty and
+  // groupTranslationSteps drops it from the step list: no step, no underline.
+  //
+  // The fill must still CHAIN ACROSS it, which is why this is a list of the keyed sentences rather
+  // than a skip flag: the passes below take each keyed sentence's keyed neighbour. On a page with no
+  // keyless sentence — every page of the sample book — this is 0,1,2,… and the two passes are
+  // exactly the neighbour fills they have always been.
+  uint8_t keyed[MAX_SENTENCES];
+  int keyedCount = 0;
+
+  // Forward pass: match by key.
+  for (int s = 0; s < splits.count; s++) {
+    std::string pk = sentenceKey(origWordPtrs, splits.spans[s].startWord, splits.spans[s].endWord);
+    if (pk.empty()) continue;
+    if (keyedCount < MAX_SENTENCES) keyed[keyedCount++] = static_cast<uint8_t>(s);
+    std::string np;
+    for (char c : pk) {
+      if (c == '.') continue;
+      if (c == ' ' && (np.empty() || np.back() == ' ')) continue;
+      np += c;
+    }
+    while (!np.empty() && np.back() == ' ') np.pop_back();
+
+    int foundIdx = -1;
+    // Sequential hint.
+    if (lastIdx >= 0 && lastIdx + 1 < (int)index.size()) {
+      int cl = (int)std::min(np.size(), normKeys[lastIdx + 1].size());
+      if (cl >= 3 && np.compare(0, cl, normKeys[lastIdx + 1], 0, cl) == 0) foundIdx = lastIdx + 1;
+    }
+    // Full search fallback.
+    if (foundIdx < 0) {
+      int bestLen = 0;
+      for (int j = 0; j < (int)index.size(); j++) {
+        int cl = (int)std::min(np.size(), normKeys[j].size());
+        if (cl < 3) continue;
+        if (np.compare(0, cl, normKeys[j], 0, cl) == 0 && cl > bestLen) {
+          bestLen = cl;
+          foundIdx = j;
+        }
+      }
+    }
+    if (foundIdx >= 0) {
+      sentenceTranslations[s] = index[foundIdx].translation;
+      matchedIdx[s] = foundIdx;
+      lastIdx = foundIdx;
+      matched++;
+    }
+  }
+
+  // Gap fill: infer unmatched sentences from their KEYED neighbors (see `keyed` above).
+  // Backward: if the next keyed sentence matched at idx N, this one gets idx N-1.
+  for (int k = keyedCount - 2; k >= 0; k--) {
+    const int s = keyed[k], next = keyed[k + 1];
+    if (matchedIdx[s] >= 0) continue;
+    if (matchedIdx[next] > 0) {
+      int idx = matchedIdx[next] - 1;
+      sentenceTranslations[s] = index[idx].translation;
+      matchedIdx[s] = idx;
+      matched++;
+    }
+  }
+  // Forward: if the previous keyed sentence matched at idx N, this one gets idx N+1.
+  for (int k = 1; k < keyedCount; k++) {
+    const int s = keyed[k], prev = keyed[k - 1];
+    if (matchedIdx[s] >= 0) continue;
+    if (matchedIdx[prev] >= 0 && matchedIdx[prev] + 1 < (int)index.size()) {
+      int idx = matchedIdx[prev] + 1;
+      sentenceTranslations[s] = index[idx].translation;
+      matchedIdx[s] = idx;
+      matched++;
+    }
+  }
+
+  LOG_DBG("TIP", "Matched %d/%d sentences (incl gap-fill)", matched, splits.count);
+
+  // 5. Collapse consecutive source sentences sharing one translated sentence into a
+  //    single navigation step (fixes the "same translation shown on each of the merged
+  //    source sentences" bug). Steps drive both navigation and the underline span.
+  stepCount = groupTranslationSteps(sentenceTranslations, steps, MAX_SENTENCES);
+  LOG_DBG("TIP", "Steps: %d translation units (from %d sentences)", stepCount, splits.count);
+}
+
+// ── Sentence bounds and underline ─────────────────────────────────────────────
+
+TooltipOverlay::SentenceBounds TooltipOverlay::findSentenceBounds(const Page& page, const SentenceSpan& span,
+                                                                  int fontId, int xOffset, int yOffset) const {
+  (void)fontId;
+  SentenceBounds bounds = {0, 0, 0};
+  int idx = 0;
+  bool found = false;
+  for (const auto& el : page.elements) {
+    if (el->getTag() != TAG_PageLine) continue;
+    const auto* line = static_cast<const PageLine*>(el.get());
+    const auto& block = line->getBlock();
+    for (uint16_t i = 0; i < block->wordCount(); i++) {
+      if (idx >= span.startWord && idx < span.endWord) {
+        int wx = block->wordXpos(i) + line->xPos + xOffset;
+        int wy = line->yPos + yOffset;
+        if (!found) {
+          bounds.firstLineY = wy;
+          bounds.startX = wx;
+          bounds.endX = wx;
+          found = true;
+        }
+        if (wy == bounds.firstLineY) {
+          if (wx < bounds.startX) bounds.startX = wx;
+          if (wx > bounds.endX) bounds.endX = wx;
+        }
+      }
+      idx++;
+    }
+  }
+  return bounds;
+}
+
+void TooltipOverlay::drawSentenceUnderline(GfxRenderer& renderer, const Page& page, const SentenceSpan& span,
+                                           int fontId, int xOffset, int yOffset) const {
+  int idx = 0, curY = -1, sx = 0, ex = 0;
+  const int ulOff = renderer.getFontAscenderSize(fontId) + 2;
+  for (const auto& el : page.elements) {
+    if (el->getTag() != TAG_PageLine) continue;
+    const auto* line = static_cast<const PageLine*>(el.get());
+    const auto& block = line->getBlock();
+    for (uint16_t i = 0; i < block->wordCount(); i++) {
+      if (idx >= span.startWord && idx < span.endWord) {
+        int wx = block->wordXpos(i) + line->xPos + xOffset;
+        int wy = line->yPos + yOffset;
+        // Width measured with the word's actual style so the underline matches the rendered glyph
+        // advance (the fork masked to font-variant bits; v2's getTextWidth accepts the full Style
+        // and getFont() ignores decoration/translation bits above bit 1).
+        int ww = renderer.getTextWidth(fontId, block->wordText(i), block->wordStyle(i));
+        if (wy != curY) {
+          if (curY >= 0) renderer.drawLine(sx, curY + ulOff, ex, curY + ulOff, true);
+          curY = wy;
+          sx = wx;
+          ex = wx + ww;
+        } else {
+          ex = wx + ww;
+        }
+      }
+      idx++;
+    }
+  }
+  if (curY >= 0) renderer.drawLine(sx, curY + ulOff, ex, curY + ulOff, true);
+}
+
+// ── Tooltip rendering ─────────────────────────────────────────────────────────
+
+static int findLastLineY(const Page& page, const SentenceSpan& span, int yOffset) {
+  int idx = 0, lastY = 0;
+  for (const auto& el : page.elements) {
+    if (el->getTag() != TAG_PageLine) continue;
+    const auto* line = static_cast<const PageLine*>(el.get());
+    const uint16_t n = line->getBlock()->wordCount();
+    for (uint16_t i = 0; i < n; i++) {
+      if (idx >= span.startWord && idx < span.endWord) lastY = line->yPos + yOffset;
+      idx++;
+    }
+  }
+  return lastY;
+}
+
+// Byte length of the UTF-8 code point starting at s[0], clamped to maxLen. Used so a mid-word hard
+// break never splits a multi-byte sequence (which would draw a garbage glyph / fault the decoder).
+static int utf8CharLen(const char* s, int maxLen) {
+  if (maxLen <= 0) return 0;
+  const unsigned char c = static_cast<unsigned char>(s[0]);
+  int n;
+  if ((c & 0x80) == 0)
+    n = 1;
+  else if ((c & 0xE0) == 0xC0)
+    n = 2;
+  else if ((c & 0xF0) == 0xE0)
+    n = 3;
+  else if ((c & 0xF8) == 0xF0)
+    n = 4;
+  else
+    n = 1;  // stray continuation / invalid lead byte — advance one byte
+  return n > maxLen ? maxLen : n;
+}
+
+// Largest UTF-8-safe byte prefix of s[0..len) whose rendered width (measured with the SAME
+// getTextWidth call the draw path uses) is <= avail. Returns 0 if not even one code point fits.
+static int fitPrefixBytes(GfxRenderer& renderer, int fontId, const char* s, int len, int avail) {
+  char buf[512];
+  int fit = 0;
+  int i = 0;
+  while (i < len) {
+    const int cl = utf8CharLen(s + i, len - i);
+    const int cand = i + cl;
+    if (cand > static_cast<int>(sizeof(buf)) - 1) break;
+    memcpy(buf, s, cand);
+    buf[cand] = '\0';
+    if (renderer.getTextWidth(fontId, buf) > avail) break;
+    fit = cand;
+    i = cand;
+  }
+  return fit;
+}
+
+// A single wrapped tooltip line: a [start, len) byte range into the tooltip text. The draw path
+// renders EXACTLY these ranges, and each was accepted by measuring that exact substring — so the
+// wrapped line count and the drawn line count are structurally identical (no height slack needed).
+struct TipLine {
+  const char* start;
+  int len;
+};
+
+// Wrap `text` into lines no wider than `avail` px, measuring each candidate line with
+// renderer.getTextWidth on the EXACT substring that will later be drawn (never word-widths +
+// getSpaceWidth, whose rounding vs. the real space-glyph advance was the old height-estimate bug).
+// A word longer than `avail` on its own is hard-broken mid-word on a UTF-8 boundary — the same clip
+// the draw path then renders. Fills at most `maxLines`; returns the line count produced.
+static int wrapTooltipLines(GfxRenderer& renderer, int fontId, const char* text, int avail, TipLine* out,
+                            int maxLines) {
+  if (avail < 1) avail = 1;
+  char buf[512];
+  int count = 0;
+  const char* p = text;
+  while (*p && count < maxLines) {
+    while (*p == ' ') p++;  // strip leading spaces; lines never begin with a space
+    if (!*p) break;
+    const char* lineStart = p;
+    int lineLen = 0;  // committed bytes on this line, measured from lineStart (no trailing space)
+    while (*p) {
+      const char* wordStart = p;
+      while (*p && *p != ' ') p++;  // p now at end of this word
+      int cand = static_cast<int>(p - lineStart);
+      int measLen = cand < static_cast<int>(sizeof(buf)) - 1 ? cand : static_cast<int>(sizeof(buf)) - 1;
+      memcpy(buf, lineStart, measLen);
+      buf[measLen] = '\0';
+      if (renderer.getTextWidth(fontId, buf) <= avail) {
+        lineLen = cand;         // whole run up to here fits; commit through this word
+        while (*p == ' ') p++;  // consume the separating spaces, then try the next word
+        continue;
+      }
+      if (lineLen > 0) {
+        p = wordStart;  // this word overflows; break the line before it (its spaces already skipped)
+        break;
+      }
+      // First word alone exceeds avail: hard-break it mid-word so the line (and box) can't overflow.
+      const int wordLen = static_cast<int>(p - wordStart);
+      int fit = fitPrefixBytes(renderer, fontId, wordStart, wordLen, avail);
+      if (fit <= 0) fit = utf8CharLen(wordStart, wordLen);  // guarantee forward progress
+      lineLen = fit;
+      p = wordStart + fit;  // remainder wraps onto the next line
+      break;
+    }
+    out[count].start = lineStart;
+    out[count].len = lineLen;
+    count++;
+  }
+  return count;
+}
+
+void TooltipOverlay::render(GfxRenderer& renderer, const Page& page, int fontId, int tooltipFontId, int xOffset,
+                            int yOffset, int viewportWidth, int viewportHeight) {
+  if (currentStepIndex < 0) return;
+
+  preparePage(page);
+
+  // After a back page-turn: land on the LAST step now that steps are populated.
+  if (activateFromEnd) {
+    currentStepIndex = stepCount > 0 ? stepCount - 1 : 0;
+    activateFromEnd = false;
+  }
+
+  // Clamp a stale index — stepCount can shrink relative to the page this index was set on.
+  if (stepCount > 0 && currentStepIndex >= stepCount) currentStepIndex = stepCount - 1;
+
+  // Choose the underline span and the tooltip text for the current step. A step groups one
+  // or more CONSECUTIVE source sentences that share ONE translation (the merged-sentence
+  // case), so the span covers ALL of them (spans are a contiguous partition, so the union is
+  // simply [first.startWord, last.endWord)) and the translation is drawn exactly ONCE.
+  bool dim = false;
+  SentenceSpan span{};
+  const char* text = nullptr;
+  if (stepCount == 0) {
+    // Nothing translated on this page (Option C parity with PageTranslationOverlay): the source still
+    // shows through, so surface the marker over the first source sentence rather than a blank
+    // popup. Never triggers for a correctly-translated book. No sentences at all → nothing to do.
+    if (splits.count == 0) return;
+    span = splits.spans[0];
+    text = tr(STR_NO_TRANSLATION);
+    dim = true;
+  } else {
+    const TooltipStep& st = steps[currentStepIndex];
+    span.startWord = splits.spans[st.firstSentence].startWord;
+    span.endWord = splits.spans[st.lastSentence].endWord;
+    text = sentenceTranslations[st.firstSentence].c_str();
+    if (!text || text[0] == '\0') {  // defensive: a step always carries a non-empty translation
+      text = tr(STR_NO_TRANSLATION);
+      dim = true;
+    }
+  }
+  LOG_DBG("TIP", "Drawing step %d/%d%s: '%.80s'", currentStepIndex, stepCount, dim ? " (marker)" : "", text);
+
+  const int lh = renderer.getLineHeight(fontId);
+  auto bounds = findSentenceBounds(page, span, fontId, xOffset, yOffset);
+  if (bounds.firstLineY == 0 && bounds.startX == 0) return;
+  const int lastY = findLastLineY(page, span, yOffset);
+
+  constexpr int PAD = 6, RAD = 3, GAP = 4;
+  const int maxW = viewportWidth - 2 * PAD;
+  const int tlh = renderer.getLineHeight(tooltipFontId);
+
+  // Exact sizing: wrap ONCE into the concrete line list the draw loop below will render, measuring
+  // each line with the SAME renderer.getTextWidth call the draw uses. Box height is then exactly
+  // lineCount * lineHeight + padding — no "+1" slack line. The old code sized from
+  // ceil(getTextWidth(wholeText) / avail) + 1, a DIFFERENT measurement than the word-by-word draw
+  // (word widths + getSpaceWidth), so it reserved a phantom empty line to hide the mismatch. Wrapping
+  // is done at the FULL-width text area (maxW - 2*PAD): that keeps the SAME line list valid whether
+  // the box is later shrunk to a single line or clamped up/down near a screen edge — the wrap width
+  // never depends on the final tipY/tipW.
+  const int maxAvail = maxW - 2 * PAD;
+  static constexpr int MAX_TIP_LINES = 30;  // exceeds any box that fits within 40% of the tallest viewport
+  TipLine lines[MAX_TIP_LINES];
+  int lineCount = wrapTooltipLines(renderer, tooltipFontId, text, maxAvail, lines, MAX_TIP_LINES);
+  if (lineCount < 1) {
+    // Degenerate (empty / all-whitespace) text — draw a minimal one-line box, never read lines[0]
+    // uninitialized. In practice `text` is a non-blank translation or the STR_NO_TRANSLATION marker.
+    lines[0].start = text;
+    lines[0].len = 0;
+    lineCount = 1;
+  }
+
+  int maxL = (viewportHeight * 4 / 10) / tlh;
+  if (maxL < 1) maxL = 1;
+  const int nLines = lineCount > maxL ? maxL : lineCount;  // clamp tall tooltips; excess text is clipped
+
+  int tipW;
+  if (nLines == 1) {
+    // Single line: shrink the box to that line's real drawn width (measured as it will be drawn).
+    char lb[512];
+    const int cl = std::min(lines[0].len, 511);
+    memcpy(lb, lines[0].start, cl);
+    lb[cl] = '\0';
+    tipW = renderer.getTextWidth(tooltipFontId, lb) + 2 * PAD;
+    if (tipW > maxW) tipW = maxW;
+  } else {
+    tipW = maxW;
+  }
+  const int tipH = nLines * tlh + 2 * PAD;
+
+  int tipX = xOffset + PAD;
+  int tipY = (tipH + GAP <= bounds.firstLineY - yOffset) ? bounds.firstLineY - GAP - tipH : lastY + lh + GAP;
+  if (tipY < yOffset + PAD) tipY = yOffset + PAD;
+  if (tipY + tipH > yOffset + viewportHeight - PAD) tipY = yOffset + viewportHeight - PAD - tipH;
+
+  renderer.fillRect(tipX - 1, tipY - 1, tipW + 2, tipH + 2, false);
+  renderer.drawRoundedRect(tipX, tipY, tipW, tipH, 1, RAD, true);
+
+  // Draw the precomputed lines verbatim — the SAME [start, len) ranges the wrap measured, so what is
+  // drawn is exactly what was sized (the invariant is structural, not padded). The fork dimmed the
+  // "not translated" marker via drawText's grayLevel arg; v2's drawText has no grayLevel parameter
+  // and the panel is monochrome, so the marker renders as ordinary black text (the fork's grayLevel=1
+  // also fell back to black on pure-BW panels).
+  int textY = tipY + PAD;
+  for (int i = 0; i < nLines; i++) {
+    if (lines[i].len > 0) {
+      char lb[512];
+      const int cl = std::min(lines[i].len, 511);
+      memcpy(lb, lines[i].start, cl);
+      lb[cl] = '\0';
+      renderer.drawText(tooltipFontId, tipX + PAD, textY, lb, true, EpdFontFamily::REGULAR);
+    }
+    textY += tlh;
+  }
+
+  drawSentenceUnderline(renderer, page, span, fontId, xOffset, yOffset);
+}
+
+// ── Font helper ───────────────────────────────────────────────────────────────
+//
+// Tooltip text renders in the reader's own family, at the size the Lingua submenu's Translation Size
+// row selects: Same = the body font, Smaller = one step down the family's point-size ladder, so the
+// popup translation reads as a secondary annotation below the source. Adapted to v2's font set
+// (EDSLAB / NOTOSANS + SD card fonts); the fork's family switch offered a wider built-in lineup
+// (Bookerly/EdsLab/Caecilia/GPro), of which v2 ships only EdsLab.
+//
+// Reader size is a point size since 91900484 (CrossPointSettings::fontPointSize), not a
+// SMALL/MEDIUM/LARGE slot, so "one smaller" means the previous entry in the active family's
+// selectable point sizes rather than an enum decrement.
+//
+// The size is read through CrossPointSettings::getTooltipTranslationFontId() — the TOOLTIP's own
+// stored size, not a value shared with the inline modes: the tooltip is composited over a finished
+// page, so its size must not be able to re-break a line of the book (see TRANSLATION_SIZE). It
+// returns 0 both for SIZE_SAME and for a SIZE_SMALLER that cannot be honoured, which is every SD
+// family (the manager keeps exactly ONE reader-size face loaded and SdCardFontSystem::resolveFontId()
+// ignores its pointSize argument by design, so there is no smaller SD face to drop to) and a
+// built-in already at the smallest point size its family ships — which is also why the Lingua row
+// reads Same and refuses to cycle there. Reading the setting here rather than smallerReaderFontId()
+// directly is what makes the row mean something; before the row existed this stepped down
+// unconditionally, which is exactly why tooltipTranslationSize defaults to SIZE_SMALLER.
+//
+// 0 becomes getReaderFontId() — the body font — which also keeps renderOverlayFrame's
+// overlayFontId == fontId fast path (one shared prewarm for page + overlay) intact for SIZE_SAME.
+
+int getTooltipFontId() {
+  const int translationFontId = SETTINGS.getTooltipTranslationFontId();
+  return translationFontId != 0 ? translationFontId : SETTINGS.getReaderFontId();
+}
