@@ -9,8 +9,8 @@ the device or prepare it with the
 [Ebook Translator Calibre plugin](https://github.com/bookfere/Ebook-Translator-Calibre-Plugin),
 then choose how much of each language you want to see.
 
-**Runs on:** ESP32-C3-based Xteink [X4](https://www.xteink.com/products/xteink-x4)
-and [X3](https://www.xteink.com/products/xteink-x3).
+**Runs on:** ESP32-C3-based Xteink [X3](https://www.xteink.com/products/xteink-x3),
+[X4](https://www.xteink.com/products/xteink-x4), and X4 Pro.
 
 <table>
   <tr>
@@ -232,8 +232,9 @@ USB port or browser before assuming the device is locked. Only reach for the unl
 1. Connect your device to your computer via USB-C and wake/unlock the device
 2. Download a `firmware.bin` from the
    [CrossLingua releases page](https://github.com/ed-fruty/crosslingua-reader/releases).
-3. Open https://crosspointreader.com/#flash-tools, select X3 or X4, choose
-   **Custom .bin**, and upload the downloaded firmware.
+3. Open https://crosspointreader.com/#flash-tools, select X3 or X4
+   (**X4 for X4 Pro**), choose **Custom .bin**, and upload the downloaded
+   firmware.
 
 ### Web installer (specific version)
 
@@ -241,7 +242,8 @@ USB port or browser before assuming the device is locked. Only reach for the unl
 2. Download a `firmware.bin` from
    [CrossLingua Releases](https://github.com/ed-fruty/crosslingua-reader/releases),
    a local build, or a continuous integration artifact.
-3. Go to https://crosspointreader.com/#flash-tools, select device (X3 or X4), click "Custom .bin" and upload a `firmware.bin`.
+3. Go to https://crosspointreader.com/#flash-tools, select X3 or X4
+   (**X4 for X4 Pro**), click **Custom .bin**, and upload a `firmware.bin`.
 
 ### Revert to Official Firmware
 
