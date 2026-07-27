@@ -12,15 +12,17 @@
 // plain function pointer is what keeps this library free of an app-level include, exactly as
 // PtLayout keeps it free of the app's display-mode enum.
 
-// One annotation row-set: the translated words to draw above the source line the group's FIRST
-// sentence starts. A "group" is the run of consecutive source sentences that resolve to the same
-// translation (an engine that merged K source sentences into one produces such a run); it gets ONE
-// annotation, so the identical text is never printed K times.
+// One annotation: the translated words belonging to one source sentence group, which
+// renderInterlinear then flows across the annotation strips sitting above that sentence's source
+// lines — one line of translation per line of source. A "group" is the run of consecutive source
+// sentences that resolve to the same translation (an engine that merged K source sentences into one
+// produces such a run); it gets ONE annotation, so the identical text is never printed K times.
 struct InterlinearAnnotation {
   // Index into the source word array as the caller passed it, i.e. PRE-layout and in logical order.
-  // renderInterlinear turns these into forced line breaks (ParsedText::setForcedLineBreaks) so the
-  // sentence begins the line its rows sit above, which is why they must be pre-layout: the pairing
-  // now runs before line breaking, not after it.
+  // renderInterlinear hands these to layout as TRACKED WORDS (ParsedText::setTrackedWords), which
+  // CONSTRAIN NOTHING — the source breaks exactly as an untranslated paragraph would. Layout reports
+  // back the line and the x each one landed on, and that x is where the sentence's translation
+  // starts. They must be pre-layout because the pairing runs before line breaking, not after it.
   uint16_t sourceStartWord;
   uint16_t transStartWord;  // [transStartWord, transEndWord) into the translation word array
   uint16_t transEndWord;    // == transStartWord means "no translation": emit no row

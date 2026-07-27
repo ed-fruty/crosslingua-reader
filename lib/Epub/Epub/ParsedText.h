@@ -13,6 +13,29 @@
 class GfxRenderer;
 
 class ParsedText {
+ public:
+  // Where a PRE-layout token index ended up once the block was broken into lines. Filled 1:1 with
+  // setTrackedWords, in the same order, so a caller can map "the word that opens sentence k" to a
+  // line and an x without re-deriving anything layout already knows exactly.
+  //
+  // The block is laid out with NO knowledge of the tracked indices — they constrain nothing. This is
+  // a pure REPORT, which is what lets PtLayout::Interlinear break its source exactly as
+  // PtLayout::OriginalOnly would and still know where each sentence landed.
+  struct TrackedWordPos {
+    static constexpr uint16_t NOT_PLACED = 0xFFFF;
+    // Ordinal among the lines actually EMITTED. A line dropped to a TextBlock arena OOM does not
+    // count, so this indexes the caller's own line vector directly, with no catch-up arithmetic.
+    uint16_t line = NOT_PLACED;
+    // x within the block's measure at which that token was laid out — the real laid-out value, so it
+    // already carries the first-line indent, the block's alignment and any justification stretch of
+    // the words before it on the line.
+    int16_t x = 0;
+    // The token is the FIRST LOGICAL word of that line. This single bit is what tells a caller
+    // whether the previous tracked span ended on the line before or shares this one with it.
+    bool startsLine = false;
+  };
+
+ private:
   std::vector<std::string> words;
   std::vector<EpdFontFamily::Style> wordStyles;
   std::vector<bool> wordContinues;      // true = word attaches to previous with no break
@@ -32,24 +55,16 @@ class ParsedText {
   std::vector<bool> reorderedNoSpaceBeforeScratch;
   std::vector<bool> reorderedFocusSuffixScratch;
   std::vector<uint16_t> visualOrderScratch;
-  // Word indices (in the CURRENT layout call's PRE-layout index space) that must begin a line.
-  // Ascending, at most INTERLINEAR_MAX_ANNOTATIONS entries. Empty for every layout but
-  // PtLayout::Interlinear, and every path below short-circuits on empty, so an untouched block
-  // breaks byte-for-byte as it did before this member existed.
-  std::vector<uint16_t> forcedBreakBefore;
+  // Word indices (in the CURRENT layout call's PRE-layout index space) whose final resting place the
+  // caller wants reported back. Ascending, at most INTERLINEAR_MAX_ANNOTATIONS entries. Empty for
+  // every layout but PtLayout::Interlinear, and every path below short-circuits on empty, so an
+  // untouched block breaks and costs byte-for-byte what it did before this member existed.
+  std::vector<uint16_t> trackedWords;
+  // Destination for those reports, borrowed for the duration of one layoutAndExtractLines call and
+  // null at every other moment. A member rather than a parameter chain because only extractLine
+  // knows the x, and it is four frames down.
+  std::vector<TrackedWordPos>* trackedOut = nullptr;
 
-  // True when a line break before `idx` is both REQUESTED and ACHIEVABLE.
-  //
-  // Achievability is not a detail: computeLineBreaks refuses to end a line before a continuation
-  // token (the `continuesVec[j + 1]` skip) and computeHyphenatedLineBreaks backtracks off one, so a
-  // forced break on a continuation could never be honoured — bounding the DP by it would leave no
-  // legal line at all and collapse the paragraph into the single-word fallback. Such an entry is
-  // ignored here instead, and the sentence degrades to "annotation above the line that CONTAINS its
-  // start", i.e. exactly the earlier behaviour, for that one sentence.
-  bool isForcedBreakAt(size_t idx) const;
-  // Smallest achievable forced index strictly greater than `i`, or words.size() when there is none.
-  // A line starting at `i` may not extend to or past it.
-  size_t nextForcedBreakAfter(size_t i) const;
   int resolveFirstLineIndent(bool isFirstLine, const GfxRenderer& renderer, int fontId) const;
   std::vector<size_t> computeLineBreaks(const GfxRenderer& renderer, int fontId, int pageWidth,
                                         std::vector<uint16_t>& wordWidths, std::vector<bool>& continuesVec,
@@ -59,7 +74,11 @@ class ParsedText {
                                                   std::vector<bool>& noSpaceBeforeVec);
   bool hyphenateWordAtIndex(size_t wordIndex, int availableWidth, const GfxRenderer& renderer, int fontId,
                             std::vector<uint16_t>& wordWidths, bool allowFallbackBreaks);
-  void extractLine(size_t breakIndex, int pageWidth, const std::vector<uint16_t>& wordWidths,
+  // Returns true when a line was actually handed to processLine; false when the line was DROPPED
+  // (TextBlock arena OOM). `emittedOrdinal` is the index this line will occupy among the emitted
+  // ones, and is what a tracked-word report records — which is why the caller must only advance it
+  // on a true return.
+  bool extractLine(size_t breakIndex, size_t emittedOrdinal, int pageWidth, const std::vector<uint16_t>& wordWidths,
                    const std::vector<bool>& continuesVec, const std::vector<bool>& noSpaceBeforeVec,
                    const std::vector<size_t>& lineBreakIndices,
                    const std::function<void(std::shared_ptr<TextBlock>)>& processLine, const GfxRenderer& renderer,
@@ -115,18 +134,6 @@ class ParsedText {
   bool wordIsFocusSuffixAt(const size_t index) const {
     return index < wordIsFocusSuffix.size() && wordIsFocusSuffix[index];
   }
-  // The first-line indent line 0 of this block was laid out with — literally the value
-  // resolveFirstLineIndent handed extractLine, so a caller that has to line something up with that
-  // line cannot re-derive a subtly different one from the textIndentDefined / extraParagraphSpacing /
-  // three-space-fallback ladder.
-  //
-  // MUST be read AFTER layoutAndExtractLines. isNaturalAlign — and, for a paragraph whose direction
-  // is auto-detected, blockStyle.isRtl — are resolved inside it; before that this returns 0 for every
-  // block. PtLayout::Interlinear reads it between layout and emitting its rows, for exactly that
-  // reason.
-  int firstLineIndent(const GfxRenderer& renderer, const int fontId) const {
-    return resolveFirstLineIndent(true, renderer, fontId);
-  }
   // True when at least one word added to this block starts with an RTL codepoint. Set as words arrive,
   // so it is final once the block is complete and readable before or after layout.
   //
@@ -142,23 +149,26 @@ class ParsedText {
   BlockStyle& getBlockStyle() { return blockStyle; }
   size_t size() const { return words.size(); }
   bool isEmpty() const { return words.empty(); }
-  // Constrain line breaking so each listed word STARTS a line. Indices are into the word stream as
-  // it stands right now, i.e. before layoutAndExtractLines hyphenates and consumes it; the list is
-  // re-based internally whenever hyphenation inserts a remainder word, so post-layout it still
-  // points at the same tokens. Must be ascending. Only PtLayout::Interlinear calls this, to make a
-  // source sentence never begin mid-line so its translation row can sit squarely above it.
+  // Ask layout to REPORT where each listed word ends up. It constrains nothing — the block breaks
+  // exactly as it would with an empty list, which is the whole point: PtLayout::Interlinear needs
+  // its source to flow like any other paragraph and still needs to know which line each sentence
+  // starts on and at what x.
+  //
+  // Indices are into the word stream as it stands right now, i.e. before layoutAndExtractLines
+  // hyphenates and consumes it; the list is re-based internally whenever hyphenation inserts a
+  // remainder word, so it keeps pointing at the same tokens. Must be ascending (extractLine binary
+  // searches it per line).
   //
   // Scoped to ONE layout call: a caller that lays a block out in parts (includeLastLine = false)
   // must set the list again for the next part, since the consumed words are erased and the surviving
   // indices shift down. No caller does that today.
-  void setForcedLineBreaks(std::vector<uint16_t> wordIndices) { forcedBreakBefore = std::move(wordIndices); }
-  // `forcedBreakLineOrdinals`, when non-null, is filled with ONE entry per index passed to
-  // setForcedLineBreaks, in the same order: the 0-based ordinal of the emitted line that index
-  // landed on. For an achievable break that is the line it STARTS; for an ignored one (see
-  // isForcedBreakAt) the line that merely contains it. The strict 1:1 correspondence is what lets
-  // renderInterlinear map annotation k to a line without re-deriving word offsets, so nothing is
+  void setTrackedWords(std::vector<uint16_t> wordIndices) { trackedWords = std::move(wordIndices); }
+  // `trackedOutParam`, when non-null, is filled with ONE entry per index passed to setTrackedWords,
+  // in the same order. An index whose line was dropped (TextBlock arena OOM), or that was never
+  // reached because this was a partial layout, keeps TrackedWordPos::NOT_PLACED. The strict 1:1
+  // correspondence is what lets renderInterlinear map annotation k to a line and an x, so nothing is
   // ever deduplicated or dropped from it.
   void layoutAndExtractLines(const GfxRenderer& renderer, int fontId, uint16_t viewportWidth,
                              const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
-                             bool includeLastLine = true, std::vector<uint16_t>* forcedBreakLineOrdinals = nullptr);
+                             bool includeLastLine = true, std::vector<TrackedWordPos>* trackedOutParam = nullptr);
 };

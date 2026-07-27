@@ -28,16 +28,18 @@ enum class PtLayout : uint8_t {
   TranslationOnly = 2,
   // Original and translation paired into two half-width columns (renderSideBySide).
   SideBySide = 3,
-  // The source flows full-width, but every SENTENCE starts a new line and its translation is emitted
-  // as its own line(s) in a much smaller face directly ABOVE that line, starting at the same x the
-  // line does -- same inset, same alignment, and on the paragraph's first line the same first-line
-  // indent (renderInterlinear). Those rows are ordinary PageLines tagged LineFontRole::Annotation, so
-  // they consume real vertical space and the source text tiles around them -- which is why this
-  // cannot be an overlay composited at view time (Tooltip / Page Translation) and must be a layout of
-  // its own.
+  // The source flows COMPLETELY NORMALLY -- identical breaking, indent and justification to
+  // OriginalOnly -- and every source line gets exactly one small annotation strip directly above it,
+  // so the page reads strictly annotation, source, annotation, source all the way down. A sentence's
+  // translation flows through the strips above its own source lines, one line of it per line of
+  // source, starting at the x its source sentence starts at (renderInterlinear). Strips are ordinary
+  // PageLines tagged LineFontRole::Annotation, so they consume real vertical space and the source
+  // text tiles around them -- which is why this cannot be an overlay composited at view time
+  // (Tooltip / Page Translation) and must be a layout of its own.
   //
-  // Costs roughly +70% pages at the 14pt portrait default, and more for short-sentence prose. Two
-  // multipliers: the page carries a second full rendition of the text at ~57% of the body pitch, and
-  // each sentence leaves about half a line of white space where the next one used to continue.
+  // Costs exactly (bodyLineHeight + annotationLineHeight) / bodyLineHeight, about +57% pages at the
+  // 14pt/8pt portrait default: the page carries a second full rendition of the text at ~57% of the
+  // body pitch and nothing else. It does NOT degrade with short-sentence prose, because no sentence
+  // ends its line early.
   Interlinear = 4,
 };

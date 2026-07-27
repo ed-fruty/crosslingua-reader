@@ -472,8 +472,8 @@ static std::string sliceTranslationForPage(const PageTranslationOverlay::Paragra
 // The paragraph indent the PAGE LAYOUT already baked into this line — never a recomputed or
 // synthesized one. ParsedText::resolveFirstLineIndent() resolves the indent ONCE at layout time
 // (CSS text-indent, or a 3-space-width fallback when Extra Paragraph Spacing is off) and
-// extractLine() seeds the line's first word with it (`xpos = firstLineIndent`, ParsedText.cpp:1315,
-// and 1228 on the bidi-reordered path), so word 0's x IS that indent, in the body font's metrics and
+// extractLine() seeds the line's first word with it (`xpos = firstLineIndent`, ParsedText.cpp:1344,
+// and 1257 on the bidi-reordered path), so word 0's x IS that indent, in the body font's metrics and
 // already in the section cache (the word arena is serialized verbatim). Two properties fall out of
 // reading it rather than deriving it:
 //   • A paragraph that started on an EARLIER page reaches us as a continuation line, which the

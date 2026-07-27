@@ -245,27 +245,35 @@ class ChapterHtmlSlimParser {
   void appendSideBySideNoTranslationMarkerIfUnpaired();
   // Pre-Translation (PtLayout::Interlinear). Same buffering shape as SideBySide --
   // makePagesInterlinearMode holds an original until its translation arrives -- but the pair is
-  // emitted as one full-width flow in which every source SENTENCE starts a new line and its
-  // translation occupies the small rows directly above that line. An unpaired original falls back to
-  // plain makePages() (via flushBufferedOriginal), i.e. no annotation and no marker.
+  // emitted as one full-width flow of STRICTLY ALTERNATING rows: one small annotation strip, one
+  // source line, one strip, one line, all the way down. An unpaired original falls back to plain
+  // makePages() (via flushBufferedOriginal), i.e. no annotation and no marker.
   void makePagesInterlinearMode();
   void renderInterlinear(std::unique_ptr<ParsedText> origBlock, std::unique_ptr<ParsedText> transBlock);
-  // Lay ONE annotation (a group of source sentences sharing a translation) out at the full measure,
-  // appending its rows to `rows`. There is no x anchoring WITHIN a line: the sentence is guaranteed
-  // to start the source line these rows sit above, so that line's own start IS the sentence. What
-  // the rows must still reproduce is where that line itself starts, which is two things:
-  // `sourceAlignment` (a centred source line is not at the margin) and `firstRowIndent`, the
-  // source's first-line indent, which applies only to the rows over source LINE 0.
-  // Emits nothing for an empty translation.
-  void buildAnnotationRows(const InterlinearAnnotation& annotation, const ParsedText& transBlock,
-                           CssTextAlign sourceAlignment, int16_t firstRowIndent, uint16_t measureWidth,
-                           int annotationFont, std::vector<std::shared_ptr<TextBlock>>& rows);
-  // Place one already-laid-out row at currentPageNextY and advance by exactly its own height, which
-  // is what lets two type sizes tile edge to edge (see addLineToPage). `breakIfNeeded` is the
-  // degenerate path only: renderInterlinear normally page-breaks ONCE per source line, before the
-  // group's first row, so an annotation can never be orphaned from its source line.
-  void emitInterlinearRow(const std::shared_ptr<TextBlock>& row, int16_t xPos, int rowHeight, LineFontRole role,
-                          bool breakIfNeeded);
+  // One fragment of translation sitting on one annotation strip. A strip normally carries exactly
+  // one of these; it carries two when a source line holds the tail of one sentence and the head of
+  // the next, which is still ONE strip and one y advance.
+  struct InterlinearRun {
+    std::shared_ptr<TextBlock> row;  // null is legal: the strip is reserved and nothing is drawn
+    int16_t x = 0;                   // EXTRA offset added to the block's left inset at placement
+  };
+  // Lay ONE annotation (a group of source sentences sharing a translation) out into at most `slots`
+  // rows and append them to `chunks`. `headX` is the x its source sentence starts at and becomes the
+  // block's first-line indent, so chunk 0 occupies "from there to the right margin" and chunks 1..N
+  // the full measure -- geometrically congruent with the source sentence's own lines. Rows past
+  // `slots` are discarded (see the truncation note in renderInterlinear). Emits nothing for an empty
+  // translation.
+  void buildAnnotationChunks(const InterlinearAnnotation& annotation, const ParsedText& transBlock, int16_t headX,
+                             uint16_t measureWidth, int annotationFont, size_t slots, bool rtlTarget,
+                             std::vector<std::shared_ptr<TextBlock>>& chunks);
+  // Place one already-laid-out row at an absolute y. No page-break test and no y advance -- both
+  // belong to the pair, not to a row (see emitInterlinearPair).
+  void placeInterlinearRow(const std::shared_ptr<TextBlock>& row, int16_t xPos, int16_t yPos, LineFontRole role);
+  // Emit ONE annotation strip plus ONE source line as an atomic, fixed-height group: the strip is
+  // reserved whether or not anything is drawn on it, so the page keeps a dead-even
+  // annotation/source/annotation/source pitch and no source line ever follows another directly.
+  void emitInterlinearPair(const std::vector<InterlinearRun>& runs, const std::shared_ptr<TextBlock>& srcLine,
+                           int stripHeight, int srcRowHeight, int16_t leftInset);
   static EpdFontFamily::Style fontStyleForTextDecoration(CssTextDecoration decoration);
   static void applyDirectionToEntry(StyleStackEntry& entry, const CssStyle& css);
   static void applyTextDecorationToEntry(StyleStackEntry& entry, const CssStyle& css);

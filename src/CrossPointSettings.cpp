@@ -443,13 +443,15 @@ bool CrossPointSettings::interlinearAnnotationScriptSupported() const {
   // is the intended v1 degradation, and it is the ONLY thing this predicate does -- it is a face
   // decision, not a suppression.
   //
-  // Hebrew/Arabic/Persian are here for GLYPH COVERAGE alone, like every other entry. They used to
-  // carry a second justification -- an RTL row could not be x-anchored over an LTR source sentence --
-  // but that argument died with the anchoring: no annotation row is anchored at all any more, LTR or
-  // RTL. Every row is laid out at the full measure on its own natural margin, directly above the line
-  // its sentence starts, so an RTL target reads flush right and is no worse placed than an LTR one.
-  // See buildAnnotationRows in lib/Epub/Epub/parsers/ChapterHtmlSlimParser.cpp and the "Interlinear
-  // line breaking" section of docs/file-formats.md.
+  // Hebrew/Arabic/Persian are here for GLYPH COVERAGE alone, like every other entry -- but note that
+  // an RTL TARGET is also the one case where sentence sync is deliberately given up. An LTR
+  // translation starts at the x its source sentence starts at (the tracked-word report); an RTL one
+  // is flipped onto its own natural margin by extractLine and measured against (measure - indent), so
+  // a positive indent would push it backwards, away from its sentence. buildAnnotationChunks drops
+  // the indent for those targets: the strip is still exactly one per source line and still directly
+  // above it, it is simply flush right rather than synced sentence by sentence. See
+  // buildAnnotationChunks in lib/Epub/Epub/parsers/ChapterHtmlSlimParser.cpp and the "Interlinear
+  // line parity" section of docs/file-formats.md.
   //
   // Listed by BCP-47 code rather than by table index so the list survives LANGUAGES[] being extended;
   // a language added there is treated as supported, which is right for the Latin/Cyrillic ones that

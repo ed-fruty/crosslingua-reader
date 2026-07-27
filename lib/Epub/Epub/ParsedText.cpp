@@ -490,40 +490,6 @@ void ParsedText::ensureRubyCapacity() {
   }
 }
 
-bool ParsedText::isForcedBreakAt(const size_t idx) const {
-  // Empty is the overwhelmingly common case (every layout but Interlinear) — leave before touching
-  // anything else so the added cost on the normal path is one integer test.
-  if (forcedBreakBefore.empty() || idx == 0 || idx >= words.size()) {
-    return false;
-  }
-  if (idx < wordContinues.size() && wordContinues[idx]) {
-    return false;  // unachievable — see the header comment
-  }
-  return std::binary_search(forcedBreakBefore.begin(), forcedBreakBefore.end(), idx,
-                            [](const size_t a, const size_t b) { return a < b; });
-}
-
-size_t ParsedText::nextForcedBreakAfter(const size_t i) const {
-  if (forcedBreakBefore.empty()) {
-    return words.size();
-  }
-  // Heterogeneous compare (size_t probe against uint16_t elements) so a paragraph longer than
-  // 65535 tokens cannot wrap the probe around and match the wrong entry.
-  auto it = std::upper_bound(forcedBreakBefore.begin(), forcedBreakBefore.end(), i,
-                             [](const size_t probe, const uint16_t element) { return probe < element; });
-  for (; it != forcedBreakBefore.end(); ++it) {
-    const size_t idx = *it;
-    if (idx >= words.size()) {
-      break;  // ascending, so nothing after this is in range either
-    }
-    if (idx == 0 || (idx < wordContinues.size() && wordContinues[idx])) {
-      continue;  // unachievable — skip rather than bound the line at it
-    }
-    return idx;
-  }
-  return words.size();
-}
-
 int ParsedText::resolveFirstLineIndent(const bool isFirstLine, const GfxRenderer& renderer, const int fontId) const {
   if (!isFirstLine || !isNaturalAlign) {
     return 0;
@@ -542,13 +508,15 @@ int ParsedText::resolveFirstLineIndent(const bool isFirstLine, const GfxRenderer
 // Consumes data to minimize memory usage
 void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fontId, const uint16_t viewportWidth,
                                        const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
-                                       const bool includeLastLine,
-                                       std::vector<uint16_t>* const forcedBreakLineOrdinals) {
-  if (forcedBreakLineOrdinals) {
-    forcedBreakLineOrdinals->clear();
-    forcedBreakLineOrdinals->reserve(forcedBreakBefore.size());
+                                       const bool includeLastLine, std::vector<TrackedWordPos>* const trackedOutParam) {
+  // Borrow the report vector for this call only (extractLine writes through it) and pre-fill it 1:1
+  // with the tracked list, so an index whose line is dropped or never reached stays NOT_PLACED.
+  trackedOut = trackedOutParam;
+  if (trackedOut) {
+    trackedOut->assign(trackedWords.size(), TrackedWordPos{});
   }
   if (words.empty()) {
+    trackedOut = nullptr;
     return;
   }
 
@@ -599,26 +567,18 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
   }
   const size_t lineCount = includeLastLine ? lineBreakIndices.size() : lineBreakIndices.size() - 1;
 
-  // Resolve each requested break to the line it ended up on, BEFORE the words are consumed below.
-  // lineBreakIndices[k] is the END (exclusive) of line k, so the first k whose end is past a given
-  // index is the line holding it — which, for an achievable break, is the line it starts.
-  // Walked over the FULL index array rather than lineCount so the 1:1 correspondence with the input
-  // survives a partial layout (includeLastLine = false); an ordinal past the emitted lines simply
-  // never matches in the caller's drain loop.
-  if (forcedBreakLineOrdinals && !forcedBreakBefore.empty()) {
-    size_t cursor = 0;
-    for (size_t k = 0; k < lineBreakIndices.size() && cursor < forcedBreakBefore.size(); ++k) {
-      while (cursor < forcedBreakBefore.size() && forcedBreakBefore[cursor] < lineBreakIndices[k]) {
-        forcedBreakLineOrdinals->push_back(static_cast<uint16_t>(k));
-        ++cursor;
-      }
+  // `emitted` counts only the lines that actually reached processLine, and is what a tracked word
+  // records as its line. Counting emitted lines rather than loop iterations is what makes that
+  // ordinal a correct index into the CALLER's line vector even when extractLine drops a line to a
+  // TextBlock arena OOM.
+  size_t emitted = 0;
+  for (size_t i = 0; i < lineCount; ++i) {
+    if (extractLine(i, emitted, pageWidth, wordWidths, wordContinues, wordNoSpaceBefore, lineBreakIndices, processLine,
+                    renderer, fontId)) {
+      ++emitted;
     }
   }
-
-  for (size_t i = 0; i < lineCount; ++i) {
-    extractLine(i, pageWidth, wordWidths, wordContinues, wordNoSpaceBefore, lineBreakIndices, processLine, renderer,
-                fontId);
-  }
+  trackedOut = nullptr;
 
   // Remove consumed words so size() reflects only remaining words
   if (lineCount > 0) {
@@ -782,12 +742,7 @@ std::vector<size_t> ParsedText::computeLineBreaks(const GfxRenderer& renderer, c
     // First line has reduced width due to text-indent
     const int effectivePageWidth = i == 0 ? pageWidth - firstLineIndent : pageWidth;
 
-    // THE FORCED-BREAK CONSTRAINT. A line starting at i may not reach `limit`, so `limit` always
-    // starts a line: every line that begins before it must end before it, and the recursion carries
-    // the invariant down. With no forced breaks this is totalWordCount and the loop is unchanged.
-    const size_t limit = nextForcedBreakAfter(i);
-
-    for (size_t j = i; j < limit; ++j) {
+    for (size_t j = i; j < totalWordCount; ++j) {
       // Add space before word j, unless it's the first word on the line or a continuation
       int gap = 0;
       if (j > static_cast<size_t>(i) && noSpaceBeforeVec[j]) {
@@ -889,14 +844,7 @@ std::vector<size_t> ParsedText::computeLineBreaks(const GfxRenderer& renderer, c
       }
 
       int cost;
-      if (j == totalWordCount - 1 || j + 1 == limit) {
-        // Last line of the paragraph, or (Interlinear) the last line of a forced-break run.
-        //
-        // The zero is load-bearing, not cosmetic. The DP minimises the SUM of squared leftover
-        // space, so a sentence that must end short would otherwise have that shortfall spread
-        // backwards over all of its lines, leaving every one of them loose. Charging nothing for a
-        // sentence's final line is the same rule the paragraph's final line already gets, and it
-        // makes each forced-break run break as if it were its own paragraph.
+      if (j == totalWordCount - 1) {
         cost = 0;
       } else {
         const int remainingSpace = effectivePageWidth - currlen;
@@ -969,13 +917,6 @@ std::vector<size_t> ParsedText::computeHyphenatedLineBreaks(const GfxRenderer& r
 
     // Consume as many words as possible for current line, splitting when prefixes fit
     while (currentIndex < wordWidths.size()) {
-      // Forced sentence start (Interlinear): end the line here even though the word would fit. Never
-      // fires on the line's own first word, so every line still carries at least one word. The
-      // continuation backtrack below cannot step past it either, since a continuation token is never
-      // an achievable forced break.
-      if (currentIndex != lineStart && isForcedBreakAt(currentIndex)) {
-        break;
-      }
       const bool isFirstWord = currentIndex == lineStart;
       int spacing = 0;
       if (!isFirstWord && noSpaceBeforeVec[currentIndex]) {
@@ -1118,15 +1059,15 @@ bool ParsedText::hyphenateWordAtIndex(const size_t wordIndex, const int availabl
   wordContinues.insert(wordContinues.begin() + wordIndex + 1, false);
   wordNoSpaceBefore.insert(wordNoSpaceBefore.begin() + wordIndex + 1, false);
 
-  // Re-base the forced-break list over the token that was just inserted. This is the ONLY place
+  // Re-base the tracked-word list over the token that was just inserted. This is the ONLY place
   // either line breaker adds a word — the DP's oversized-word pre-pass and the greedy loop both come
   // through here — so one shift keeps Interlinear's sentence starts pointing at the right tokens for
-  // the rest of the layout. Adding 1 to a suffix of an ascending list leaves it ascending, so the
-  // binary searches above stay valid. `> wordIndex` and not `>=`: a break requested BEFORE the word
-  // being split still belongs before its prefix.
-  for (auto& forced : forcedBreakBefore) {
-    if (forced > wordIndex) {
-      ++forced;
+  // the rest of the layout. Adding 1 to a suffix of an ascending list leaves it ascending, so
+  // extractLine's binary search stays valid. `> wordIndex` and not `>=`: a sentence that STARTS at
+  // the word being split still starts at its prefix.
+  for (auto& tracked : trackedWords) {
+    if (tracked > wordIndex) {
+      ++tracked;
     }
   }
 
@@ -1137,9 +1078,9 @@ bool ParsedText::hyphenateWordAtIndex(const size_t wordIndex, const int availabl
   return true;
 }
 
-void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const std::vector<uint16_t>& wordWidths,
-                             const std::vector<bool>& continuesVec, const std::vector<bool>& noSpaceBeforeVec,
-                             const std::vector<size_t>& lineBreakIndices,
+bool ParsedText::extractLine(const size_t breakIndex, const size_t emittedOrdinal, const int pageWidth,
+                             const std::vector<uint16_t>& wordWidths, const std::vector<bool>& continuesVec,
+                             const std::vector<bool>& noSpaceBeforeVec, const std::vector<size_t>& lineBreakIndices,
                              const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
                              const GfxRenderer& renderer, const int fontId) {
   const size_t lineBreak = lineBreakIndices[breakIndex];
@@ -1204,12 +1145,7 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
 
   // Calculate spacing (account for indent reducing effective page width on first line)
   const int effectivePageWidth = pageWidth - firstLineIndent;
-  // The paragraph's last line is never justified, and neither is the last line of a forced-break run
-  // (Interlinear): `lineBreak` is where the NEXT line starts, so a forced break there means this
-  // line ends a sentence. Without this the ~half line a sentence leaves behind would be stretched to
-  // the full measure with gaping word spaces, which reads far worse than the ragged edge. Named for
-  // what it does rather than for the paragraph rule, because it is now two rules.
-  const bool suppressJustify = breakIndex == lineBreakIndices.size() - 1 || isForcedBreakAt(lineBreak);
+  const bool isLastLine = breakIndex == lineBreakIndices.size() - 1;
 
   // For RTL, implicit/default Left alignment becomes Right alignment.
   // Explicit text-align:left must remain left for CSS correctness.
@@ -1220,7 +1156,7 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
 
   // For justified text, compute per-gap extra to distribute remaining space evenly
   const int spareSpace = effectivePageWidth - lineWordWidthSum - totalNaturalGaps;
-  const int justifyExtra = (effectiveAlignment == CssTextAlign::Justify && !suppressJustify)
+  const int justifyExtra = (effectiveAlignment == CssTextAlign::Justify && !isLastLine)
                                ? computeJustifyExtra(spareSpace, actualGapCount)
                                : 0;
 
@@ -1301,11 +1237,11 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
     }
 
     const int reorderedSpare = effectivePageWidth - reorderedWordWidthSum - reorderedNaturalGaps;
-    const int reorderedJustifyExtra = (effectiveAlignment == CssTextAlign::Justify && !suppressJustify)
+    const int reorderedJustifyExtra = (effectiveAlignment == CssTextAlign::Justify && !isLastLine)
                                           ? computeJustifyExtra(reorderedSpare, reorderedGapCount)
                                           : 0;
 
-    const int justifyContribution = (effectiveAlignment == CssTextAlign::Justify && !suppressJustify)
+    const int justifyContribution = (effectiveAlignment == CssTextAlign::Justify && !isLastLine)
                                         ? reorderedJustifyExtra * static_cast<int>(reorderedGapCount)
                                         : 0;
     const int contentWidth = reorderedWordWidthSum + reorderedNaturalGaps + justifyContribution;
@@ -1340,7 +1276,7 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
         // no-break space must not receive justifyExtra, or the line over-stretches by one
         // gap and the last word is pushed past the right margin (issue #2185).
         if (wordIdx > 0 && reorderedWordsScratch[wordIdx] == " " && reorderedContinuesScratch[wordIdx] &&
-            effectiveAlignment == CssTextAlign::Justify && !suppressJustify) {
+            effectiveAlignment == CssTextAlign::Justify && !isLastLine) {
           advance += reorderedJustifyExtra;
         }
         xpos += advance;
@@ -1350,7 +1286,7 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
                               : renderer.getSpaceAdvance(fontId, lastCodepoint(reorderedWordsScratch[wordIdx]),
                                                          firstCodepoint(reorderedWordsScratch[wordIdx + 1]),
                                                          reorderedStylesScratch[wordIdx]);
-        if (effectiveAlignment == CssTextAlign::Justify && !suppressJustify) {
+        if (effectiveAlignment == CssTextAlign::Justify && !isLastLine) {
           gap += reorderedJustifyExtra;
         }
         xpos += gap;
@@ -1383,7 +1319,7 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
                                             firstCodepoint(lineWords[wordIdx + 1]), lineWordStyles[wordIdx]);
           // wordIdx > 0: see the LTR branch — a leading no-break space is not a justifiable gap.
           if (wordIdx > 0 && lineWords[wordIdx] == " " && continuesVec[lastBreakAt + wordIdx] &&
-              effectiveAlignment == CssTextAlign::Justify && !suppressJustify) {
+              effectiveAlignment == CssTextAlign::Justify && !isLastLine) {
             advance += justifyExtra;
           }
           xpos -= advance;
@@ -1397,7 +1333,7 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
                       : renderer.getSpaceAdvance(fontId, lastCodepoint(lineWords[wordIdx]),
                                                  firstCodepoint(lineWords[wordIdx + 1]), lineWordStyles[wordIdx]);
           }
-          if (wordIdx + 1 < lineWordCount && effectiveAlignment == CssTextAlign::Justify && !suppressJustify) {
+          if (wordIdx + 1 < lineWordCount && effectiveAlignment == CssTextAlign::Justify && !isLastLine) {
             gap += justifyExtra;
           }
           xpos -= gap;
@@ -1424,7 +1360,7 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
           // no-break space must not receive justifyExtra, or the line over-stretches by one
           // gap and the last word is pushed past the right margin (issue #2185).
           if (wordIdx > 0 && lineWords[wordIdx] == " " && continuesVec[lastBreakAt + wordIdx] &&
-              effectiveAlignment == CssTextAlign::Justify && !suppressJustify) {
+              effectiveAlignment == CssTextAlign::Justify && !isLastLine) {
             advance += justifyExtra;
           }
           xpos += advance;
@@ -1438,7 +1374,7 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
                       : renderer.getSpaceAdvance(fontId, lastCodepoint(lineWords[wordIdx]),
                                                  firstCodepoint(lineWords[wordIdx + 1]), lineWordStyles[wordIdx]);
           }
-          if (wordIdx + 1 < lineWordCount && effectiveAlignment == CssTextAlign::Justify && !suppressJustify) {
+          if (wordIdx + 1 < lineWordCount && effectiveAlignment == CssTextAlign::Justify && !isLastLine) {
             gap += justifyExtra;
           }
           xpos += wordWidths[lastBreakAt + wordIdx] + gap;
@@ -1449,6 +1385,42 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
 
   const auto isFocusSuffixAt = [&](const size_t idx) {
     return willReorder ? reorderedFocusSuffixScratch[idx] : wordIsFocusSuffix[lastBreakAt + idx];
+  };
+
+  // TRACKED WORDS. Report every tracked index that fell on THIS line, reading the x straight out of
+  // the table the positioning loops above just built — the only moment in the whole pipeline where a
+  // token index and its final x are both in hand. Called only after the line's TextBlock is known
+  // valid, so a dropped line neither consumes an ordinal nor claims a tracked word.
+  //
+  // Empty in every layout but PtLayout::Interlinear, and the null test is the first thing checked,
+  // so this costs one pointer compare per line for everyone else.
+  const auto recordTrackedWords = [&]() {
+    if (trackedOut == nullptr || trackedWords.empty()) return;
+    // Heterogeneous compare (uint16_t elements against a size_t probe) so a paragraph longer than
+    // 65535 tokens cannot wrap the probe around and match the wrong entry.
+    auto it = std::lower_bound(trackedWords.begin(), trackedWords.end(), lastBreakAt,
+                               [](const uint16_t element, const size_t probe) { return element < probe; });
+    for (; it != trackedWords.end() && static_cast<size_t>(*it) < lineBreak; ++it) {
+      const size_t logical = static_cast<size_t>(*it) - lastBreakAt;
+      // The x table is in VISUAL order, so an RTL line needs the inverse permutation. Dead code
+      // under Interlinear (renderInterlinear refuses to annotate a block that reorders) but present
+      // so the API is not a trap for the next caller.
+      size_t slot = logical;
+      if (willReorder) {
+        slot = visualOrderScratch.size();
+        for (size_t v = 0; v < visualOrderScratch.size(); ++v) {
+          if (visualOrderScratch[v] == logical) {
+            slot = v;
+            break;
+          }
+        }
+      }
+      if (slot >= lineXPos.size()) continue;
+      TrackedWordPos& out = (*trackedOut)[static_cast<size_t>(it - trackedWords.begin())];
+      out.line = static_cast<uint16_t>(emittedOrdinal);
+      out.x = lineXPos[slot];
+      out.startsLine = logical == 0;
+    }
   };
 
   // Fast path: when no word on this line was split for focus reading, skip the merge work
@@ -1468,10 +1440,11 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
                                              std::vector<uint16_t>{}, blockStyle, std::move(lineRubyTexts));
     if (!block->valid()) {
       LOG_ERR("PTX", "Dropping line: TextBlock arena allocation failed");
-      return;
+      return false;
     }
+    recordTrackedWords();
     processLine(std::move(block));
-    return;
+    return true;
   }
 
   // Slow path: merge focus suffix tokens back into their preceding word entry so each
@@ -1522,7 +1495,9 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
                                            std::move(outRubyTexts));
   if (!block->valid()) {
     LOG_ERR("PTX", "Dropping line: TextBlock arena allocation failed");
-    return;
+    return false;
   }
+  recordTrackedWords();
   processLine(std::move(block));
+  return true;
 }
