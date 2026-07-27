@@ -288,7 +288,11 @@ bool ChapterHtmlSlimParser::wordIsFiltered() const {
 //   TranslationOnly  the translation IS the page's primary text -- shrinking it would shrink the
 //                  whole chapter, so it stays Body.
 //   SideBySide     both columns are the same face by design (a shrunken column would defeat the
-//                  pairing), so neither is tagged; renderSideBySide leaves both at Body.
+//                  pairing), so nothing that reaches THIS function is tagged. The paired path does
+//                  tag its translation column LineFontRole::Translation, but for COLOUR, not for a
+//                  font — the translation slot is 0 under this mode, so the role resolves back to
+//                  the body font (see renderSideBySide). Only the soft-flush escape reaches here
+//                  under SideBySide, and it is main-flow text: Body.
 //   Interlinear    the translated text does NOT flow inline at all: renderInterlinear re-emits it
 //                  into its own small rows tagged LineFontRole::Annotation, which resolve through the
 //                  annotation slot instead. Source lines therefore stay Body. The translated block
@@ -1988,11 +1992,11 @@ void ChapterHtmlSlimParser::makePagesTableMode() {
     // Translation paragraph: pair it beside the buffered original if one is waiting, otherwise
     // fall back to a full-width layout (a translation with no preceding original — unusual).
     if (bufferedOriginalBlock) {
-      // renderSideBySide drains against the LEFT column, i.e. the buffered original, so that block's
+      // renderSideBySide drains against the SOURCE column, i.e. the buffered original, so that block's
       // ledger is the one that must be installed while it runs. A sidecar translation cannot itself
       // carry an anchor (see the drain comment there), but a book whose OWN markup marks a paragraph
       // with a differing lang= can, and its indices restart from a base of their own — parking them
-      // keeps them out of the left column's drain, and the ledger swap also pins the word BASE, which
+      // keeps them out of the source column's drain, and the ledger swap also pins the word BASE, which
       // is otherwise whatever the translation block left behind if it was large enough to soft-flush.
       FootnoteLedger parkedFootnotes = adoptBufferedFootnoteLedger();
       renderSideBySide(std::move(bufferedOriginalBlock), std::move(currentTextBlock));
@@ -2051,49 +2055,64 @@ void ChapterHtmlSlimParser::flushBufferedOriginal() {
   currentBlockIsTranslated = savedIsTranslated;
 }
 
-// Pre-Translation (SideBySide, mode 5): lay an original (left) and its paired translation (right)
-// into two half-width columns, emitted as lockstep PageLine rows — left at xPos=0, right at
-// rightColX, both sharing one yPos and advancing one lineHeight per row. Both columns stamp the
-// original paragraph's index (bufferedOriginalParagraphIdx) so the Page Translation overlay's line->paragraph
-// mapping still resolves. RTL is handled per-word inside each half-width line by
-// layoutAndExtractLines; the columns themselves are never mirrored (original always left).
-void ChapterHtmlSlimParser::renderSideBySide(std::unique_ptr<ParsedText> leftBlock,
-                                             std::unique_ptr<ParsedText> rightBlock) {
-  if (!leftBlock || !rightBlock) return;
+// Pre-Translation (SideBySide, mode 5): lay a SOURCE block and its paired TRANSLATION block into
+// two half-width columns, emitted as lockstep PageLine rows sharing one yPos and advancing one
+// lineHeight per row. Both columns stamp the original paragraph's index
+// (bufferedOriginalParagraphIdx) so the Page Translation overlay's line->paragraph mapping still
+// resolves. RTL is handled per-word inside each half-width line by layoutAndExtractLines.
+//
+// SOURCE vs LEFT: today the source is the physically left column and the translation the right one,
+// but the two are NOT the same thing and the code below never treats them as such. Everything
+// keyed to the content — the footnote drain, the block style, the paragraph index — follows the
+// SOURCE stream by name; only sourceColX / transColX are physical. A future column-order setting
+// then only has to swap those two x values.
+void ChapterHtmlSlimParser::renderSideBySide(std::unique_ptr<ParsedText> sourceBlock,
+                                             std::unique_ptr<ParsedText> transBlock) {
+  if (!sourceBlock || !transBlock) return;
 
   if (!currentPage) {
     currentPage.reset(new Page());
     currentPageNextY = 0;
   }
 
-  // Both columns are laid out AND drawn in the body font: the pairing is what distinguishes the two
+  // Both columns are laid out AND drawn in the body FONT: the pairing is what distinguishes the two
   // languages here, and shrinking one column would break the lockstep row geometry this loop relies
-  // on (one shared yPos and one shared advance per row). So no line here is tagged -- PageLine's
-  // fontRole default (Body) is deliberate, and currentLineRole() returns Body under SideBySide to
-  // match. See currentLineRole().
+  // on (one shared yPos and one shared advance per row). The translation column is nonetheless
+  // tagged LineFontRole::Translation below -- the role is what carries the COLOUR sub-setting, and
+  // it costs nothing in fonts: readerPageFontSet()'s translation slot is 0 under this mode
+  // (getInterleavedTranslationFontId is gated to Interleaved), which PageFontSet maps back to the
+  // body font. currentLineRole() still answers Body under SideBySide, and must: it serves the main
+  // flow, where a translated block only ever lands via the soft-flush escape, not via this pairing.
   const int lineHeight = renderer.getLineHeight(fontId) * lineCompression;
   const uint16_t gapWidth = static_cast<uint16_t>(viewportWidth * 0.04f);
+  // Equal columns, measured identically -- which is exactly why the source/translation order is a
+  // matter of x only and can never move a line break.
   const uint16_t colWidth = static_cast<uint16_t>((viewportWidth - gapWidth) / 2);
-  const int16_t rightColX = static_cast<int16_t>(colWidth + gapWidth);
+  // The two column origins, named by CONTENT and not by side. Today the source is the near column
+  // and the translation the far one; a future column-order setting swaps exactly these two values
+  // and nothing else in this function has to change.
+  const int16_t sourceColX = 0;
+  const int16_t transColX = static_cast<int16_t>(colWidth + gapWidth);
 
   // Lay each column out at half width into its own line vector. Paragraphs are short (one block
   // each), so a small reserve avoids the first few reallocs without over-committing DRAM.
-  std::vector<std::shared_ptr<TextBlock>> leftLines;
-  std::vector<std::shared_ptr<TextBlock>> rightLines;
-  leftLines.reserve(8);
-  rightLines.reserve(8);
-  leftBlock->layoutAndExtractLines(renderer, fontId, colWidth,
-                                   [&leftLines](const std::shared_ptr<TextBlock>& line) { leftLines.push_back(line); });
-  rightBlock->layoutAndExtractLines(renderer, fontId, colWidth, [&rightLines](const std::shared_ptr<TextBlock>& line) {
-    rightLines.push_back(line);
+  std::vector<std::shared_ptr<TextBlock>> sourceLines;
+  std::vector<std::shared_ptr<TextBlock>> transLines;
+  sourceLines.reserve(8);
+  transLines.reserve(8);
+  sourceBlock->layoutAndExtractLines(
+      renderer, fontId, colWidth,
+      [&sourceLines](const std::shared_ptr<TextBlock>& line) { sourceLines.push_back(line); });
+  transBlock->layoutAndExtractLines(renderer, fontId, colWidth, [&transLines](const std::shared_ptr<TextBlock>& line) {
+    transLines.push_back(line);
   });
 
-  // Top spacing comes from the original (left) block.
-  const BlockStyle& bs = leftBlock->getBlockStyle();
+  // Top spacing comes from the SOURCE block (vertical, so order-invariant).
+  const BlockStyle& bs = sourceBlock->getBlockStyle();
   if (bs.marginTop > 0) currentPageNextY += bs.marginTop;
   if (bs.paddingTop > 0) currentPageNextY += bs.paddingTop;
 
-  const size_t maxLines = std::max(leftLines.size(), rightLines.size());
+  const size_t maxLines = std::max(sourceLines.size(), transLines.size());
   for (size_t i = 0; i < maxLines; i++) {
     // Page-break check: v2 uses the 3-arg completePageFn + explicit page counter.
     if (currentPageNextY + lineHeight > viewportHeight) {
@@ -2110,21 +2129,21 @@ void ChapterHtmlSlimParser::renderSideBySide(std::unique_ptr<ParsedText> leftBlo
     // the next unpaired paragraph (the end-of-block net, flushPendingFootnotesToCurrentPage) or never
     // delivered at all, since finishParse does not drain it.
     //
-    // LEFT (original) column only. The right column is the translation, which the sidecar writes as a
-    // fresh block element holding nothing but the ESCAPED plain text of the translation
-    // (TranslatingHtmlRewriter's write-out loop, via appendEscaped — '<' becomes "&lt;"), so it carries
-    // no <a epub:type="noteref"> and can never push a pending footnote, which is why one counter over
-    // the left column's lines is the whole story here.
+    // SOURCE column only -- semantically the source, not "the left one". The translation column is
+    // written by the sidecar as a fresh block element holding nothing but the ESCAPED plain text of
+    // the translation (TranslatingHtmlRewriter's write-out loop, via appendEscaped — '<' becomes
+    // "&lt;"), so it carries no <a epub:type="noteref"> and can never push a pending footnote, which
+    // is why one counter over the SOURCE column's lines is the whole story here.
     //
-    // The pending indices and this counter share the LEFT block's base because the caller installed
+    // The pending indices and this counter share the SOURCE block's base because the caller installed
     // that block's ledger (adoptBufferedFootnoteLedger) before calling: both the entries and the base
     // below are the buffered original's own, and the in-flight block's are parked out of reach. Relying
     // instead on "startNewTextBlock zeroed the counter and nothing advances it" was not sound — the soft
     // flush (:1452) advances it for any block over 750 words (320 with embedded CSS), and the entries of
     // an as-yet-unlaid block sat in the same list. The pre-layout anchor index vs post-layout
     // wordCount() mismatch is addLineToPage's own approximation, kept identical here.
-    if (i < leftLines.size()) {
-      wordsExtractedInBlock += leftLines[i]->wordCount();
+    if (i < sourceLines.size()) {
+      wordsExtractedInBlock += sourceLines[i]->wordCount();
       auto footnoteIt = pendingFootnotes.begin();
       while (footnoteIt != pendingFootnotes.end() && footnoteIt->first <= wordsExtractedInBlock) {
         currentPage->addFootnote(footnoteIt->second.number, footnoteIt->second.href);
@@ -2132,9 +2151,11 @@ void ChapterHtmlSlimParser::renderSideBySide(std::unique_ptr<ParsedText> leftBlo
       }
       pendingFootnotes.erase(pendingFootnotes.begin(), footnoteIt);
 
-      auto leftLine = std::make_shared<PageLine>(leftLines[i], 0, currentPageNextY);
-      leftLine->paragraphIdx = bufferedOriginalParagraphIdx;
-      currentPage->elements.push_back(std::move(leftLine));
+      auto sourceLine = std::make_shared<PageLine>(sourceLines[i], sourceColX, currentPageNextY);
+      sourceLine->paragraphIdx = bufferedOriginalParagraphIdx;
+      // fontRole stays Body: this is the book's own text, and it must never take the translation
+      // colour.
+      currentPage->elements.push_back(std::move(sourceLine));
       // The page owns this line now (PageLine's ctor takes the shared_ptr BY VALUE and moves it into
       // its member, so the copy made above is the page's own reference), so release ours instead of
       // pinning every line of BOTH columns until the call returns. Nothing below reads an earlier
@@ -2143,13 +2164,20 @@ void ChapterHtmlSlimParser::renderSideBySide(std::unique_ptr<ParsedText> leftBlo
       // TextBlocks, freed as onPageComplete serializes each page -- for a pair long enough to span
       // several pages, instead of holding object + arena + control block for every line of both
       // columns at once on top of the page being built.
-      leftLines[i].reset();
+      sourceLines[i].reset();
     }
-    if (i < rightLines.size()) {
-      auto rightLine = std::make_shared<PageLine>(rightLines[i], rightColX, currentPageNextY);
-      rightLine->paragraphIdx = bufferedOriginalParagraphIdx;
-      currentPage->elements.push_back(std::move(rightLine));
-      rightLines[i].reset();  // same handoff as the left column above
+    if (i < transLines.size()) {
+      auto transLine = std::make_shared<PageLine>(transLines[i], transColX, currentPageNextY);
+      transLine->paragraphIdx = bufferedOriginalParagraphIdx;
+      // THE colour hook for this mode. The role resolves to the body font (see above), so this is
+      // purely "which stream is this line", read back at draw time by PageFontSet::inkForRole to
+      // colour the translation column and nothing else. It is written into the page (one byte per
+      // PageLine), so a section cached by a build that predates this line keeps Body and draws the
+      // column black until it is rebuilt for some other reason -- deliberate: a colour must not be
+      // worth a cache invalidation.
+      transLine->fontRole = LineFontRole::Translation;
+      currentPage->elements.push_back(std::move(transLine));
+      transLines[i].reset();  // same handoff as the source column above
     }
 
     // Both columns belong to the same original paragraph; keep the page's paragraph range current
@@ -2164,11 +2192,11 @@ void ChapterHtmlSlimParser::renderSideBySide(std::unique_ptr<ParsedText> leftBlo
     currentPageNextY += lineHeight;
   }
 
-  // Same end-of-block net makePages keeps: every entry in the installed ledger belongs to the LEFT
+  // Same end-of-block net makePages keeps: every entry in the installed ledger belongs to the SOURCE
   // column just emitted (the caller parked the in-flight block's ledger before this call), so flushing
   // it to the current page can never touch another paragraph's entry. The per-line drain above already
   // covers the normal case — an anchor index can never exceed the block's pre-layout word count, and
-  // hyphenation only ADDS post-layout words — so this fires only when the left column produced fewer
+  // hyphenation only ADDS post-layout words — so this fires only when the source column produced fewer
   // lines than the anchors need (a line dropped to a TextBlock arena OOM).
   flushPendingFootnotesToCurrentPage();
 

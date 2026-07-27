@@ -1078,11 +1078,14 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
               // position, drop the Section, and let render() rebuild against the new spec --
               // the PtLayout / translationFontId cache key makes the rebuild reuse the right cached
               // layout (or build it), and render() lands on the page carrying the captured paragraph
-              // anchor. Translation Colour is deliberately NOT in this gate: it only moves
-              // the renderer's translation gray level, which main.cpp's loop() re-reads from
-              // SETTINGS every tick, so it needs no re-layout and no extra wiring here. The two
-              // overlay sizes are out for the same reason: renderOverlayFrame() re-reads them per
-              // frame, and no cached page was measured with either.
+              // anchor. NONE of the three Translation Colour rows is in this gate, by design:
+              // Interleaved's (translationShade) only moves the renderer's translation gray level,
+              // which main.cpp's loop() re-reads from SETTINGS every tick, and the Interlinear and
+              // Side by Side ones (interlinearAnnotationShade / sideBySideTranslationShade) reach
+              // the page as per-role ink in the PageFontSet that renderContents() rebuilds on every
+              // frame. A colour must never cost a chapter rebuild. The two overlay sizes are out for
+              // the same reason: renderOverlayFrame() re-reads them per frame, and no cached page was
+              // measured with either.
               if (SETTINGS.translationDisplayMode != modeBeforeSubmenu ||
                   SETTINGS.getInterleavedTranslationFontId() != translationFontIdBeforeSubmenu ||
                   SETTINGS.getInterlinearAnnotationFontId() != annotationFontIdBeforeSubmenu) {

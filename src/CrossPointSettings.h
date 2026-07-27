@@ -212,6 +212,27 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // VALUE STABILITY: persisted as an integer; 0/1 are fixed — append only, never renumber.
   enum TRANSLATION_SHADE : uint8_t { SHADE_DIMMED = 0, SHADE_DIMMED_LIGHT = 1, TRANSLATION_SHADE_COUNT };
 
+  // Pre-Translation: colour of the SECONDARY text in the two modes that render it as its own
+  // typographic object rather than inline — the annotation rows in Interlinear and the translation
+  // column in Side by Side.
+  //
+  // NOT the same value space as TRANSLATION_SHADE above, deliberately: that one is Interleaved's,
+  // its 0/1 are persisted and documented append-only, and it offers no Black because inline
+  // translated text drawn black is indistinguishable from the source (that IS Normal mode). Here
+  // the text is separated by position, so Black is meaningful and is the default.
+  //
+  // The VALUES ARE the renderer's ink levels (0/1/2), so the resolvers below hand them straight to
+  // PageFontSet without a mapping table.
+  // DRAWING ONLY: applied per-line at render time through LineFontRole, never a layout input, so it
+  // must NOT enter ReaderRenderSpec, section.bin or the reader's re-layout gate.
+  // VALUE STABILITY: persisted as an integer; append only, never renumber.
+  enum LINGUA_SHADE : uint8_t {
+    LINGUA_BLACK = 0,
+    LINGUA_GREY = 1,
+    LINGUA_GREY_LIGHT = 2,
+    LINGUA_SHADE_COUNT,
+  };
+
   // Pre-Translation: type size of the TRANSLATED text relative to the book's own text.
   // SIZE_SMALLER means one step DOWN the active family's point-size ladder, resolved by
   // smallerReaderFontId().
@@ -387,6 +408,13 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t translationDisplayMode = PT_NORMAL;
   // Interleaved-mode (PT_INTERLEAVED) translated-text colour. Drawing-only; see TRANSLATION_SHADE.
   uint8_t translationShade = SHADE_DIMMED;
+  // ONE FIELD PER MODE, never shared — same rule as the three translated-text sizes below. The two
+  // modes present the secondary text completely differently (an 8pt row above the line vs a
+  // full-size half-width column), so the shade that reads well in one is not the one that reads
+  // well in the other. Both default to Black, i.e. exactly what each mode drew before the row
+  // existed, so an upgrade changes nothing on screen. See LINGUA_SHADE.
+  uint8_t interlinearAnnotationShade = LINGUA_BLACK;
+  uint8_t sideBySideTranslationShade = LINGUA_BLACK;
   // Translated-text type size — ONE field per mode that shows translated text, never shared (see
   // TRANSLATION_SIZE). The defaults differ on purpose and each is the mode's own pre-existing
   // behaviour, so an upgrade changes nothing on screen:
@@ -514,6 +542,13 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // only by getTooltipFontId() / getPageTranslationFontId(), which turn 0 into the body font.
   int getTooltipTranslationFontId() const;
   int getPageTranslationOverlayFontId() const;
+
+  // Pre-Translation: ink level a role's lines are drawn in, or PageFontSet::INK_INHERIT for "this
+  // mode does not colour that role". Mode-gated HERE for the same reason the font resolvers are:
+  // lib/Epub only ever sees a PtLayout and must not carry mode semantics. Read at draw time only —
+  // no cache, no spec, no re-layout.
+  uint8_t getInterlinearAnnotationInk() const;
+  uint8_t getSideBySideTranslationInk() const;
 
   // THE construction point for the reader's per-role font ids. Every path that draws a Page must
   // build its PageFontSet here, so pages are drawn with exactly the ids readerRenderSpec() keyed

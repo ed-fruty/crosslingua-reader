@@ -162,22 +162,29 @@ void PreTranslationSubmenuActivity::appendModeChildren() {
       child(Action::CYCLE_PAGE_TRANSLATION_BUTTONS, StrId::STR_PAGE_TRANSLATION_BUTTONS);
       child(Action::CYCLE_PAGE_TRANSLATION_SIZE, StrId::STR_TRANSLATION_SIZE);
       return;
+    case CrossPointSettings::PT_SIDE_BY_SIDE:
+      // Colours the TRANSLATION COLUMN only, never the source: the two columns must stay
+      // distinguishable as source and translation, which a symmetric shade would defeat. Its own
+      // field, and its own row under its own mode -- nothing here is shared with Interleaved's
+      // Colour above beyond the label.
+      child(Action::CYCLE_SIDE_BY_SIDE_COLOUR, StrId::STR_TRANSLATION_COLOUR);
+      return;
+    case CrossPointSettings::PT_INTERLINEAR:
+      // Colours the ANNOTATION ROWS only. Size is still fixed at the small UI face in v1 (see
+      // getInterlinearAnnotationFontId), so Colour is this mode's only sub-setting for now.
+      child(Action::CYCLE_INTERLINEAR_COLOUR, StrId::STR_TRANSLATION_COLOUR);
+      return;
     // No sub-settings. Normal is NOT "no translated text": it maps to PtLayout::Both exactly as
     // Interleaved does, so its pages are byte-identical and do carry the translation inline. What
     // makes it Normal is the gray level -- modeToGray() (src/main.cpp) hands the renderer 0 for every
     // mode except Interleaved, so translated words are drawn in plain black, indistinguishable from
     // the source. Presenting the two languages as one undifferentiated flow is the whole point of the
-    // mode, so neither a shade nor a size row belongs on it. Side by Side and Translation Only show
-    // the translation in the body font and colour by design (a dimmed or shrunken column would defeat
-    // them). Interlinear fixes its annotation face at the small UI size in v1 — the one place that
-    // choice lives is CrossPointSettings::getInterlinearAnnotationFontId(), so a future Annotation
-    // Size row plugs in there and gets a child() line here. The retired holes are migrated away at
-    // load and can never be the current mode.
+    // mode, so neither a shade nor a size row belongs on it. Translation Only shows the translation
+    // as the page's own primary text in the body font and colour by design (dimming it would dim the
+    // whole chapter). The retired holes are migrated away at load and can never be the current mode.
     case CrossPointSettings::PT_NORMAL:
     case CrossPointSettings::PT_ORIGINAL_ONLY:
     case CrossPointSettings::PT_TRANSLATION_ONLY:
-    case CrossPointSettings::PT_SIDE_BY_SIDE:
-    case CrossPointSettings::PT_INTERLINEAR:
     case CrossPointSettings::PT_LEGACY_DIMMED:
     case CrossPointSettings::PT_LEGACY_DIMMED_LIGHT:
       return;
@@ -368,6 +375,18 @@ void PreTranslationSubmenuActivity::onActionSelected(Action a) {
       requestUpdate();
       return;
 
+    // The two LINGUA_SHADE rows. Same contract as the Interleaved colour above -- drawing only --
+    // but reached through the per-role ink (PageFontSet), which readerPageFontSet() rebuilds on
+    // every draw, so the reader repaints in the new colour with no chapter rebuild. Deliberately
+    // absent from the reader's re-layout gate; see EpubReaderActivity's PRE_TRANSLATION handler.
+    case Action::CYCLE_INTERLINEAR_COLOUR:
+      cycleLinguaShade(SETTINGS.interlinearAnnotationShade);
+      return;
+
+    case Action::CYCLE_SIDE_BY_SIDE_COLOUR:
+      cycleLinguaShade(SETTINGS.sideBySideTranslationShade);
+      return;
+
     // Three rows, three independent fields, one shared cycle rule. Only the Interleaved one changes
     // line breaking; the reader's result handler compares getInterleavedTranslationFontId() and so
     // re-lays out the section for that row alone, while the two overlay rows just repaint.
@@ -417,6 +436,17 @@ void PreTranslationSubmenuActivity::cycleTranslationSize(uint8_t& storedSize) {
   requestUpdate();
 }
 
+void PreTranslationSubmenuActivity::cycleLinguaShade(uint8_t& storedShade) {
+  // Black -> Grey -> Light Grey, matching the key order in english.yaml. DRAWING ONLY: the shade
+  // reaches the page through PageFontSet's per-role ink, which CrossPointSettings::readerPageFontSet()
+  // rebuilds on every draw, so there is nothing to invalidate here -- no section reset, no
+  // armReposition, no cache key. requestUpdate() repaints this row's value; the reader repaints in
+  // the new colour on its next frame.
+  storedShade = static_cast<uint8_t>((storedShade + 1) % CrossPointSettings::LINGUA_SHADE_COUNT);
+  SETTINGS.saveToFile();
+  requestUpdate();
+}
+
 // ─── value labels ─────────────────────────────────────────────────────────────
 
 const char* PreTranslationSubmenuActivity::displayModeLabel() const {
@@ -452,6 +482,23 @@ const char* PreTranslationSubmenuActivity::pageTranslationButtonsLabel() const {
 const char* PreTranslationSubmenuActivity::translationColourLabel() const {
   return I18N.get(SETTINGS.translationShade == CrossPointSettings::SHADE_DIMMED_LIGHT ? StrId::STR_SHADE_DIMMED_LIGHT
                                                                                       : StrId::STR_SHADE_DIMMED);
+}
+
+// Same three standalone colour nouns, one of them new. STR_SHADE_BLACK follows the rule the two
+// existing keys were written to (see the comment above translationColourLabel): a value-column
+// entry names the colour outright, so it reads correctly beside every language's word for
+// "colour" — no adjective agreement to get wrong.
+const char* PreTranslationSubmenuActivity::linguaShadeLabel(const uint8_t storedShade) const {
+  switch (static_cast<CrossPointSettings::LINGUA_SHADE>(storedShade)) {
+    case CrossPointSettings::LINGUA_GREY:
+      return I18N.get(StrId::STR_SHADE_DIMMED);
+    case CrossPointSettings::LINGUA_GREY_LIGHT:
+      return I18N.get(StrId::STR_SHADE_DIMMED_LIGHT);
+    case CrossPointSettings::LINGUA_BLACK:
+    case CrossPointSettings::LINGUA_SHADE_COUNT:
+      break;
+  }
+  return I18N.get(StrId::STR_SHADE_BLACK);  // also the out-of-range answer: Black is the default
 }
 
 const char* PreTranslationSubmenuActivity::translationSizeLabel(const uint8_t storedSize) const {
@@ -557,6 +604,10 @@ void PreTranslationSubmenuActivity::render(RenderLock&&) {
             return pageTranslationButtonsLabel();
           case Action::CYCLE_TRANSLATION_COLOUR:
             return translationColourLabel();
+          case Action::CYCLE_INTERLINEAR_COLOUR:
+            return linguaShadeLabel(SETTINGS.interlinearAnnotationShade);
+          case Action::CYCLE_SIDE_BY_SIDE_COLOUR:
+            return linguaShadeLabel(SETTINGS.sideBySideTranslationShade);
           case Action::CYCLE_INTERLEAVED_SIZE:
             return translationSizeLabel(SETTINGS.interleavedTranslationSize);
           case Action::CYCLE_TOOLTIP_SIZE:

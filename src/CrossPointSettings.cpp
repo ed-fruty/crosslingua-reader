@@ -135,6 +135,10 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   doc["translateApiKey"] = translateApiKey;
   doc["translationDisplayMode"] = translationDisplayMode;
   doc["translationShade"] = translationShade;
+  // One colour key per mode that owns one; see the LINGUA_SHADE comment for why they are never
+  // folded into translationShade.
+  doc["interlinearAnnotationShade"] = interlinearAnnotationShade;
+  doc["sideBySideTranslationShade"] = sideBySideTranslationShade;
   // One key per mode. These are NEW names, not a rename of the single "translationSize" key they
   // replace: keys are append-only, and a file still carrying the old key must fall through to the
   // per-mode DEFAULTS (that is what preserves the overlays' historical Smaller behaviour) rather
@@ -276,6 +280,13 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   copyToField(translateApiKey, doc["translateApiKey"] | "", sizeof(translateApiKey));
   translationShade =
       clamp(doc["translationShade"] | (uint8_t)SHADE_DIMMED, (uint8_t)TRANSLATION_SHADE_COUNT, (uint8_t)SHADE_DIMMED);
+  // Absent key (every install that predates the rows) adopts LINGUA_BLACK, which is what both modes
+  // already drew, so no upgrade changes a page. No needsResave: absent-key-adopts-the-default is the
+  // established pattern here (see the per-mode sizes below).
+  interlinearAnnotationShade = clamp(doc["interlinearAnnotationShade"] | (uint8_t)LINGUA_BLACK,
+                                     (uint8_t)LINGUA_SHADE_COUNT, (uint8_t)LINGUA_BLACK);
+  sideBySideTranslationShade = clamp(doc["sideBySideTranslationShade"] | (uint8_t)LINGUA_BLACK,
+                                     (uint8_t)LINGUA_SHADE_COUNT, (uint8_t)LINGUA_BLACK);
   // Per-mode translated-text sizes. ArduinoJson's `|` yields its right operand when the key is
   // ABSENT (or holds a value that will not convert), so a settings.json written before these keys
   // existed — every existing install, since all three names are new — adopts the per-mode DEFAULT
@@ -466,6 +477,22 @@ bool CrossPointSettings::interlinearAnnotationScriptSupported() const {
   return true;
 }
 
+uint8_t CrossPointSettings::getInterlinearAnnotationInk() const {
+  // Interlinear only. Under every other mode the annotation slot is unused (or, for the SideBySide
+  // "not translated" marker, is deliberately left to the per-word path), so inherit.
+  if (translationDisplayMode != PT_INTERLINEAR) return PageFontSet::INK_INHERIT;
+  return interlinearAnnotationShade;  // LINGUA_* values ARE the renderer's ink levels
+}
+
+uint8_t CrossPointSettings::getSideBySideTranslationInk() const {
+  // THE gate that keeps this off Interleaved. Interleaved shares the Translation role (its inline
+  // translated lines are tagged with it whenever a distinct translation font is configured) but
+  // colours them through the per-word TRANSLATED bit and its own translationShade; handing it an
+  // ink here would override that path and silently take over Interleaved's colour row.
+  if (translationDisplayMode != PT_SIDE_BY_SIDE) return PageFontSet::INK_INHERIT;
+  return sideBySideTranslationShade;
+}
+
 int CrossPointSettings::getTooltipTranslationFontId() const { return translationFontIdForSize(tooltipTranslationSize); }
 
 int CrossPointSettings::getPageTranslationOverlayFontId() const {
@@ -477,7 +504,13 @@ PageFontSet CrossPointSettings::readerPageFontSet() const {
   // always drawn in the fonts it was measured with. Only the two LAYOUT sizes belong here — the
   // overlays draw outside the Page. Each accessor is mode-gated and returns 0 (-> body font, via the
   // PageFontSet constructor) for every mode but its own.
-  return PageFontSet(getReaderFontId(), getInterleavedTranslationFontId(), getInterlinearAnnotationFontId());
+  PageFontSet set(getReaderFontId(), getInterleavedTranslationFontId(), getInterlinearAnnotationFontId());
+  // The per-role INK, resolved the same way and in the same place as the ids. Unlike them it is
+  // pure drawing: it is absent from readerRenderSpec() below by design, so changing a colour
+  // repaints the page that is already cached instead of re-laying the chapter out.
+  set.annotationInk = getInterlinearAnnotationInk();
+  set.translationInk = getSideBySideTranslationInk();
+  return set;
 }
 
 ReaderRenderSpec CrossPointSettings::readerRenderSpec(const uint16_t viewportWidth,
