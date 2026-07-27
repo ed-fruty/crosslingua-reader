@@ -1,13 +1,14 @@
-# Pre-Translation
+# Lingua
 
-Pre-Translation lets CrossPoint produce a bilingual copy of any EPUB on
-device, then read it in one of several display modes — original-only,
-translation-only, side-by-side, a page-translation overlay, or with translated paragraphs
-shaded gray.
+Lingua is CrossLingua's bilingual reading system. It can produce a bilingual
+copy of any EPUB on the device or use language-tagged translations already
+embedded by a Calibre workflow. The current code provides eight display modes:
+Normal, Interleaved, Side by Side, Original Only, Translation Only, Tooltip,
+Page Translation, and Interlinear.
 
-<img src="./images/pre-translation/overview.jpg" height="500" alt="Side-by-Side mode showing English original above each Russian translation" />
+<img src="./images/crosslingua/interlinear.jpg" height="500" alt="CrossLingua Interlinear mode" />
 
-*Side-by-Side mode showing English original above each Russian translation.*
+*Interlinear mode on an Xteink reader.*
 
 ## What it does
 
@@ -15,6 +16,7 @@ shaded gray.
 - Stores the bilingual copy on the SD card next to the original
 - Re-uses the translation when you re-open the book — no network needed after the first pass
 - Lets you switch between several display modes without re-translating
+- Recognizes translated paragraphs embedded in bilingual EPUBs
 
 ## What it doesn't do
 
@@ -24,45 +26,29 @@ shaded gray.
 
 ## Setup
 
-### 1. Pick your target language
-
-Open a book, press **Confirm** to open the Reader Menu, scroll to
-**Pre-Translation**, press **Confirm**.
-
-In the submenu, pick **Target Language** and select the language you want
-translations in.
-
-<img src="./images/pre-translation/target-language.gif" height="500" alt="Target language picker" />
-
-*Setting Russian as the target language.*
-
-### 2. Pick your engine (optional)
+### 1. Pick your engine (optional)
 
 Default is Google V2 (Free) which needs no API key. Azure is also keyless.
 For DeepL, OpenAI, DeepSeek, Gemini, or other engines requiring
 authentication, enter your API key under **API Key** (the row only appears
 for engines that need one).
 
-<img src="./images/pre-translation/engine.jpg" height="500" alt="Engine picker" />
+### 2. Translate
 
-### 3. Translate
-
-From the Pre-Translation submenu:
+Open a book, press **Confirm**, and select **Lingua**. Start **Translate
+Chapter** or **Translate Book**, then choose the target and source languages
+in the translation flow. The source language can be detected automatically.
 
 - **Translate Chapter** — fastest. ~30 seconds for a typical chapter
   over WiFi.
 - **Translate Book** — full book. ~4 minutes for a typical novel.
-
-<img src="./images/pre-translation/translating-chapter.gif" height="500" alt="Translating chapter progress UI" />
-
-*Progress UI during chapter translation.*
 
 You can press **Back** to cancel at any time. Cancelling mid-chapter
 leaves the chapter un-translated (the partial file is discarded).
 
 ## Display Modes
 
-Once any chapter is translated, set **Display Mode** in the Pre-Translation
+Once any chapter is translated, set **Display Mode** in the Lingua
 submenu. The mode applies to all translated chapters in the current book.
 
 ### Normal
@@ -70,8 +56,6 @@ submenu. The mode applies to all translated chapters in the current book.
 Renders everything inline as the bilingual EPUB stores it — original and
 translation interleaved without coloring. Use this when reading bilingual
 EPUBs prepared elsewhere (e.g. Calibre's Polyglot output).
-
-<img src="./images/pre-translation/mode-normal.jpg" height="500" alt="Normal mode" />
 
 ### Interleaved
 
@@ -82,14 +66,6 @@ glance.
 The gray level is a separate stored setting (**Dimmed** or **Dimmed
 Light**), not a mode of its own. It affects drawing only: switching shade
 never re-lays out the chapter.
-
-<img src="./images/pre-translation/mode-dark.jpg" height="500" alt="Interleaved mode, Dimmed shade" />
-
-*Dimmed shade.*
-
-<img src="./images/pre-translation/mode-light.jpg" height="500" alt="Interleaved mode, Dimmed Light shade" />
-
-*Dimmed Light shade.*
 
 > Earlier builds exposed the two shades as two separate display modes
 > ("Dark" and "Light"). They are now one mode plus a shade setting; an
@@ -102,21 +78,17 @@ Drops translated paragraphs from the page. The book looks identical to the
 untranslated original — useful when you want to read in the source language
 and only consult translations occasionally.
 
-<img src="./images/pre-translation/mode-original.jpg" height="500" alt="Original only mode" />
-
 ### Translation Only
 
 Drops original paragraphs. The book reads as if it were monolingual in
 your target language.
 
-<img src="./images/pre-translation/mode-translation.jpg" height="500" alt="Translation only mode" />
-
 ### Side by Side
 
-Pairs each original paragraph with its translation, with no spacing
-between paired paragraphs and normal spacing between pairs.
+Lays each source paragraph and its translation into synchronized left and
+right columns. The translation column can be Black, Grey, or Light Grey.
 
-<img src="./images/pre-translation/mode-side-by-side.jpg" height="500" alt="Side by side mode" />
+<img src="./images/crosslingua/side-by-side-landscape.jpg" height="500" alt="CrossLingua Side by Side mode" />
 
 ### Page Translation
 
@@ -124,13 +96,29 @@ The reader shows only the original text on each page. **Long-press either
 side button** to bring up an overlay with the translations of the
 paragraphs visible on the current page.
 
-<img src="./images/pre-translation/mode-modal.gif" height="500" alt="Page Translation mode overlay" />
+<img src="./images/crosslingua/page-translation.jpg" height="500" alt="CrossLingua Page Translation mode overlay" />
 
 *Long-press to open, side buttons scroll, Back to close.*
 
 In Page Translation mode, when a paragraph spans page boundaries (starts on one page
 and continues on the next), the overlay shows only the translation of the
 sentences actually visible on the current page — not the whole paragraph.
+
+The overlay controls can use either the front or side button pair. Translation
+text can use the same size as the book or one step smaller.
+
+### Tooltip
+
+Shows the original page and reveals one translated sentence at a time in a
+small overlay. Sentence stepping can use either the front or side button pair.
+At a page boundary it can either loop within the current page or turn the page
+and continue. Translation text can use the same size as the book or one step
+smaller.
+
+### Interlinear
+
+Places compact translated annotations above the source lines they belong to.
+The annotation colour can be Black, Grey, or Light Grey.
 
 ## Mode switching with no translation
 
@@ -154,7 +142,7 @@ For whole books, **Re-translate Book** has two sub-options:
 ## Deleting translations
 
 To free SD card space or start fresh, pick **Delete Translations** in the
-Pre-Translation submenu. This removes all bilingual copies for the current
+Lingua submenu. This removes all bilingual copies for the current
 book but leaves the original EPUB untouched.
 
 ## How it stores translations

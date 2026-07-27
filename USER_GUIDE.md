@@ -47,7 +47,7 @@ Welcome to the **CrossPoint** firmware. This guide outlines the hardware control
   - [5. Reader Menu](#5-reader-menu)
     - [5.1 Chapter Selection](#51-chapter-selection)
     - [5.2 Bookmarks](#52-bookmarks)
-    - [5.3 Pre-Translation](#53-pre-translation)
+    - [5.3 Lingua](#53-lingua)
   - [6. Current Limitations \& Roadmap](#6-current-limitations--roadmap)
   - [7. Troubleshooting Issues \& Escaping Bootloop](#7-troubleshooting-issues--escaping-bootloop)
 
@@ -271,7 +271,11 @@ The Settings screen allows you to configure the device's behavior. There are a f
 - **Images**: Whether to display embedded images (JPG/PNG) found in EPUB files; options are "ON" (default) or "OFF".
 
 - **Focus Reading**: Bolds the first part of each word to create visual fixation points, similar to Bionic Reading. This can help improve reading speed and focus; options are "ON" or "OFF" (default).
-- **Pre-Translation**: Translate EPUBs on-device using Google, DeepL, OpenAI, DeepSeek, Gemini, or other engines. Pick a display mode (Normal, Interleaved, Original Only, Translation Only, Side by Side, Page Translation). See [Pre-Translation](./docs/pre-translation.md).
+- **Lingua**: Translate EPUBs on-device using Google, Azure, DeepL, OpenAI,
+  DeepSeek, or Gemini, or read a language-tagged bilingual EPUB prepared in
+  Calibre. Choose from Normal, Interleaved, Side by Side, Original Only,
+  Translation Only, Tooltip, Page Translation, and Interlinear modes. See
+  [Lingua](./docs/pre-translation.md).
 
 #### 3.6.3 Controls
 
@@ -642,9 +646,11 @@ To open bookmarks, press **Confirm** while inside a book. Then navigate to the *
 
 Bookmarks are stored in the `.crosspoint/bookmarks` folder in the JSON format.
 
-### 5.3 Pre-Translation
+### 5.3 Lingua
 
-While reading, open the Reader Menu and select **Pre-Translation** to translate the current chapter or whole book, switch between display modes, and configure engine/language settings.
+While reading, open the Reader Menu and select **Lingua** to translate the
+current chapter or whole book, switch between display modes, and configure the
+translation engine.
 
 Available display modes:
 
@@ -653,9 +659,12 @@ Available display modes:
 - **Original Only** — drops translated paragraphs
 - **Translation Only** — drops original paragraphs
 - **Side by Side** — paired layout with no spacing between original and its translation
+- **Tooltip** — original page with one sentence translation at a time
 - **Page Translation** — shows only original text on page; long-press either side button to open an overlay with translations for paragraphs visible on the current page
+- **Interlinear** — compact translated annotations above their source lines
 
-For full instructions including all display modes, engine setup, and storage location, see the standalone [Pre-Translation guide](./docs/pre-translation.md).
+For full instructions including all display modes, engine setup, and storage
+location, see the standalone [Lingua guide](./docs/pre-translation.md).
 
 ## 6. Current Limitations & Roadmap
 
