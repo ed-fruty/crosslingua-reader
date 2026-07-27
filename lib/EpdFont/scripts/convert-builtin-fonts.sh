@@ -93,19 +93,41 @@ ARABIC_INTERVALS=(
 
 for size in ${UI_FONT_SIZES[@]}; do
   for style in ${UI_FONT_STYLES[@]}; do
-    font_name="ubuntu_${size}_$(echo $style | tr '[:upper:]' '[:lower:]')"
-    font_path="../builtinFonts/source/Ubuntu/Ubuntu-${style}.ttf"
+    # EdsLab is the CrossLingua UI face. Script-specific fonts remain later in
+    # the stack as fallbacks for glyphs EdsLab does not ship.
+    font_name="edslab_ui_${size}_$(echo $style | tr '[:upper:]' '[:lower:]')"
+    font_path="../builtinFonts/source/EdsLab/EdsLab-${style}.ttf"
     hebrew_path="../builtinFonts/source/NotoSansHebrew/NotoSansHebrew-${style}.ttf"
     arabic_path="../builtinFonts/source/NotoSansArabic/NotoSansArabic-${style}.ttf"
-    # Ubuntu lacks the Latin Extended Additional block (U+1EA0-U+1EF9) used for
-    # Vietnamese tone marks. Append a Vietnamese-only Ubuntu cut so those glyphs
-    # are filled from it while every glyph Ubuntu already has stays unchanged
-    # (fontstack is ordered by descending priority).
+    # Append the Vietnamese Ubuntu cut for any Latin Extended Additional glyph
+    # EdsLab does not ship. The font stack keeps EdsLab at highest priority.
     viet_path="../builtinFonts/source/Ubuntu/Ubuntu-Vietnamese-${style}.ttf"
     output_path="../builtinFonts/${font_name}.h"
     python fontconvert.py $font_name $size $font_path $hebrew_path $arabic_path $viet_path \
       --additional-intervals 0x05D0,0x05EA "${ARABIC_INTERVALS[@]}" > $output_path
     echo "Generated $output_path"
+  done
+done
+
+python fontconvert.py edslab_ui_8_regular 8 \
+  ../builtinFonts/source/EdsLab/EdsLab-Regular.ttf \
+  ../builtinFonts/source/NotoSansHebrew/NotoSansHebrew-Regular.ttf \
+  ../builtinFonts/source/NotoSansArabic/NotoSansArabic-Regular.ttf \
+  ../builtinFonts/source/Ubuntu/Ubuntu-Vietnamese-Regular.ttf \
+  --additional-intervals 0x05D0,0x05EA "${ARABIC_INTERVALS[@]}" > ../builtinFonts/edslab_ui_8_regular.h
+
+# Keep the legacy UI assets reproducible so CROSSLINGUA_UI_EDSLAB can be
+# switched back to 0 without restoring files from Git.
+for size in ${UI_FONT_SIZES[@]}; do
+  for style in ${UI_FONT_STYLES[@]}; do
+    font_name="ubuntu_${size}_$(echo $style | tr '[:upper:]' '[:lower:]')"
+    font_path="../builtinFonts/source/Ubuntu/Ubuntu-${style}.ttf"
+    hebrew_path="../builtinFonts/source/NotoSansHebrew/NotoSansHebrew-${style}.ttf"
+    arabic_path="../builtinFonts/source/NotoSansArabic/NotoSansArabic-${style}.ttf"
+    viet_path="../builtinFonts/source/Ubuntu/Ubuntu-Vietnamese-${style}.ttf"
+    output_path="../builtinFonts/${font_name}.h"
+    python fontconvert.py $font_name $size $font_path $hebrew_path $arabic_path $viet_path \
+      --additional-intervals 0x05D0,0x05EA "${ARABIC_INTERVALS[@]}" > $output_path
   done
 done
 

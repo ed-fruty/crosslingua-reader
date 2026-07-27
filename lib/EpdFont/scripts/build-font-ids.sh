@@ -86,27 +86,57 @@ ruby -rdigest -e 'puts [
 ].map{|f| Digest::SHA256.hexdigest(File.read(f)).to_i(16) }.sum % (2 ** 32) - (2 ** 31)'
 ))"
 
-echo "#define UI_10_FONT_ID ($(
+echo "#define EDSLAB_UI_10_FONT_ID ($(
+ruby -rdigest -e 'puts [
+  "./edslab_ui_10_regular.h",
+  "./edslab_ui_10_bold.h",
+].map{|f| Digest::SHA256.hexdigest(File.read(f)).to_i(16) }.sum % (2 ** 32) - (2 ** 31)'
+))"
+
+echo "#define EDSLAB_UI_12_FONT_ID ($(
+ruby -rdigest -e 'puts [
+  "./edslab_ui_12_regular.h",
+  "./edslab_ui_12_bold.h",
+].map{|f| Digest::SHA256.hexdigest(File.read(f)).to_i(16) }.sum % (2 ** 32) - (2 ** 31)'
+))"
+
+echo "#define EDSLAB_UI_8_FONT_ID ($(
+ruby -rdigest -e 'puts [
+  "./edslab_ui_8_regular.h",
+].map{|f| Digest::SHA256.hexdigest(File.read(f)).to_i(16) }.sum % (2 ** 32) - (2 ** 31)'
+))"
+
+echo "#define LEGACY_UI_10_FONT_ID ($(
 ruby -rdigest -e 'puts [
   "./ubuntu_10_regular.h",
   "./ubuntu_10_bold.h",
 ].map{|f| Digest::SHA256.hexdigest(File.read(f)).to_i(16) }.sum % (2 ** 32) - (2 ** 31)'
 ))"
 
-echo "#define UI_12_FONT_ID ($(
+echo "#define LEGACY_UI_12_FONT_ID ($(
 ruby -rdigest -e 'puts [
   "./ubuntu_12_regular.h",
   "./ubuntu_12_bold.h",
 ].map{|f| Digest::SHA256.hexdigest(File.read(f)).to_i(16) }.sum % (2 ** 32) - (2 ** 31)'
 ))"
 
-echo "#define SMALL_FONT_ID ($(
+echo "#define LEGACY_UI_8_FONT_ID ($(
 ruby -rdigest -e 'puts [
   "./notosans_8_regular.h",
 ].map{|f| Digest::SHA256.hexdigest(File.read(f)).to_i(16) }.sum % (2 ** 32) - (2 ** 31)'
 ))"
 
 cat <<'EOF'
+
+#if CROSSLINGUA_UI_EDSLAB
+#define UI_10_FONT_ID EDSLAB_UI_10_FONT_ID
+#define UI_12_FONT_ID EDSLAB_UI_12_FONT_ID
+#define SMALL_FONT_ID EDSLAB_UI_8_FONT_ID
+#else
+#define UI_10_FONT_ID LEGACY_UI_10_FONT_ID
+#define UI_12_FONT_ID LEGACY_UI_12_FONT_ID
+#define SMALL_FONT_ID LEGACY_UI_8_FONT_ID
+#endif
 
 // Font ID 0 is reserved as the "not found" sentinel.
 // Guard against any hash accidentally producing 0.

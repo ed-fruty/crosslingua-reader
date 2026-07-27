@@ -425,13 +425,9 @@ int CrossPointSettings::getInterlinearAnnotationFontId() const {
   // (ReaderRenderSpec::annotationFontId) and the render-time font set (readerPageFontSet), so an
   // annotation row is always drawn in the face it was measured and advanced with.
   //
-  // THE single place the annotation face is chosen. A future user-facing Annotation Size row, and a
-  // switch to the now-merged EdsLab 8pt face (EDSLAB_8_FONT_ID), plug in here and are picked up by
-  // the layout engine, the renderer and the cache key at once -- nothing downstream names a font id.
-  // Still SMALL_FONT_ID for now, deliberately: notosans_8 is what interlinearAnnotationScriptSupported()
-  // below reasons about, EdsLab's ~590-codepoint repertoire covers far less of it, EDSLAB_8_FONT_ID is
-  // registered only under #ifndef OMIT_FONTS unlike SMALL_FONT_ID, and the swap would invalidate every
-  // cached interlinear section. Changing the annotation face is a decision, not a merge fixup.
+  // THE single place the annotation face is chosen. SMALL_FONT_ID is the
+  // multilingual EdsLab UI cut registered unconditionally at startup, so it is
+  // also available in the slim build.
   if (translationDisplayMode != PT_INTERLINEAR) return 0;
   if (!interlinearAnnotationScriptSupported()) return 0;
   // v1: the 8pt UI face. Registered unconditionally at startup (src/main.cpp), so no new font
@@ -441,10 +437,9 @@ int CrossPointSettings::getInterlinearAnnotationFontId() const {
 }
 
 bool CrossPointSettings::interlinearAnnotationScriptSupported() const {
-  // notosans_8_regular covers Latin + Latin Extended (Vietnamese included), combining marks,
-  // Cyrillic U+0400-04FF and Hebrew, but its interval table jumps straight from U+036F to U+0400 --
-  // no Greek -- and it has no Devanagari, Thai, kana, Hangul, CJK or Arabic letters (only a handful
-  // of Arabic punctuation marks and digits). For an uncovered target every glyph would render as
+  // edslab_ui_8_regular uses EdsLab for Latin/Cyrillic and UI fallbacks for
+  // Vietnamese, Hebrew and Arabic. It still has no Greek, Devanagari, Thai,
+  // kana, Hangul or CJK. For an uncovered target every glyph would render as
   // U+FFFD, and a CJK target is worse than missing: drawText reroutes any CJK-bearing string to a
   // fallback face whose advanceY differs from the height the row was measured and advanced with, so
   // the row would overflow its box and collide with the source line.

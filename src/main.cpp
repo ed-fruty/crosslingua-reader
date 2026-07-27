@@ -99,6 +99,18 @@ EpdFontFamily notosans18FontFamily(&notosans18RegularFont, &notosans18BoldFont, 
 
 #endif  // OMIT_FONTS
 
+#if CROSSLINGUA_UI_EDSLAB
+EpdFont smallFont(&edslab_ui_8_regular);
+EpdFontFamily smallFontFamily(&smallFont);
+
+EpdFont ui10RegularFont(&edslab_ui_10_regular);
+EpdFont ui10BoldFont(&edslab_ui_10_bold);
+EpdFontFamily ui10FontFamily(&ui10RegularFont, &ui10BoldFont);
+
+EpdFont ui12RegularFont(&edslab_ui_12_regular);
+EpdFont ui12BoldFont(&edslab_ui_12_bold);
+EpdFontFamily ui12FontFamily(&ui12RegularFont, &ui12BoldFont);
+#else
 EpdFont smallFont(&notosans_8_regular);
 EpdFontFamily smallFontFamily(&smallFont);
 
@@ -109,6 +121,7 @@ EpdFontFamily ui10FontFamily(&ui10RegularFont, &ui10BoldFont);
 EpdFont ui12RegularFont(&ubuntu_12_regular);
 EpdFont ui12BoldFont(&ubuntu_12_bold);
 EpdFontFamily ui12FontFamily(&ui12RegularFont, &ui12BoldFont);
+#endif
 
 // measurement of power button press duration calibration value
 unsigned long t1 = 0;
