@@ -17,6 +17,7 @@
 #include "../../../../src/fontIds.h"
 #include "Epub.h"
 #include "Epub/Page.h"
+#include "Epub/TranslationDetection.h"
 #include "Epub/converters/ImageDecoderFactory.h"
 #include "Epub/converters/ImageDimsProbe.h"
 #include "Epub/converters/ImageToFramebufferDecoder.h"
@@ -550,10 +551,14 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
 
   // Pre-Translation: determine whether this element introduces (or sits inside) a translated block.
   // Skip html/body to avoid false-positives from a document-level lang (e.g. <html lang="en">).
+  // The language comparison itself is translationdetect::isTranslatedLangTag -- the SAME predicate
+  // Section's per-chapter "does this chapter have a translation" gate scans with, so the gate can
+  // never enable a layout that finds nothing to filter (or refuse one that would have worked).
+  // It compares primary subtags case-insensitively, so `uk-UA` in an `en` book is translated while
+  // `en-GB` in an `en` book is not.
   const bool langTagAllowed = strcmp(name, "html") != 0 && strcmp(name, "body") != 0;
-  const bool isExplicitTranslated = langTagAllowed && langAttr != nullptr && langAttr[0] != '\0' &&
-                                    !self->bookPrimaryLang.empty() &&
-                                    strcmp(langAttr, self->bookPrimaryLang.c_str()) != 0;
+  const bool isExplicitTranslated =
+      langTagAllowed && translationdetect::isTranslatedLangTag(langAttr, self->bookPrimaryLang.c_str());
   const bool inheritedTranslated = !self->inlineStyleStack.empty() && self->inlineStyleStack.back().isTranslatedBlock;
   const bool currentIsTranslated = isExplicitTranslated || inheritedTranslated;
 

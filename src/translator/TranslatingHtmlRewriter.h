@@ -40,9 +40,12 @@ class TranslatingHtmlRewriter {
   // Used for progress bar total.
   static int countBlocksInFile(const std::string& inputPath);
 
-  // Check if a chapter HTML file contains embedded translations (Calibre or CrossPoint).
-  // Lightweight SAX scan — stops at the first block element with a `lang` attribute.
-  static bool hasEmbeddedTranslations(const std::string& inputPath);
+  // "Does this chapter HTML already contain translations?" lives in
+  // <Epub/TranslationDetection.h> (translationdetect::htmlHasTranslatedBlock). It used to be
+  // duplicated here as hasEmbeddedTranslations(), keyed on "a block element has ANY lang
+  // attribute" -- a different rule from the one the layout engine renders by, which is a
+  // lang MISMATCH against the book's language. Section's per-chapter gate needs the same
+  // answer, so the check was moved into lib/Epub where both layers can share one definition.
 
   // Rewrite HTML from `inputBuf` (size `inputSize`) into `out`.
   // Returns summary of what happened.
@@ -181,10 +184,4 @@ class TranslatingHtmlRewriter {
 
   // Counting-only callbacks (for countBlocksInFile)
   static void XMLCALL onStartCount(void* ud, const XML_Char* name, const XML_Char** atts);
-
-  // Detection callback (for hasEmbeddedTranslations)
-  struct EmbeddedDetectState {
-    bool found = false;
-  };
-  static void XMLCALL onStartDetectEmbedded(void* ud, const XML_Char* name, const XML_Char** atts);
 };

@@ -1486,12 +1486,40 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     // writer is the branch below it.
     const uint8_t requestedDisplayMode = SETTINGS.translationDisplayMode;
     if (requestedDisplayMode != CrossPointSettings::PT_NORMAL) {
-      const bool chapterHasTranslation = section->hasTranslatedHtml();
+      // "Has a translation" spans BOTH sources -- a reader-produced `.translated.html` and
+      // translations embedded in the chapter's own XHTML (a Calibre-plugin bilingual book). Asking
+      // only the first question is what made this fallback fire on every chapter of such a book and
+      // persist the mode back to Normal, so the user could never enable a bilingual mode at all.
+      //
+      // This first call is free whenever the answer is already on disk -- a sidecar, or a chapter
+      // whose HTML any earlier build unzipped (the html cache outlives every .bin invalidation), so
+      // every chapter the reader has shown before resolves here.
+      bool chapterHasTranslation = section->hasTranslation();
+      if (!section->isTranslationPresenceKnown()) {
+        // Never opened on this device: the embedded answer lives inside the chapter HTML, which the
+        // build below is about to unzip anyway. Hoist that inflate here, under the same INDEXING
+        // popup and framebuffer loan the build site uses, rather than let the gate guess -- guessing
+        // "no translation" is the sticky failure above, and guessing "has one" would silently retire
+        // this dialog for genuinely untranslated chapters. The build then finds a cached HTML, so it
+        // neither re-inflates nor draws a second popup.
+        const size_t spineBytes = epub->getCumulativeSpineItemSize(currentSpineIndex) -
+                                  (currentSpineIndex > 0 ? epub->getCumulativeSpineItemSize(currentSpineIndex - 1) : 0);
+        // Same cost proxy the build site uses: only a big spine's inflate is slow enough to indicate.
+        if (spineBytes > BUILD_POPUP_BYTE_THRESHOLD) {
+          GUI.drawPopup(renderer, tr(STR_INDEXING));
+          pagesUntilFullRefresh = 1;
+        }
+        {
+          GfxRenderer::FrameBufferLoan loan(renderer);
+          section->resolveTranslationPresence();
+        }
+        chapterHasTranslation = section->hasTranslation();
+      }
       if (!chapterHasTranslation) {
         // Permanent on-device evidence for the auto-fallback. Fires at most once per downgrade (after
         // it the setting is PT_NORMAL and this gate never re-triggers until the user re-enables a
         // bilingual mode), so there is no log-flood risk.
-        LOG_INF("ERS", "Pre-Translation auto-fallback: spine=%d oldMode=%d hasTranslatedHtml=%d -> PT_NORMAL",
+        LOG_INF("ERS", "Pre-Translation auto-fallback: spine=%d oldMode=%d hasTranslation=%d -> PT_NORMAL",
                 currentSpineIndex, static_cast<int>(requestedDisplayMode), static_cast<int>(chapterHasTranslation));
         // Persist the downgrade. Value-change-guarded implicitly: the gate above guarantees the current
         // mode is non-Normal, so this assignment always changes the value before we write to SPIFFS.
@@ -1540,7 +1568,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
                                    currentSpineIndex == cachedSpineIndex && !pendingPageJump.has_value() &&
                                    pendingAnchor.empty() && !pendingPercentJump;
     const uint16_t paragraphTarget = (repositionPending && pendingRepositionParagraph > 0 &&
-                                      pendingRepositionTranslated == section->hasTranslatedHtml())
+                                      pendingRepositionTranslated == section->hasTranslation())
                                          ? pendingRepositionParagraph
                                          : 0;
     const bool cacheComplete = cacheLoaded && !section->isPartial();
@@ -1621,10 +1649,13 @@ void EpubReaderActivity::render(RenderLock&& lock) {
           // fast, so no popup -- that's what made an already-indexed book look like it was reindexing.
           // A partial cache that already covers the target page shows it instantly: never popup.
           const bool willInflate = !section->hasHtmlCache();
-          // Both cost proxies above describe the ORIGINAL chapter. A translated chapter lays out the
-          // ~2x bilingual .translated.html sidecar instead, so a cached original ("fast reopen, no
-          // popup") says nothing about the real cost — always indicate for translated builds.
-          const bool translatedBuild = section->hasTranslatedHtml();
+          // Both cost proxies above describe the ORIGINAL chapter. A chapter with a reader-produced
+          // translation lays out the ~2x bilingual .translated.html sidecar instead, so a cached
+          // original ("fast reopen, no popup") says nothing about the real cost — always indicate
+          // for translated builds. A chapter whose translation is embedded in its own XHTML also
+          // answers true here: it is genuinely a ~2x layout too (both languages are in that one
+          // file), so indicating is right for it as well, even though willInflate already sees it.
+          const bool translatedBuild = section->hasTranslation();
           bool showPopup;
           if (anchorJump) {
             // An anchor jump's cost is bounded by the anchor's page, not `target`. An anchor already
