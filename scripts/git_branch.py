@@ -2,7 +2,8 @@
 PlatformIO pre-build script: inject git branch and short SHA into
 CROSSPOINT_VERSION for the default (dev) environment.
 
-Results in a version string like:  1.1.0-dev-feat-kosync-xpath-05c6cf8
+Results in a version string like:
+1.1.0-dev-feat-kosync-xpath-05c6cf8+crosspoint.1.5.0
 Release environments are unaffected; they set CROSSPOINT_VERSION in the ini.
 """
 
@@ -63,17 +64,21 @@ def get_git_short_sha(project_dir):
     )
 
 
-def get_base_version(project_dir):
+def get_versions(project_dir):
     ini_path = os.path.join(project_dir, 'platformio.ini')
     if not os.path.isfile(ini_path):
-        warn(f'platformio.ini not found at {ini_path}; base version will be "0.0.0"')
-        return '0.0.0'
+        warn(f'platformio.ini not found at {ini_path}; versions will be "0.0.0"')
+        return '0.0.0', '0.0.0'
     config = configparser.ConfigParser()
     config.read(ini_path)
     if not config.has_option('crosslingua', 'version'):
-        warn('No [crosslingua] version in platformio.ini; base version will be "0.0.0"')
-        return '0.0.0'
-    return config.get('crosslingua', 'version')
+        warn('No [crosslingua] version in platformio.ini; version will be "0.0.0"')
+    if not config.has_option('crosspoint', 'version'):
+        warn('No [crosspoint] version in platformio.ini; base version will be "0.0.0"')
+    return (
+        config.get('crosslingua', 'version', fallback='0.0.0'),
+        config.get('crosspoint', 'version', fallback='0.0.0'),
+    )
 
 
 def inject_version(env):
@@ -83,10 +88,13 @@ def inject_version(env):
         return
 
     project_dir = env['PROJECT_DIR']
-    base_version = get_base_version(project_dir)
+    crosslingua_version, crosspoint_version = get_versions(project_dir)
     branch = get_git_branch(project_dir)
     short_sha = get_git_short_sha(project_dir)
-    version_string = f'{base_version}-dev-{branch}-{short_sha}'
+    version_string = (
+        f'{crosslingua_version}-dev-{branch}-{short_sha}'
+        f'+crosspoint.{crosspoint_version}'
+    )
 
     env.Append(CPPDEFINES=[('CROSSPOINT_VERSION', f'\\"{version_string}\\"')])
     print(f'CrossLingua build version: {version_string}')

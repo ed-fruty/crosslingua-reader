@@ -11,10 +11,51 @@
 #include <esp_wifi.h>
 // clang-format on
 
+#include <cstring>
 #include <string>
 
 namespace {
-constexpr char latestReleaseUrl[] = "https://api.github.com/repos/crosspoint-reader/crosspoint-reader/releases/latest";
+constexpr char latestReleaseUrl[] = "https://api.github.com/repos/ed-fruty/crosslingua-reader/releases/latest";
+
+struct ProductVersion {
+  int crossLinguaMajor = 0;
+  int crossLinguaMinor = 0;
+  int crossLinguaPatch = 0;
+  int crossPointMajor = 0;
+  int crossPointMinor = 0;
+  int crossPointPatch = 0;
+  bool valid = false;
+};
+
+ProductVersion parseProductVersion(const char* version) {
+  ProductVersion parsed;
+  if (!version) return parsed;
+
+  if (*version == 'v' || *version == 'V') version++;
+  if (sscanf(version, "%d.%d.%d", &parsed.crossLinguaMajor, &parsed.crossLinguaMinor,
+             &parsed.crossLinguaPatch) != 3) {
+    return parsed;
+  }
+
+  const char* crossPoint = strstr(version, "+crosspoint.");
+  if (crossPoint) {
+    crossPoint += strlen("+crosspoint.");
+    // Older/simple CrossLingua builds may omit the upstream version. Treat
+    // that as 0.0.0 so a tagged release with the same CrossLingua version and
+    // a real CrossPoint base is still considered newer.
+    sscanf(crossPoint, "%d.%d.%d", &parsed.crossPointMajor, &parsed.crossPointMinor, &parsed.crossPointPatch);
+  }
+
+  parsed.valid = true;
+  return parsed;
+}
+
+int compareTriplet(int lhsMajor, int lhsMinor, int lhsPatch, int rhsMajor, int rhsMinor, int rhsPatch) {
+  if (lhsMajor != rhsMajor) return lhsMajor < rhsMajor ? -1 : 1;
+  if (lhsMinor != rhsMinor) return lhsMinor < rhsMinor ? -1 : 1;
+  if (lhsPatch != rhsPatch) return lhsPatch < rhsPatch ? -1 : 1;
+  return 0;
+}
 }  // namespace
 
 OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
@@ -64,38 +105,27 @@ bool OtaUpdater::isUpdateNewer() const {
     return false;
   }
 
-  int currentMajor, currentMinor, currentPatch;
-  int latestMajor, latestMinor, latestPatch;
+  const ProductVersion current = parseProductVersion(CROSSPOINT_VERSION);
+  const ProductVersion latest = parseProductVersion(latestVersion.c_str());
+  if (!current.valid || !latest.valid) {
+    LOG_ERR("OTA", "Invalid version format: current=%s latest=%s", CROSSPOINT_VERSION, latestVersion.c_str());
+    return false;
+  }
 
-  const auto currentVersion = CROSSPOINT_VERSION;
+  const int crossLinguaOrder =
+      compareTriplet(latest.crossLinguaMajor, latest.crossLinguaMinor, latest.crossLinguaPatch,
+                     current.crossLinguaMajor, current.crossLinguaMinor, current.crossLinguaPatch);
+  if (crossLinguaOrder != 0) return crossLinguaOrder > 0;
 
-  // semantic version check (only match on 3 segments)
-  sscanf(latestVersion.c_str(), "%d.%d.%d", &latestMajor, &latestMinor, &latestPatch);
-  sscanf(currentVersion, "%d.%d.%d", &currentMajor, &currentMinor, &currentPatch);
-
-  /*
-   * Compare major versions.
-   * If they differ, return true if latest major version greater than current major version
-   * otherwise return false.
-   */
-  if (latestMajor != currentMajor) return latestMajor > currentMajor;
-
-  /*
-   * Compare minor versions.
-   * If they differ, return true if latest minor version greater than current minor version
-   * otherwise return false.
-   */
-  if (latestMinor != currentMinor) return latestMinor > currentMinor;
-
-  /*
-   * Check patch versions.
-   */
-  if (latestPatch != currentPatch) return latestPatch > currentPatch;
+  const int crossPointOrder =
+      compareTriplet(latest.crossPointMajor, latest.crossPointMinor, latest.crossPointPatch, current.crossPointMajor,
+                     current.crossPointMinor, current.crossPointPatch);
+  if (crossPointOrder != 0) return crossPointOrder > 0;
 
   // If we reach here, it means all segments are equal.
   // One final check, if we're on an RC build (contains "-rc"), we should consider the latest version as newer even if
   // the segments are equal, since RC builds are pre-release versions.
-  if (strstr(currentVersion, "-rc") != nullptr) {
+  if (strstr(CROSSPOINT_VERSION, "-rc") != nullptr) {
     return true;
   }
 
