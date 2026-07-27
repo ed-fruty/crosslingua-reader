@@ -490,6 +490,14 @@ void ParsedText::ensureRubyCapacity() {
   }
 }
 
+int ParsedText::defaultFirstLineIndent(const GfxRenderer& renderer, const int fontId,
+                                       const bool extraParagraphSpacing) {
+  if (extraParagraphSpacing) {
+    return 0;  // the gap marks the boundary instead
+  }
+  return renderer.getSpaceWidth(fontId, EpdFontFamily::REGULAR) * 3;
+}
+
 int ParsedText::resolveFirstLineIndent(const bool isFirstLine, const GfxRenderer& renderer, const int fontId) const {
   if (!isFirstLine || !isNaturalAlign) {
     return 0;
@@ -500,10 +508,7 @@ int ParsedText::resolveFirstLineIndent(const bool isFirstLine, const GfxRenderer
     }
     return 0;
   }
-  if (!extraParagraphSpacing) {
-    return renderer.getSpaceWidth(fontId, EpdFontFamily::REGULAR) * 3;
-  }
-  return 0;
+  return defaultFirstLineIndent(renderer, fontId, extraParagraphSpacing);
 }
 void ParsedText::prepareForLayout(const GfxRenderer& renderer, const int fontId) {
   // Per-paragraph RTL auto-detection: only when CSS/HTML didn't explicitly set direction.

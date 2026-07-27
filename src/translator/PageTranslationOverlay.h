@@ -47,14 +47,19 @@ class PageTranslationOverlay {
   // real translation or — when no translation exists for this paragraph — the
   // page's own SOURCE text (Option C fallback), in which case render() appends a
   // short dim STR_NO_TRANSLATION marker so the gap is visible but unobtrusive.
+  // No per-paragraph indent VALUE is stored: the overlay's first-line indent is the same for every
+  // paragraph that begins here, because it is a pure function of the Extra Paragraph Spacing setting
+  // (ParsedText::defaultFirstLineIndent) and the overlay's own font. render() computes it once and
+  // gates it on `startsHere`.
   struct DisplayPara {
     std::string text;
-    // First-line indent in PIXELS, read straight off the page layout: the x position the layout
-    // engine gave this paragraph's first line ON THIS PAGE (PageLine's TextBlock word 0). It is
-    // therefore 0 for a paragraph that began on an earlier page, and 0 whenever the layout applied
-    // no indent — nothing is recomputed or synthesized here. See preparePage().
-    int16_t indent = 0;
     bool translated = true;  // false => source fallback; render() adds the dim marker line
+    // Did this paragraph BEGIN on this page? False only for the page's first entry when the layout
+    // flowed it in from the previous page, i.e. what the body draws as a continuation line. An
+    // indent marks the START of a paragraph, so a continuation must render flush — the body resolves
+    // this with isFirstLine=(breakIndex==0) (ParsedText::resolveFirstLineIndent) and the overlay has
+    // to reach the same answer. See preparePage() for how it is detected.
+    bool startsHere = true;
   };
 
   bool active = false;

@@ -49,7 +49,14 @@ bool splitSentencePair(const char* const* origWords, int origWordCount, const ch
 // boundary — into the preceding sentence, so they never become a navigation step or an annotation
 // row of their own. A sentence is junk when its match key is empty, or is <= 2 bytes over <= 3
 // words. Walks backwards so a run of junk collapses in one pass. No-op for a single sentence.
-void mergeJunkSentences(SentenceSplitResult& splits, const char* const* words);
+//
+// `runStarts` / `runCount` are the paragraph-run table (see splitSentencesByParagraph): a junk
+// sentence that BEGINS a paragraph is left alone, because folding it backwards would pull the
+// previous paragraph's words into it and undo the very boundary the split just made — a bare
+// numeral heading ("1") or a paragraph opening with a stray dot is exactly that case. Omit the table
+// (the default) to merge with no boundary constraint, which is what a single-paragraph caller wants.
+void mergeJunkSentences(SentenceSplitResult& splits, const char* const* words, const uint16_t* runStarts = nullptr,
+                        int runCount = 0);
 
 // Map every source sentence in scratch.origSplits to a translation word span in scratch.transFor.
 //

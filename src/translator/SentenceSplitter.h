@@ -24,6 +24,24 @@ struct SentenceSplitResult {
 // Returns SentenceSplitResult with word-index-based spans.
 SentenceSplitResult splitSentences(const char* const* words, int wordCount);
 
+// Same, except that a PARAGRAPH boundary always ends a sentence.
+//
+// splitSentences() breaks on punctuation only. Fed a whole PAGE's words with the paragraph structure
+// flattened away, it therefore glues a paragraph that ends WITHOUT a terminator — a chapter heading,
+// a stat line, a list row — onto the paragraph that follows it, producing one "sentence" out of two.
+// A consumer whose translations are keyed per paragraph (TooltipOverlay's index is built one entry
+// per paragraph pair) then has more entries than the page has sentences, and its fuzzy key matcher
+// resolves the glued sentence to whichever key it prefix-matches first — the heading — orphaning the
+// real first sentence's translation. Splitting per paragraph run restores the invariant that both
+// sides are cut at the same places.
+//
+// `runStarts[r]` is the word index paragraph run r begins at, ascending. Words before runStarts[0]
+// (and after the last run) form their own runs, so the table need not be exhaustive; a null table or
+// runCount <= 0 degrades to plain splitSentences. The MAX_SENTENCES budget is shared across runs,
+// exactly as splitSentences applies it within one.
+SentenceSplitResult splitSentencesByParagraph(const char* const* words, int wordCount, const uint16_t* runStarts,
+                                              int runCount);
+
 // ── Char-offset sentence helpers (over the shared textnorm canonical fold) ──
 //
 // Terminator / closing-quote recognition funnels through textnorm's ONE set of

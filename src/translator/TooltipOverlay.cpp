@@ -568,25 +568,46 @@ void TooltipOverlay::preparePage(const Page& page) {
   sentenceTranslations.clear();
   stepCount = 0;  // stays 0 on any early return below (no paragraph indices / empty index)
 
-  // 1. Collect original words from page. v2 flattened TextBlock word storage: iterate by index
-  //    (wordCount/wordText), NOT the fork's getWords() container. wordText(i) returns a
-  //    NUL-terminated pointer into the block's arena, stable for the block's (and page's) lifetime,
-  //    which spans every render() call between page changes.
+  // 1. Collect original words from page, REMEMBERING WHERE EACH PARAGRAPH STARTS. v2 flattened
+  //    TextBlock word storage: iterate by index (wordCount/wordText), NOT the fork's getWords()
+  //    container. wordText(i) returns a NUL-terminated pointer into the block's arena, stable for
+  //    the block's (and page's) lifetime, which spans every render() call between page changes.
+  //
+  //    The paragraph runs are not decoration: step 3 builds the index one entry per PARAGRAPH pair,
+  //    so the page side has to be cut at the same places or the two sides count differently. Lines
+  //    of one paragraph are contiguous and carry its index (PageLine::paragraphIdx, serialized with
+  //    the page), so a change of index opens a new run — the same grouping PageTranslationOverlay
+  //    does. An old cache leaves every index at -1, which collapses to a single run and reproduces
+  //    the previous flat behaviour rather than mis-cutting.
+  //
+  //    More than MAX_SENTENCES runs cannot produce distinguishable sentences anyway (every run
+  //    yields at least one, and the split budget is MAX_SENTENCES), so the table is capped there.
+  uint16_t paraRunStarts[MAX_SENTENCES];
+  int paraRunCount = 0;
+  int16_t lastParagraphIdx = -1;
+  bool haveRun = false;  // the first line always opens a run, whatever its index
   for (const auto& el : page.elements) {
     if (el->getTag() != TAG_PageLine) continue;
     const auto* line = static_cast<const PageLine*>(el.get());
+    if (!haveRun || line->paragraphIdx != lastParagraphIdx) {
+      haveRun = true;
+      if (paraRunCount < MAX_SENTENCES) paraRunStarts[paraRunCount++] = static_cast<uint16_t>(origWordCount);
+      lastParagraphIdx = line->paragraphIdx;
+    }
     const auto& block = line->getBlock();
     for (uint16_t i = 0; i < block->wordCount(); i++) {
       if (origWordCount < MAX_WORDS) origWordPtrs[origWordCount++] = block->wordText(i);
     }
   }
 
-  // 2. Split into sentences, then merge any "empty" sentences (dots, fragments)
-  //    into the previous sentence so the user doesn't click through junk. Shared with
-  //    PtLayout::Interlinear, which must not give a stray "." an annotation row either.
-  splits = splitSentences(origWordPtrs, origWordCount);
-  mergeJunkSentences(splits, origWordPtrs);
-  LOG_DBG("TIP", "Page: %d words, %d sentences (after merge)", origWordCount, splits.count);
+  // 2. Split into sentences — never across a paragraph edge — then merge any "empty" sentences
+  //    (dots, fragments) into the previous sentence so the user doesn't click through junk. The
+  //    merge gets the same run table: it folds BACKWARDS, so without it a junk-only paragraph (a
+  //    bare numeral heading) would swallow the paragraph before it and undo the split.
+  splits = splitSentencesByParagraph(origWordPtrs, origWordCount, paraRunStarts, paraRunCount);
+  mergeJunkSentences(splits, origWordPtrs, paraRunStarts, paraRunCount);
+  LOG_DBG("TIP", "Page: %d words, %d paragraphs, %d sentences (after merge)", origWordCount, paraRunCount,
+          splits.count);
 
   // 3. Parse HTML and build sentence index in one pass (memory-efficient). Restrict to the
   //    paragraph range this page shows — otherwise the index holds the whole chapter's
@@ -618,10 +639,26 @@ void TooltipOverlay::preparePage(const Page& page) {
     while (!nk.empty() && nk.back() == ' ') nk.pop_back();
   }
 
+  // The page sentences that carry matchable text, in order. A sentence whose key is EMPTY has none:
+  // sentenceKey drops single-character punctuation words, so a scene-break ornament paragraph ("*",
+  // "◆") keys to nothing. Cutting the page at paragraph edges now keeps such a paragraph as a page
+  // sentence of its own instead of folding it into a neighbour, so it has to be excluded from the
+  // gap fill as well as from the match — otherwise it inherits a NEIGHBOUR's translation and becomes
+  // a navigation step that underlines a stray glyph. Left unfilled, its translation stays empty and
+  // groupTranslationSteps drops it from the step list: no step, no underline.
+  //
+  // The fill must still CHAIN ACROSS it, which is why this is a list of the keyed sentences rather
+  // than a skip flag: the passes below take each keyed sentence's keyed neighbour. On a page with no
+  // keyless sentence — every page of the sample book — this is 0,1,2,… and the two passes are
+  // exactly the neighbour fills they have always been.
+  uint8_t keyed[MAX_SENTENCES];
+  int keyedCount = 0;
+
   // Forward pass: match by key.
   for (int s = 0; s < splits.count; s++) {
     std::string pk = sentenceKey(origWordPtrs, splits.spans[s].startWord, splits.spans[s].endWord);
     if (pk.empty()) continue;
+    if (keyedCount < MAX_SENTENCES) keyed[keyedCount++] = static_cast<uint8_t>(s);
     std::string np;
     for (char c : pk) {
       if (c == '.') continue;
@@ -656,22 +693,24 @@ void TooltipOverlay::preparePage(const Page& page) {
     }
   }
 
-  // Gap fill: infer unmatched sentences from neighbors.
-  // Backward: if s+1 matched at idx N, s gets idx N-1.
-  for (int s = splits.count - 2; s >= 0; s--) {
+  // Gap fill: infer unmatched sentences from their KEYED neighbors (see `keyed` above).
+  // Backward: if the next keyed sentence matched at idx N, this one gets idx N-1.
+  for (int k = keyedCount - 2; k >= 0; k--) {
+    const int s = keyed[k], next = keyed[k + 1];
     if (matchedIdx[s] >= 0) continue;
-    if (matchedIdx[s + 1] > 0) {
-      int idx = matchedIdx[s + 1] - 1;
+    if (matchedIdx[next] > 0) {
+      int idx = matchedIdx[next] - 1;
       sentenceTranslations[s] = index[idx].translation;
       matchedIdx[s] = idx;
       matched++;
     }
   }
-  // Forward: if s-1 matched at idx N, s gets idx N+1.
-  for (int s = 1; s < splits.count; s++) {
+  // Forward: if the previous keyed sentence matched at idx N, this one gets idx N+1.
+  for (int k = 1; k < keyedCount; k++) {
+    const int s = keyed[k], prev = keyed[k - 1];
     if (matchedIdx[s] >= 0) continue;
-    if (matchedIdx[s - 1] >= 0 && matchedIdx[s - 1] + 1 < (int)index.size()) {
-      int idx = matchedIdx[s - 1] + 1;
+    if (matchedIdx[prev] >= 0 && matchedIdx[prev] + 1 < (int)index.size()) {
+      int idx = matchedIdx[prev] + 1;
       sentenceTranslations[s] = index[idx].translation;
       matchedIdx[s] = idx;
       matched++;
