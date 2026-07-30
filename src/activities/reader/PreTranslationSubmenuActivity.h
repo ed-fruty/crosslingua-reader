@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "activities/Activity.h"
+#include "components/OptionPopup.h"
 #include "util/ButtonNavigator.h"
 
 // Typed request the submenu hands back to the reader when the user picks a
@@ -94,6 +95,9 @@ class PreTranslationSubmenuActivity final : public Activity {
   std::vector<MenuItem> menuItems;
   int selectedIndex = 0;
   ButtonNavigator buttonNavigator;
+  OptionPopup optionPopup;
+  // Same press-to-close / release-to-swallow bridge as EpubReaderMenuActivity.
+  bool popupClosing = false;
 
   // A translation the READER produced for this chapter (`<spine>.translated.html` exists). Drives
   // the "Translate" vs "Re-translate Chapter" label only: a plugin-translated book has no sidecar,

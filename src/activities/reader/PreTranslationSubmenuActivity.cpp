@@ -196,6 +196,24 @@ void PreTranslationSubmenuActivity::appendModeChildren() {
 // ─── input ────────────────────────────────────────────────────────────────────
 
 void PreTranslationSubmenuActivity::loop() {
+  if (optionPopup.handleInput(mappedInput, [this] { requestUpdate(); })) {
+    // Match EpubReaderMenuActivity: OptionPopup acts on the press edge, so
+    // keep the trailing release away from the menu underneath.
+    popupClosing = !optionPopup.isActive();
+    return;
+  }
+  if (popupClosing) {
+    if (mappedInput.isPressed(MappedInputManager::Button::Back) ||
+        mappedInput.isPressed(MappedInputManager::Button::Confirm)) {
+      return;
+    }
+    popupClosing = false;
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back) ||
+        mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      return;
+    }
+  }
+
   // Auto-dismiss the toast overlay once its duration elapses.
   if (showingToast && (millis() - toastShownAtMs) >= toastDurationMs) {
     showingToast = false;
@@ -234,25 +252,29 @@ void PreTranslationSubmenuActivity::loop() {
 void PreTranslationSubmenuActivity::onActionSelected(Action a) {
   switch (a) {
     case Action::CYCLE_DISPLAY_MODE: {
-      // Cycle through PT_SELECTABLE_MODES, not the raw value range: values 1 and 2 are retired
-      // holes and must stay unreachable.
-      const uint8_t newMode = ptNextSelectableMode(SETTINGS.translationDisplayMode);
-      // Switching to any translation-display mode while the current chapter carries no translation
-      // at all -- neither a reader-produced sidecar nor one embedded in its own XHTML -- would
-      // render a blank page; reject the change with a toast and keep the mode at Normal.
-      if (newMode != CrossPointSettings::PT_NORMAL && !chapterHasTranslation) {
-        showToast(tr(STR_NO_TRANSLATION_SWITCH_NORMAL), DEFAULT_TOAST_MS);
-        return;
+      StrId modeLabels[PT_SELECTABLE_MODE_COUNT];
+      for (size_t i = 0; i < PT_SELECTABLE_MODE_COUNT; i++) {
+        modeLabels[i] = ptModeLabel(PT_SELECTABLE_MODES[i]);
       }
-      SETTINGS.translationDisplayMode = newMode;
-      SETTINGS.saveToFile();
-      // Each mode carries its own child rows; rebuild so the indented block under Display Mode
-      // swaps as the mode is cycled through. The cursor is on the Display Mode row (index 0), which
-      // the rebuild preserves.
-      buildMenuItems();
-      if (selectedIndex >= static_cast<int>(menuItems.size())) {
-        selectedIndex = static_cast<int>(menuItems.size()) - 1;
-      }
+      optionPopup.show(StrId::STR_DISPLAY_MODE, modeLabels, static_cast<int>(PT_SELECTABLE_MODE_COUNT),
+                       static_cast<int>(ptSelectableIndex(SETTINGS.translationDisplayMode)), [this](int idx) {
+                         const uint8_t newMode = static_cast<uint8_t>(PT_SELECTABLE_MODES[idx]);
+                         // A bilingual mode with no translation would render an empty page.
+                         if (newMode != CrossPointSettings::PT_NORMAL && !chapterHasTranslation) {
+                           showToast(tr(STR_NO_TRANSLATION_SWITCH_NORMAL), DEFAULT_TOAST_MS);
+                           return;
+                         }
+                         if (SETTINGS.translationDisplayMode != newMode) {
+                           SETTINGS.translationDisplayMode = newMode;
+                           SETTINGS.saveToFile();
+                           // Each mode owns a different block of child settings.
+                           buildMenuItems();
+                           if (selectedIndex >= static_cast<int>(menuItems.size())) {
+                             selectedIndex = static_cast<int>(menuItems.size()) - 1;
+                           }
+                         }
+                         requestUpdate();
+                       });
       requestUpdate();
       return;
     }
@@ -333,15 +355,28 @@ void PreTranslationSubmenuActivity::onActionSelected(Action a) {
     }
 
     case Action::CYCLE_ENGINE: {
-      SETTINGS.translationEngine =
-          static_cast<uint8_t>((SETTINGS.translationEngine + 1) % CrossPointSettings::TRANSLATION_ENGINE_COUNT);
-      SETTINGS.saveToFile();
-      // The API-key row is shown only for engines that need a key; rebuild so it appears/disappears
-      // as the engine is cycled. The cursor is on the Engine row, which the rebuild preserves.
-      buildMenuItems();
-      if (selectedIndex >= static_cast<int>(menuItems.size())) {
-        selectedIndex = static_cast<int>(menuItems.size()) - 1;
-      }
+      static constexpr StrId engineLabels[] = {
+          StrId::STR_ENGINE_GOOGLE_FREE, StrId::STR_ENGINE_DEEPL,       StrId::STR_ENGINE_DEEPL_PRO,
+          StrId::STR_ENGINE_OPENAI,      StrId::STR_ENGINE_DEEPSEEK,    StrId::STR_ENGINE_GEMINI,
+          StrId::STR_ENGINE_GOOGLE_V2,   StrId::STR_ENGINE_GOOGLE_HTML, StrId::STR_ENGINE_AZURE,
+      };
+      static_assert(sizeof(engineLabels) / sizeof(engineLabels[0]) == CrossPointSettings::TRANSLATION_ENGINE_COUNT);
+      const int currentEngine = SETTINGS.translationEngine < CrossPointSettings::TRANSLATION_ENGINE_COUNT
+                                    ? SETTINGS.translationEngine
+                                    : CrossPointSettings::ENGINE_GOOGLE_V2;
+      optionPopup.show(StrId::STR_TRANSLATION_ENGINE, engineLabels, CrossPointSettings::TRANSLATION_ENGINE_COUNT,
+                       currentEngine, [this](int idx) {
+                         if (SETTINGS.translationEngine != idx) {
+                           SETTINGS.translationEngine = static_cast<uint8_t>(idx);
+                           SETTINGS.saveToFile();
+                           // Keyed engines expose the API-key row; keyless engines hide it.
+                           buildMenuItems();
+                           if (selectedIndex >= static_cast<int>(menuItems.size())) {
+                             selectedIndex = static_cast<int>(menuItems.size()) - 1;
+                           }
+                         }
+                         requestUpdate();
+                       });
       requestUpdate();
       return;
     }
@@ -476,7 +511,7 @@ const char* PreTranslationSubmenuActivity::tooltipButtonsLabel() const {
 
 const char* PreTranslationSubmenuActivity::overlayButtonsLabel(const uint8_t storedButtons) const {
   return I18N.get(storedButtons == CrossPointSettings::OVERLAY_BUTTONS_SIDE ? StrId::STR_SIDE_BUTTONS
-                                                                           : StrId::STR_FRONT_BUTTONS);
+                                                                            : StrId::STR_FRONT_BUTTONS);
 }
 
 const char* PreTranslationSubmenuActivity::tooltipBehaviorLabel() const {
@@ -673,6 +708,8 @@ void PreTranslationSubmenuActivity::render(RenderLock&&) {
     // overflows GUI.drawPopup's single-line box; wrap it to the viewable area instead.
     GUI.drawWrappedPopup(renderer, toastMessage);
   }
+
+  if (optionPopup.processRender(renderer, mappedInput)) return;
 
   renderer.displayBuffer();
 }
