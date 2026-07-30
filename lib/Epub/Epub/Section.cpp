@@ -138,7 +138,7 @@ namespace {
 // invalidate -- a downloaded or deleted sidecar flips the byte, and an embedded translation is
 // baked into the chapter HTML, so a book that gains one is a different file with a different cache
 // directory.
-constexpr uint8_t SECTION_FILE_VERSION = 35;
+constexpr uint8_t SECTION_FILE_VERSION = 34;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
@@ -154,16 +154,16 @@ constexpr uint8_t SECTION_FILE_INCOMPLETE_VERSION = 0;
 // MUST change in lockstep with SECTION_FILE_VERSION: the sentinel IS the partial's
 // format version, so a stale-format partial otherwise passes the header check and
 // only fails (noisily, via the block-decode error path) when a page is loaded.
-// Derived so the pairing can't be forgotten: 0xFE for v28, 0xFD for v29, ... 0xF7 for v35.
+// Derived so the pairing can't be forgotten: 0xFE for v28, 0xFD for v29, ... 0xF8 for v34.
 // The derivation walks DOWN as the version walks up, so rewinding the version walks it back up:
 // the 33 -> 41 iterations put it at 0xF1, collapsing back to 33 returned it to 0xF9, 34 took it to
-// 0xF8 and 35 to 0xF7. A partial left on a card by any of those builds carries a sentinel this
+// 0xF8 and the former v35 to 0xF7. A partial left on a card by any of those builds carries a sentinel this
 // firmware does not recognise, so it is rejected as an unknown version and rebuilt -- the same
 // one-off invalidation a version bump costs finalized files.
 constexpr uint8_t SECTION_FILE_PARTIAL_VERSION = 0xFE - (SECTION_FILE_VERSION - 28);
 // The derivation only stays a distinct sentinel while the two ranges have not met; assert it rather
-// than trusting a future bump to notice. At 35 the sentinel is 0xF7 (247): comfortably above the
-// version, and nothing but a version past 0xF7-28 = 219 could ever close the gap.
+// than trusting a future bump to notice. At 34 the sentinel is 0xF8 (248): comfortably above the
+// version, and nothing but a version past 0xF8-28 = 220 could ever close the gap.
 static_assert(SECTION_FILE_PARTIAL_VERSION > SECTION_FILE_VERSION &&
                   SECTION_FILE_PARTIAL_VERSION != SECTION_FILE_INCOMPLETE_VERSION,
               "Partial sentinel collides with a real version");

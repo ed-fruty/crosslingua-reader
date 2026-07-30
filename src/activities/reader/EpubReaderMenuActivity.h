@@ -15,6 +15,7 @@ class EpubReaderMenuActivity final : public Activity {
   enum class MenuAction {
     SELECT_CHAPTER,
     FOOTNOTES,
+    TEXT_SETTINGS,
     GO_TO_PERCENT,
     AUTO_PAGE_TURN,
     ROTATE_SCREEN,
@@ -27,9 +28,6 @@ class EpubReaderMenuActivity final : public Activity {
     DELETE_CACHE,
     DICTIONARY,
     PRE_TRANSLATION,
-    // Opens the same TextSettingsActivity the Settings screen uses (font family, size,
-    // layout, style + live preview), so the reader never grows a parallel font UI.
-    TEXT_SETTINGS,
   };
 
   explicit EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title,

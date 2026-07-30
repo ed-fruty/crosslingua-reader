@@ -90,11 +90,12 @@ if (parsedSize != fileSize) {
 
 ## `section.bin`
 
-### Version 35 — current
+### Version 34 — current
 
 **The byte layout is unchanged from 33.** No new field, no new tag, no change to
-`TextBlock`'s arena or to the header. 34 and 35 exist because the version *is* the
-cache key and the **content** of every cached Interlinear page changed under each:
+`TextBlock`'s arena or to the header. The fork previously used 34 and then 35 because
+the version *is* the cache key and the **content** of every cached Interlinear page
+changed under each:
 
 - **34** — the source stopped breaking a line at every sentence, and each source line
   gained exactly one annotation strip in place of a variable stack over the
@@ -104,11 +105,19 @@ cache key and the **content** of every cached Interlinear page changed under eac
   one, and the runs sharing a strip are held to disjoint horizontal bands. Same
   strips, different text on them and different x on nearly all of them.
 
+The current build deliberately realigns the numeric version with upstream at 34.
+Upstream's v34 also changes cached layout without changing the byte structure:
+word-gap suppression now applies only to tokens glued together in the source, so
+spaces between Hangul words survive, and `<br>` handling now distinguishes an inline
+line break from an empty-block scene break. Devices that ran this fork's earlier
+version 34 must clear their section cache when installing this build; the number has
+been reused for a different page layout.
+
 Without a bump a device holding pages built by an earlier model would serve them
 forever. Side-by-Side forced a bump for exactly the same reason when it landed (see
 the note under [Side-by-Side](#side-by-side-two-column-layout)).
 
-> **This number is not upstream's.** This fork's header carries four fields
+> **The number now matches upstream's, but the format does not.** This fork's header carries four fields
 > upstream's has no concept of — `translationFontId`, `annotationFontId`, the
 > `PtLayout` byte, and the `translatedSource` / `embeddedTranslation` pair — so an
 > upstream-written `.bin` and one of ours are mutually unreadable whatever number
@@ -138,7 +147,8 @@ Every one of these invalidates caches on any device that ran an affected build; 
 files are rejected as an unknown version and rebuilt once per book in the background.
 That is expected. The partial sentinel moves with the version by the same derivation
 (`0xFE - (version - 28)`): `0xF1` under the 34–41 iterations, `0xF9` after the
-rewind, `0xF8` at 34, `0xF7` now. Stale partials are rejected on the same grounds.
+rewind, `0xF8` at the current 34, and `0xF7` at the former 35. Stale partials are
+rejected on the same grounds except when a numeric version has deliberately been reused.
 
 #### Header layout
 
@@ -455,7 +465,7 @@ paired translation. See [Side by Side](./pre-translation.md#side-by-side).
 
 > **The "version 33" in this section is not the 33 this fork last shipped.** It is
 > the fork's *original* 33 (per-block hyphenation), long superseded. The number was
-> reused when 34–41 were collapsed, and the format has since moved on to 35; these
+> reused when 34–41 were collapsed, and the current format now uses 34; these
 > notes are kept for archaeology only and describe formats no current firmware
 > reads.
 
@@ -501,7 +511,7 @@ superscript, and subscript. The format also includes:
 
 ### ImHex pattern
 
-Describes the **current** format (version 35 as defined above, not the original 33
+Describes the **current** format (version 34 as defined above, not the original 33
 in the archaeology section; the byte layout is identical between the two).
 
 ```c++
@@ -769,7 +779,7 @@ clean, complete write has finished. Consequences:
   `hasTranslatedSidecar()` is true, never from a `.part`.
 - That sidecar check answers "which file does the build parse", **not** "does this chapter
   have a translation". The latter is `Section::hasTranslation()`, which is also true for a
-  chapter whose translations are embedded in its own XHTML (see version 35 above); it is
+  chapter whose translations are embedded in its own XHTML (see the current version above); it is
   what gates the display-mode fallback and what is stamped as `translatedSource`.
 - A leftover `.part` from an interrupted run is transient; `Section::clearCache()`
   reclaims it on the next `.bin` invalidation, while the completed final file is

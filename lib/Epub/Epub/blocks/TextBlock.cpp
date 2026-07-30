@@ -435,22 +435,20 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(HalFile& file) {
     }
   }
 
-  // Ruby text data. Every word carries an entry on disk (empty when it has no annotation), so all
-  // `wc` strings must be consumed to stay in sync with the byte stream -- but the vector is only
-  // RETAINED when at least one is non-empty. A book without ruby (the overwhelming majority) would
-  // otherwise hold wordCount empty std::strings per block for the lifetime of every loaded page,
-  // which on a 380 KB no-PSRAM device is pure waste. Every reader treats an empty rubyTexts as "no
-  // ruby": hasRuby() is false, getRubyShift() is 0, and the indexed accesses are all guarded by
-  // `i < rubyTexts.size()`. serialize() likewise writes an empty string for any index past the end,
-  // so a re-serialized block is byte-identical either way.
-  std::vector<std::string> rubyTexts(wc);
-  bool anyRuby = false;
-  for (auto& rt : rubyTexts) {
-    serialization::readString(file, rt);
-    if (!rt.empty()) anyRuby = true;
-  }
-  if (anyRuby) {
-    block->rubyTexts = std::move(rubyTexts);
+  // Ruby text data. Ruby is a CJK feature, so for nearly every book every entry here
+  // is the empty string. An empty rubyTexts is already the "no ruby" representation:
+  // allocate the full vector lazily, only after a non-empty annotation is found.
+  //
+  // `scratch` is reused across words: readString() overwrites it, and a moved-from
+  // value carries nothing into the next iteration.
+  std::string scratch;
+  for (uint16_t i = 0; i < wc; i++) {
+    serialization::readString(file, scratch);
+    if (scratch.empty()) continue;
+    if (block->rubyTexts.empty()) {
+      block->rubyTexts.resize(wc);
+    }
+    block->rubyTexts[i] = std::move(scratch);
   }
 
   // Style (alignment + margins/padding/indent)

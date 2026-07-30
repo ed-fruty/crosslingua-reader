@@ -2235,6 +2235,10 @@ void EpubReaderActivity::renderContents(Page& page, const int orientedMarginTop,
 
   const bool pageHasImages = page.hasImages();
   const bool pageHasImagesNeedingDecode = pageHasImages && page.hasImagesNeedingDecode();
+  // Image pages bypass the normal refresh cadence. Besides an explicit manual
+  // refresh, preserve the clean base the cadence would have produced on the first
+  // page after startup or a silent restart (for example, after KOReader sync).
+  const bool cleanImageBasePending = manualRefreshPending || pagesUntilFullRefresh <= 1;
   const bool needsTextGrayscale = SETTINGS.textAntiAliasing;
   const bool needsAnyGrayscale = needsTextGrayscale || pageHasImages;
   const bool tiledGrayscale = needsAnyGrayscale && renderer.supportsStripGrayscale();
@@ -2272,12 +2276,12 @@ void EpubReaderActivity::renderContents(Page& page, const int orientedMarginTop,
     int16_t imgX, imgY, imgW, imgH;
     if (page.getImageBoundingBox(imgX, imgY, imgW, imgH)) {
       // Image pages intentionally bypass the regular refresh cadence. Preserve
-      // the manual clean pass before their double-FAST grayscale pipeline.
+      // a pending clean base before their double-FAST grayscale pipeline.
       // Wedge-safe under our async choreography: this branch only runs with pageHasImages, which
       // forces overlapRefresh = false, and every async BW refresh is drained by waitRefreshComplete()
       // inside the tiled-grayscale block before renderContents returns -- nothing is ever in flight
       // when this blocking HALF_REFRESH is issued.
-      if (manualRefreshPending) {
+      if (cleanImageBasePending) {
         renderer.displayBuffer(HalDisplay::HALF_REFRESH);
       }
       renderer.fillRect(imgX + orientedMarginLeft, imgY + orientedMarginTop, imgW, imgH, false);
