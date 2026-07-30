@@ -17,14 +17,14 @@ class EpdFontFamily {
     SUP = 16,           // superscript: glyph scaled 50%, raised ~40% of ascender
     SUB = 32,           // subscript: glyph scaled 50%, lowered ~25% of ascender
     TRANSLATED =
-        64,  // bit 6: word came from a translated block (lang= attribute set); used by Pre-Translation Dark/Light modes
+        64,  // bit 6: word came from a translated block (lang= attribute set); used by Lingua Dark/Light modes
     RUBY_CONTINUE = 128,  // bit 7: group ruby follower marker for native <ruby>/<rt> support; set at layout
                           // (ParsedText), persisted in the section.bin word style byte, read by TextBlock and
                           // ChapterHtmlSlimParser to keep ruby groups together. Upstream introduced this as 64,
                           // which collides with TRANSLATED on this line; renumbered to bit 7 in the section.bin
                           // upstream merge (which rejects every cache written by either line, so no stored style
                           // byte is ever reinterpreted under the new numbering). Bit 7 had been reserved for the
-                          // Tooltip display mode (PT_TOOLTIP), but that flag was never set nor persisted
+                          // Tooltip display mode (LINGUA_TOOLTIP), but that flag was never set nor persisted
                           // anywhere -- the tooltip renders the page original-only and surfaces translations
                           // through an at-view popup -- so the reservation is retired in favor of ruby. The
                           // style byte is now FULL: any future flag needs a wider persisted word style

@@ -1,4 +1,4 @@
-#include "PreTranslationSubmenuActivity.h"
+#include "LinguaSubmenuActivity.h"
 
 #include <Arduino.h>  // for millis()
 #include <Epub/TranslationDetection.h>
@@ -14,7 +14,7 @@
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
-#include "PreTranslationModes.h"
+#include "LinguaModes.h"
 #include "activities/ActivityResult.h"
 #include "activities/reader/ReaderUtils.h"
 #include "activities/translator/LanguagePickerActivity.h"
@@ -31,24 +31,24 @@ static constexpr unsigned long DEFAULT_TOAST_MS = ReaderUtils::BOOKMARK_MESSAGE_
 // to mean "unset".
 static constexpr uint8_t AUTO_DETECT_SENTINEL = 0xFF;
 
-PreTranslationSubmenuActivity::PreTranslationSubmenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
+LinguaSubmenuActivity::LinguaSubmenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                                              std::shared_ptr<Epub> epub, int currentSpineIndex)
-    : Activity("PreTranslationSubmenu", renderer, mappedInput),
+    : Activity("LinguaSubmenu", renderer, mappedInput),
       epub(std::move(epub)),
       currentSpineIndex(currentSpineIndex) {}
 
 // ─── lifecycle ────────────────────────────────────────────────────────────────
 
-void PreTranslationSubmenuActivity::onEnter() {
+void LinguaSubmenuActivity::onEnter() {
   Activity::onEnter();
   rebuildAfterReturn();
 }
 
-void PreTranslationSubmenuActivity::onExit() { Activity::onExit(); }
+void LinguaSubmenuActivity::onExit() { Activity::onExit(); }
 
 // ─── state scan + menu build ──────────────────────────────────────────────────
 
-void PreTranslationSubmenuActivity::rebuildAfterReturn() {
+void LinguaSubmenuActivity::rebuildAfterReturn() {
   // Build the translated-html path directly rather than instantiating Section,
   // which would require the parser deps and an extra HalFile handle. Match
   // Section::getTranslatedHtmlPath()'s format exactly so probes stay in sync.
@@ -96,7 +96,7 @@ void PreTranslationSubmenuActivity::rebuildAfterReturn() {
   requestUpdate();
 }
 
-void PreTranslationSubmenuActivity::buildMenuItems() {
+void LinguaSubmenuActivity::buildMenuItems() {
   menuItems.clear();
   menuItems.reserve(10);
 
@@ -131,7 +131,7 @@ void PreTranslationSubmenuActivity::buildMenuItems() {
   //   menuItems.push_back({Action::PICK_SOURCE_LANG, StrId::STR_SOURCE_LANGUAGE});
 }
 
-void PreTranslationSubmenuActivity::appendModeChildren() {
+void LinguaSubmenuActivity::appendModeChildren() {
   // Sub-settings of the SELECTED mode only, directly under the Display Mode row and indented, so it
   // reads as "these belong to that mode" — and so the menu is not cluttered with controls for six
   // modes the user is not in. buildMenuItems() re-runs on every mode cycle, so the block swaps
@@ -141,10 +141,10 @@ void PreTranslationSubmenuActivity::appendModeChildren() {
   };
 
   // Switch (no `default:`) over the mode enum rather than an if-chain: a mode added to
-  // PRE_TRANSLATION_MODE then fails the build here until someone decides whether it has
-  // sub-settings, instead of silently getting none. Same rationale as ptLayoutForDisplayMode().
-  switch (static_cast<CrossPointSettings::PRE_TRANSLATION_MODE>(SETTINGS.translationDisplayMode)) {
-    case CrossPointSettings::PT_INTERLEAVED:
+  // LINGUA_MODE then fails the build here until someone decides whether it has
+  // sub-settings, instead of silently getting none. Same rationale as linguaLayoutForDisplayMode().
+  switch (static_cast<CrossPointSettings::LINGUA_MODE>(SETTINGS.translationDisplayMode)) {
+    case CrossPointSettings::LINGUA_INTERLEAVED:
       // Colour is Interleaved-only: it is the gray level the inline translated words are drawn at,
       // and no other mode draws translated text in the main flow.
       child(Action::CYCLE_TRANSLATION_COLOUR, StrId::STR_TRANSLATION_COLOUR);
@@ -153,30 +153,30 @@ void PreTranslationSubmenuActivity::appendModeChildren() {
       // per-mode wording (and so no new i18n keys).
       child(Action::CYCLE_INTERLEAVED_SIZE, StrId::STR_TRANSLATION_SIZE);
       return;
-    case CrossPointSettings::PT_TOOLTIP:
+    case CrossPointSettings::LINGUA_TOOLTIP:
       child(Action::CYCLE_TOOLTIP_BUTTONS, StrId::STR_TOOLTIP_BUTTONS);
       child(Action::CYCLE_TOOLTIP_BEHAVIOR, StrId::STR_TOOLTIP_NAV);
       child(Action::CYCLE_TOOLTIP_SIZE, StrId::STR_TRANSLATION_SIZE);
       return;
-    case CrossPointSettings::PT_PAGE_TRANSLATION:
+    case CrossPointSettings::LINGUA_PAGE_TRANSLATION:
       child(Action::CYCLE_PAGE_TRANSLATION_BUTTONS, StrId::STR_PAGE_TRANSLATION_BUTTONS);
       child(Action::CYCLE_PAGE_TRANSLATION_SIZE, StrId::STR_TRANSLATION_SIZE);
       return;
-    case CrossPointSettings::PT_SIDE_BY_SIDE:
+    case CrossPointSettings::LINGUA_SIDE_BY_SIDE:
       // Colours the TRANSLATION COLUMN only, never the source: the two columns must stay
       // distinguishable as source and translation, which a symmetric shade would defeat. Its own
       // field, and its own row under its own mode -- nothing here is shared with Interleaved's
       // Colour above beyond the label.
       child(Action::CYCLE_SIDE_BY_SIDE_COLOUR, StrId::STR_TRANSLATION_COLOUR);
       return;
-    case CrossPointSettings::PT_INTERLINEAR:
+    case CrossPointSettings::LINGUA_INTERLINEAR:
       // Colours the ANNOTATION ROWS only. Size is still fixed at the small UI face in v1 (see
       // getInterlinearAnnotationFontId). The reveal controls below are drawing/input-only too.
       child(Action::CYCLE_INTERLINEAR_COLOUR, StrId::STR_TRANSLATION_COLOUR);
       child(Action::CYCLE_INTERLINEAR_TOGGLE_LONG_PRESS, StrId::STR_TOGGLE_BY_LONGPRESS);
       child(Action::CYCLE_INTERLINEAR_TOGGLE_BUTTONS, StrId::STR_TOGGLE_BUTTONS);
       return;
-    // No sub-settings. Normal is NOT "no translated text": it maps to PtLayout::Both exactly as
+    // No sub-settings. Normal is NOT "no translated text": it maps to LinguaLayout::Both exactly as
     // Interleaved does, so its pages are byte-identical and do carry the translation inline. What
     // makes it Normal is the gray level -- modeToGray() (src/main.cpp) hands the renderer 0 for every
     // mode except Interleaved, so translated words are drawn in plain black, indistinguishable from
@@ -184,18 +184,18 @@ void PreTranslationSubmenuActivity::appendModeChildren() {
     // mode, so neither a shade nor a size row belongs on it. Translation Only shows the translation
     // as the page's own primary text in the body font and colour by design (dimming it would dim the
     // whole chapter). The retired holes are migrated away at load and can never be the current mode.
-    case CrossPointSettings::PT_NORMAL:
-    case CrossPointSettings::PT_ORIGINAL_ONLY:
-    case CrossPointSettings::PT_TRANSLATION_ONLY:
-    case CrossPointSettings::PT_LEGACY_DIMMED:
-    case CrossPointSettings::PT_LEGACY_DIMMED_LIGHT:
+    case CrossPointSettings::LINGUA_NORMAL:
+    case CrossPointSettings::LINGUA_ORIGINAL_ONLY:
+    case CrossPointSettings::LINGUA_TRANSLATION_ONLY:
+    case CrossPointSettings::LINGUA_LEGACY_DIMMED:
+    case CrossPointSettings::LINGUA_LEGACY_DIMMED_LIGHT:
       return;
   }
 }
 
 // ─── input ────────────────────────────────────────────────────────────────────
 
-void PreTranslationSubmenuActivity::loop() {
+void LinguaSubmenuActivity::loop() {
   if (optionPopup.handleInput(mappedInput, [this] { requestUpdate(); })) {
     // Match EpubReaderMenuActivity: OptionPopup acts on the press edge, so
     // keep the trailing release away from the menu underneath.
@@ -249,18 +249,18 @@ void PreTranslationSubmenuActivity::loop() {
 
 // ─── action dispatch ──────────────────────────────────────────────────────────
 
-void PreTranslationSubmenuActivity::onActionSelected(Action a) {
+void LinguaSubmenuActivity::onActionSelected(Action a) {
   switch (a) {
     case Action::CYCLE_DISPLAY_MODE: {
-      StrId modeLabels[PT_SELECTABLE_MODE_COUNT];
-      for (size_t i = 0; i < PT_SELECTABLE_MODE_COUNT; i++) {
-        modeLabels[i] = ptModeLabel(PT_SELECTABLE_MODES[i]);
+      StrId modeLabels[LINGUA_SELECTABLE_MODE_COUNT];
+      for (size_t i = 0; i < LINGUA_SELECTABLE_MODE_COUNT; i++) {
+        modeLabels[i] = linguaModeLabel(LINGUA_SELECTABLE_MODES[i]);
       }
-      optionPopup.show(StrId::STR_DISPLAY_MODE, modeLabels, static_cast<int>(PT_SELECTABLE_MODE_COUNT),
-                       static_cast<int>(ptSelectableIndex(SETTINGS.translationDisplayMode)), [this](int idx) {
-                         const uint8_t newMode = static_cast<uint8_t>(PT_SELECTABLE_MODES[idx]);
+      optionPopup.show(StrId::STR_DISPLAY_MODE, modeLabels, static_cast<int>(LINGUA_SELECTABLE_MODE_COUNT),
+                       static_cast<int>(linguaSelectableIndex(SETTINGS.translationDisplayMode)), [this](int idx) {
+                         const uint8_t newMode = static_cast<uint8_t>(LINGUA_SELECTABLE_MODES[idx]);
                          // A bilingual mode with no translation would render an empty page.
-                         if (newMode != CrossPointSettings::PT_NORMAL && !chapterHasTranslation) {
+                         if (newMode != CrossPointSettings::LINGUA_NORMAL && !chapterHasTranslation) {
                            showToast(tr(STR_NO_TRANSLATION_SWITCH_NORMAL), DEFAULT_TOAST_MS);
                            return;
                          }
@@ -286,7 +286,7 @@ void PreTranslationSubmenuActivity::onActionSelected(Action a) {
       // the TLS handshake, and replaceActivity() clears the whole stack, so the
       // teardown has to run while the reader is the current activity.
       ActivityResult result;
-      result.data = MenuResult{static_cast<int>(PreTranslationResult::TRANSLATE_CHAPTER)};
+      result.data = MenuResult{static_cast<int>(LinguaResult::TRANSLATE_CHAPTER)};
       setResult(std::move(result));
       finish();
       return;
@@ -295,7 +295,7 @@ void PreTranslationSubmenuActivity::onActionSelected(Action a) {
     case Action::TRANSLATE_BOOK: {
       if (!epub) return;
       ActivityResult result;
-      result.data = MenuResult{static_cast<int>(PreTranslationResult::TRANSLATE_BOOK)};
+      result.data = MenuResult{static_cast<int>(LinguaResult::TRANSLATE_BOOK)};
       setResult(std::move(result));
       finish();
       return;
@@ -313,7 +313,7 @@ void PreTranslationSubmenuActivity::onActionSelected(Action a) {
         Storage.remove(binPath.c_str());
       }
       // Translations gone -> any non-Normal display mode would render blank pages.
-      SETTINGS.translationDisplayMode = CrossPointSettings::PT_NORMAL;
+      SETTINGS.translationDisplayMode = CrossPointSettings::LINGUA_NORMAL;
       SETTINGS.saveToFile();
       LOG_INF("PTSUB", "Deleted all translated.html + section cache for book");
       rebuildAfterReturn();
@@ -415,7 +415,7 @@ void PreTranslationSubmenuActivity::onActionSelected(Action a) {
     // The two LINGUA_SHADE rows. Same contract as the Interleaved colour above -- drawing only --
     // but reached through the per-role ink (PageFontSet), which readerPageFontSet() rebuilds on
     // every draw, so the reader repaints in the new colour with no chapter rebuild. Deliberately
-    // absent from the reader's re-layout gate; see EpubReaderActivity's PRE_TRANSLATION handler.
+    // absent from the reader's re-layout gate; see EpubReaderActivity's LINGUA handler.
     case Action::CYCLE_INTERLINEAR_COLOUR:
       cycleLinguaShade(SETTINGS.interlinearAnnotationShade);
       return;
@@ -474,7 +474,7 @@ void PreTranslationSubmenuActivity::onActionSelected(Action a) {
   }
 }
 
-void PreTranslationSubmenuActivity::cycleTranslationSize(uint8_t& storedSize) {
+void LinguaSubmenuActivity::cycleTranslationSize(uint8_t& storedSize) {
   // Not cyclable when the active family has no smaller face (every SD family — SdCardFontSystem::
   // resolveFontId ignores its pointSize argument by design — and a built-in already at its smallest
   // point size): the row then reads Same permanently. Author's call — no "(n/a)" state, no toast, the
@@ -486,7 +486,7 @@ void PreTranslationSubmenuActivity::cycleTranslationSize(uint8_t& storedSize) {
   requestUpdate();
 }
 
-void PreTranslationSubmenuActivity::cycleLinguaShade(uint8_t& storedShade) {
+void LinguaSubmenuActivity::cycleLinguaShade(uint8_t& storedShade) {
   // Black -> Grey -> Light Grey, matching the key order in english.yaml. DRAWING ONLY: the shade
   // reaches the page through PageFontSet's per-role ink, which CrossPointSettings::readerPageFontSet()
   // rebuilds on every draw, so there is nothing to invalidate here -- no section reset, no
@@ -499,27 +499,27 @@ void PreTranslationSubmenuActivity::cycleLinguaShade(uint8_t& storedShade) {
 
 // ─── value labels ─────────────────────────────────────────────────────────────
 
-const char* PreTranslationSubmenuActivity::displayModeLabel() const {
+const char* LinguaSubmenuActivity::displayModeLabel() const {
   const uint8_t mode = SETTINGS.translationDisplayMode;
-  if (mode >= CrossPointSettings::PT_MODE_COUNT) return I18N.get(StrId::STR_PT_NORMAL);
-  return I18N.get(ptModeLabel(static_cast<CrossPointSettings::PRE_TRANSLATION_MODE>(mode)));
+  if (mode >= CrossPointSettings::LINGUA_MODE_COUNT) return I18N.get(StrId::STR_PT_NORMAL);
+  return I18N.get(linguaModeLabel(static_cast<CrossPointSettings::LINGUA_MODE>(mode)));
 }
 
-const char* PreTranslationSubmenuActivity::tooltipButtonsLabel() const {
+const char* LinguaSubmenuActivity::tooltipButtonsLabel() const {
   return overlayButtonsLabel(SETTINGS.tooltipButtons);
 }
 
-const char* PreTranslationSubmenuActivity::overlayButtonsLabel(const uint8_t storedButtons) const {
+const char* LinguaSubmenuActivity::overlayButtonsLabel(const uint8_t storedButtons) const {
   return I18N.get(storedButtons == CrossPointSettings::OVERLAY_BUTTONS_SIDE ? StrId::STR_SIDE_BUTTONS
                                                                             : StrId::STR_FRONT_BUTTONS);
 }
 
-const char* PreTranslationSubmenuActivity::tooltipBehaviorLabel() const {
+const char* LinguaSubmenuActivity::tooltipBehaviorLabel() const {
   return I18N.get(SETTINGS.tooltipBehavior == CrossPointSettings::TOOLTIP_NAV_TURN_PAGE ? StrId::STR_PAGE_TURN
                                                                                         : StrId::STR_LOOP);
 }
 
-const char* PreTranslationSubmenuActivity::pageTranslationButtonsLabel() const {
+const char* LinguaSubmenuActivity::pageTranslationButtonsLabel() const {
   return I18N.get(SETTINGS.pageTranslationButtons == CrossPointSettings::OVERLAY_BUTTONS_SIDE
                       ? StrId::STR_SIDE_BUTTONS
                       : StrId::STR_FRONT_BUTTONS);
@@ -532,8 +532,8 @@ const char* PreTranslationSubmenuActivity::pageTranslationButtonsLabel() const {
 // languages had rendered the pair as an adverb phrase that is ungrammatical read as a colour
 // ("Gedimmt hell", "Atténué clair"). The shade IS the renderer's gray level, so each language now
 // names the colour outright — grey / light grey in its own standalone form. STR_PT_DARK /
-// STR_PT_LIGHT stay: ptModeLabel() still maps the two retired PT_LEGACY_DIMMED* modes to them.
-const char* PreTranslationSubmenuActivity::translationColourLabel() const {
+// STR_PT_LIGHT stay: linguaModeLabel() still maps the two retired LINGUA_LEGACY_DIMMED* modes to them.
+const char* LinguaSubmenuActivity::translationColourLabel() const {
   return I18N.get(SETTINGS.translationShade == CrossPointSettings::SHADE_DIMMED_LIGHT ? StrId::STR_SHADE_DIMMED_LIGHT
                                                                                       : StrId::STR_SHADE_DIMMED);
 }
@@ -542,7 +542,7 @@ const char* PreTranslationSubmenuActivity::translationColourLabel() const {
 // existing keys were written to (see the comment above translationColourLabel): a value-column
 // entry names the colour outright, so it reads correctly beside every language's word for
 // "colour" — no adjective agreement to get wrong.
-const char* PreTranslationSubmenuActivity::linguaShadeLabel(const uint8_t storedShade) const {
+const char* LinguaSubmenuActivity::linguaShadeLabel(const uint8_t storedShade) const {
   switch (static_cast<CrossPointSettings::LINGUA_SHADE>(storedShade)) {
     case CrossPointSettings::LINGUA_GREY:
       return I18N.get(StrId::STR_SHADE_DIMMED);
@@ -555,7 +555,7 @@ const char* PreTranslationSubmenuActivity::linguaShadeLabel(const uint8_t stored
   return I18N.get(StrId::STR_SHADE_BLACK);  // also the out-of-range answer: Black is the default
 }
 
-const char* PreTranslationSubmenuActivity::translationSizeLabel(const uint8_t storedSize) const {
+const char* LinguaSubmenuActivity::translationSizeLabel(const uint8_t storedSize) const {
   // Report Same whenever no smaller face exists, whatever is stored: translationFontIdForSize() also
   // degrades to the body font there, so Same is what the reader actually does. The stored value is
   // left alone on purpose — switch back to a family that ships a smaller face and the user's
@@ -566,7 +566,7 @@ const char* PreTranslationSubmenuActivity::translationSizeLabel(const uint8_t st
   return I18N.get(smaller ? StrId::STR_SIZE_SMALLER : StrId::STR_SIZE_SAME);
 }
 
-const char* PreTranslationSubmenuActivity::engineLabel() const {
+const char* LinguaSubmenuActivity::engineLabel() const {
   // Positional: index == CrossPointSettings::TRANSLATION_ENGINE value. Append only.
   static const StrId labels[] = {
       StrId::STR_ENGINE_GOOGLE_FREE, StrId::STR_ENGINE_DEEPL,       StrId::STR_ENGINE_DEEPL_PRO,
@@ -578,14 +578,14 @@ const char* PreTranslationSubmenuActivity::engineLabel() const {
   return I18N.get(labels[eng]);
 }
 
-const char* PreTranslationSubmenuActivity::targetLangLabel() const {
+const char* LinguaSubmenuActivity::targetLangLabel() const {
   // 0xFF == unset (never picked).
   if (SETTINGS.translationLanguage == AUTO_DETECT_SENTINEL) return "(unset)";
   if (SETTINGS.translationLanguage >= LanguagePickerActivity::NUM_LANGUAGES) return "(unset)";
   return LanguagePickerActivity::LANGUAGES[SETTINGS.translationLanguage].name;
 }
 
-const char* PreTranslationSubmenuActivity::sourceLangLabel() const {
+const char* LinguaSubmenuActivity::sourceLangLabel() const {
   // 0xFF == auto-detect for source language (this is the documented sentinel).
   if (SETTINGS.sourceTranslationLanguage == AUTO_DETECT_SENTINEL) return I18N.get(StrId::STR_AUTO_DETECT);
   if (SETTINGS.sourceTranslationLanguage >= LanguagePickerActivity::NUM_LANGUAGES)
@@ -593,7 +593,7 @@ const char* PreTranslationSubmenuActivity::sourceLangLabel() const {
   return LanguagePickerActivity::LANGUAGES[SETTINGS.sourceTranslationLanguage].name;
 }
 
-void PreTranslationSubmenuActivity::maskedApiKey(char* out, size_t outSize) const {
+void LinguaSubmenuActivity::maskedApiKey(char* out, size_t outSize) const {
   if (outSize == 0) return;
   const size_t keyLen = std::strlen(SETTINGS.translateApiKey);
   if (keyLen == 0) {
@@ -616,7 +616,7 @@ void PreTranslationSubmenuActivity::maskedApiKey(char* out, size_t outSize) cons
 
 // ─── toast helper ─────────────────────────────────────────────────────────────
 
-void PreTranslationSubmenuActivity::showToast(const char* msg, unsigned long durationMs) {
+void LinguaSubmenuActivity::showToast(const char* msg, unsigned long durationMs) {
   toastMessage = msg;
   toastDurationMs = durationMs;
   toastShownAtMs = millis();
@@ -626,14 +626,14 @@ void PreTranslationSubmenuActivity::showToast(const char* msg, unsigned long dur
 
 // ─── render ───────────────────────────────────────────────────────────────────
 
-void PreTranslationSubmenuActivity::render(RenderLock&&) {
+void LinguaSubmenuActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
   const auto metrics = UITheme::getInstance().getMetrics();
   const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
 
   GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
-                 tr(STR_PRE_TRANSLATION));
+                 tr(STR_LINGUA));
 
   const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   const int contentHeight = screen.height - contentTop - metrics.verticalSpacing;

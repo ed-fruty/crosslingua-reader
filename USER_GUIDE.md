@@ -275,7 +275,7 @@ The Settings screen allows you to configure the device's behavior. There are a f
   DeepSeek, or Gemini, or read a language-tagged bilingual EPUB prepared in
   Calibre. Choose from Normal, Interleaved, Side by Side, Original Only,
   Translation Only, Tooltip, Page Translation, and Interlinear modes. See
-  [Lingua](./docs/pre-translation.md).
+  [Lingua](./docs/lingua.md).
 
 #### 3.6.3 Controls
 
@@ -664,7 +664,7 @@ Available display modes:
 - **Interlinear** — compact translated annotations above their source lines
 
 For full instructions including all display modes, engine setup, and storage
-location, see the standalone [Lingua guide](./docs/pre-translation.md).
+location, see the standalone [Lingua guide](./docs/lingua.md).
 
 ## 6. Current Limitations & Roadmap
 

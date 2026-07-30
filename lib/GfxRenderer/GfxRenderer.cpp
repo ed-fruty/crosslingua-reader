@@ -341,7 +341,7 @@ enum class TextRotation { None, Rotated90CW };
 static void renderCharScaled(const GfxRenderer& renderer, GfxRenderer::RenderMode renderMode,
                              const EpdFontFamily& fontFamily, const uint32_t cp, int cursorX, int cursorY,
                              const bool pixelState, const EpdFontFamily::Style style) {
-  // Pre-Translation: words tagged with TRANSLATED render at the configured gray level.
+  // Lingua: words tagged with TRANSLATED render at the configured gray level.
   // 0 = black (default, unchanged behavior); 1 = dark gray; 2 = light gray.
   // A per-role ink set by the line being drawn (PageLine::render -> ForcedInkScope) OVERRIDES the
   // per-word bit, including with 0: a Lingua colour is a property of the whole line, and "black"
@@ -446,7 +446,7 @@ template <TextRotation rotation = TextRotation::None>
 static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode renderMode,
                            const EpdFontFamily& fontFamily, const uint32_t cp, int cursorX, int cursorY,
                            const bool pixelState, const EpdFontFamily::Style style) {
-  // Pre-Translation: words tagged with TRANSLATED render at the configured gray level.
+  // Lingua: words tagged with TRANSLATED render at the configured gray level.
   // 0 = black (default, normal antialiased path); 1 = dark gray; 2 = light gray.
   // Per-role ink wins over the style bit; see the matching comment in renderCharScaled(). Both
   // glyph paths must agree, or a scaled SUP/SUB inside a coloured line would stay black.

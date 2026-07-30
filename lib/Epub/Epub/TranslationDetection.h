@@ -10,7 +10,7 @@
 //   1. ChapterHtmlSlimParser — the layout engine. It decides per element, from a `lang=` /
 //      `xml:lang=` that differs from the book's primary language, whether the words it is about
 //      to lay out are translated (ChapterHtmlSlimParser::currentBlockIsTranslated). Every
-//      Pre-Translation layout is built on that bit: OriginalOnly drops the translated words,
+//      Lingua layout is built on that bit: OriginalOnly drops the translated words,
 //      TranslationOnly drops the originals, SideBySide / Interlinear pair them.
 //   2. Section — the per-chapter GATE. "Does this chapter have a translation at all?" decides
 //      whether a filtering/pairing layout may run (Section::effectiveLayout) and is half the
@@ -42,7 +42,7 @@
 // Unknown book language (no `<dc:language>`, or an empty one) => NOT translated. It is the only
 // safe answer: with no primary language there is no way to tell which of two languages in the
 // file is the original, so a filtering layout would have to guess and could drop the entire
-// chapter. Answering "not translated" degrades the chapter to PtLayout::Both, which renders the
+// chapter. Answering "not translated" degrades the chapter to LinguaLayout::Both, which renders the
 // file's full text exactly as a plain book -- nothing is hidden. It is also what the layout
 // engine has always done (its `!bookPrimaryLang.empty()` guard), so gate and renderer stay in
 // lock-step.
@@ -104,7 +104,7 @@ inline bool isTranslatedLangTag(const char* langAttr, const char* bookPrimaryLan
 //
 // Deliberately narrower than the layout engine, which honours a `lang=` on ANY element (a
 // `<span lang="fr">` inside an English paragraph tags those words translated too). The narrowing
-// only ever errs toward "no translation", i.e. toward PtLayout::Both -- under which the parser
+// only ever errs toward "no translation", i.e. toward LinguaLayout::Both -- under which the parser
 // still tags and styles such a span exactly as before. Widening it to inline elements would be
 // the unsafe direction: one foreign word in an epigraph would let TranslationOnly run and render
 // a near-blank chapter.

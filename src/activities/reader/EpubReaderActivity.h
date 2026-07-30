@@ -16,9 +16,9 @@
 #include "translator/PageTranslationOverlay.h"
 #include "translator/TooltipOverlay.h"
 
-// Defined in PreTranslationSubmenuActivity.h; forward-declared here so the reader
+// Defined in LinguaSubmenuActivity.h; forward-declared here so the reader
 // header does not pull in the submenu (and its transitive) headers.
-enum class PreTranslationResult : uint8_t;
+enum class LinguaResult : uint8_t;
 
 class EpubReaderActivity final : public Activity {
   std::shared_ptr<Epub> epub;
@@ -77,13 +77,13 @@ class EpubReaderActivity final : public Activity {
   bool showDictionaryMessage = false;
   unsigned long dictionaryMessageTime = 0UL;
   bool ignoreNextConfirmRelease = false;
-  // Page Translation overlay (PT_PAGE_TRANSLATION mode). Opened by a long-press RELEASE on either side
+  // Page Translation overlay (LINGUA_PAGE_TRANSLATION mode). Opened by a long-press RELEASE on either side
   // button, detected in loop() before detectPageTurn: detecting the OPEN on the release (not
   // mid-hold) means the same release cannot also be consumed as a scroll by handleInput(), and
   // returning after open() suppresses the page-turn / chapter-skip / orientation long-press that
   // would otherwise fire on that release -- so no ignore-next-release latch is needed.
   PageTranslationOverlay pageTranslationOverlay;
-  // Pre-Translation tooltip overlay (PT_TOOLTIP mode). Owns its configured nav buttons for
+  // Lingua tooltip overlay (LINGUA_TOOLTIP mode). Owns its configured nav buttons for
   // per-sentence stepping and its own long-press page-turn; see loop()'s tooltip input block.
   TooltipOverlay tooltipOverlay;
   // Retained reader-font glyph prewarm for an ACTIVE translation overlay. Built ONCE (wipe + scan +
@@ -106,14 +106,14 @@ class EpubReaderActivity final : public Activity {
   int overlayPrewarmFontId_ = -1;
   int overlayPrewarmOverlayFontId_ = -1;
   uint32_t overlayPrewarmGen_ = 0;
-  // Shown when a PT_PAGE_TRANSLATION long-press opens the overlay on a page that has NO translated
+  // Shown when a LINGUA_PAGE_TRANSLATION long-press opens the overlay on a page that has NO translated
   // paragraphs: the overlay refuses (clears its active flag in render()), and the reader surfaces
   // this toast instead of the previous silent no-op. Timed out in loop() like the other toasts.
   bool showNoTranslationsForPageToast = false;
   unsigned long noTranslationsForPageToastTime = 0UL;
-  // Pre-Translation: when the user opens a chapter that has no translated HTML while a non-Normal
+  // Lingua: when the user opens a chapter that has no translated HTML while a non-Normal
   // display mode is active, render() PERSISTS the switch to Normal (SETTINGS.translationDisplayMode =
-  // PT_NORMAL, saved) and arms this modal dialog so the change isn't silent. Because the setting is
+  // LINGUA_NORMAL, saved) and arms this modal dialog so the change isn't silent. Because the setting is
   // now Normal the trigger is gated out on every following chapter, so the dialog fires exactly once
   // per downgrade.
   //
@@ -180,7 +180,7 @@ class EpubReaderActivity final : public Activity {
 
   void renderContents(Page& page, int orientedMarginTop, int orientedMarginRight, int orientedMarginBottom,
                       int orientedMarginLeft);
-  // Fork-parity render path for a page with an active translation overlay (PT_TOOLTIP / PT_PAGE_TRANSLATION):
+  // Fork-parity render path for a page with an active translation overlay (LINGUA_TOOLTIP / LINGUA_PAGE_TRANSLATION):
   // page + status bar + overlay composited into ONE BW frame, a single refresh, and (when the page
   // is visible, i.e. not under the Page Translation overlay) the grayscale AA pass. Avoids the second slow refresh the
   // old overlay path did on every sentence step / scroll.
@@ -296,8 +296,8 @@ class EpubReaderActivity final : public Activity {
   // Tears down the reader (saveProgress -> release Epub + Section) and replaces it
   // with the chapter/book translator, modeled on launchKOReaderSync(): the ~65KB
   // freed lets wolfSSL complete the TLS handshake. The translator relaunches the
-  // reader on exit via goToReader(). Called from the PRE_TRANSLATION result handler.
-  void launchTranslation(PreTranslationResult kind);
+  // reader on exit via goToReader(). Called from the LINGUA result handler.
+  void launchTranslation(LinguaResult kind);
   void applyOrientation(uint8_t orientation);
   void toggleAutoPageTurn(uint8_t selectedPageTurnOption);
   void pageTurn(bool isForwardTurn);
@@ -309,7 +309,7 @@ class EpubReaderActivity final : public Activity {
   void navigateToHref(const std::string& href, bool savePosition = false);
   void restoreSavedPosition();
 
-  // Pre-Translation: called from render() when a chapter has no translation but the mode is
+  // Lingua: called from render() when a chapter has no translation but the mode is
   // non-Normal (the caller has already persisted the switch to Normal). Arms the modal fallback
   // dialog; the same render pass draws it and loop() dismisses it on Confirm/Back.
   void armFallbackDialog();

@@ -249,7 +249,7 @@ void ChapterHtmlSlimParser::flushPendingAnchor() {
   pendingAnchorId.clear();
 }
 
-// Pre-Translation: layout-based block filtering, shared by flushPartWordBuffer and the ruby
+// Lingua: layout-based block filtering, shared by flushPartWordBuffer and the ruby
 // handlers. Both, SideBySide and Interlinear emit everything (SideBySide pairs the two languages into
 // columns instead of dropping either; Interlinear needs the translated block to become a ParsedText
 // so renderInterlinear can read its words for the annotation rows -- it is never laid out as a
@@ -261,20 +261,20 @@ void ChapterHtmlSlimParser::flushPendingAnchor() {
 // inherit it through nesting).
 bool ChapterHtmlSlimParser::wordIsFiltered() const {
   const bool inTranslatedBlock = !inlineStyleStack.empty() && inlineStyleStack.back().isTranslatedBlock;
-  switch (ptLayout) {
-    case PtLayout::OriginalOnly:
+  switch (linguaLayout) {
+    case LinguaLayout::OriginalOnly:
       return inTranslatedBlock;
-    case PtLayout::TranslationOnly:
+    case LinguaLayout::TranslationOnly:
       return !inTranslatedBlock;
-    case PtLayout::Both:
-    case PtLayout::SideBySide:
-    case PtLayout::Interlinear:
+    case LinguaLayout::Both:
+    case LinguaLayout::SideBySide:
+    case LinguaLayout::Interlinear:
       return false;
   }
   return false;  // unreachable: every enumerator returns above
 }
 
-// Pre-Translation: which role the lines of the block currently being laid out carry. Only one
+// Lingua: which role the lines of the block currently being laid out carry. Only one
 // layout puts translated text in the main flow as a SECOND type size, so only one can tag a line:
 //
 //   Both           the two languages flow inline; a distinct translation font makes the translated
@@ -317,13 +317,13 @@ LineFontRole ChapterHtmlSlimParser::currentLineRole() const {
   // No distinct translation font configured: every line is Body, i.e. exactly the pre-existing
   // layout, and fontIdForRole would resolve Translation back to fontId anyway.
   if (translationFontId == 0 || !currentBlockIsTranslated) return LineFontRole::Body;
-  switch (ptLayout) {
-    case PtLayout::Both:
+  switch (linguaLayout) {
+    case LinguaLayout::Both:
       return LineFontRole::Translation;
-    case PtLayout::OriginalOnly:
-    case PtLayout::TranslationOnly:
-    case PtLayout::SideBySide:
-    case PtLayout::Interlinear:
+    case LinguaLayout::OriginalOnly:
+    case LinguaLayout::TranslationOnly:
+    case LinguaLayout::SideBySide:
+    case LinguaLayout::Interlinear:
       break;
   }
   return LineFontRole::Body;
@@ -331,7 +331,7 @@ LineFontRole ChapterHtmlSlimParser::currentLineRole() const {
 
 // flush the contents of partWordBuffer to currentTextBlock
 void ChapterHtmlSlimParser::flushPartWordBuffer() {
-  // Pre-Translation: the top of the inline style stack carries whether the word being flushed
+  // Lingua: the top of the inline style stack carries whether the word being flushed
   // belongs to a translated block (block-opening and inline tags stamp isTranslatedBlock onto
   // their StyleStackEntry, and children inherit it through nesting).
   const bool inTranslatedBlock = !inlineStyleStack.empty() && inlineStyleStack.back().isTranslatedBlock;
@@ -365,7 +365,7 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
   } else if (effectiveSub) {
     fontStyle = static_cast<EpdFontFamily::Style>(fontStyle | EpdFontFamily::SUB);
   }
-  // Pre-Translation: tag translated words so the renderer can apply gray-level dimming in
+  // Lingua: tag translated words so the renderer can apply gray-level dimming in
   // Dark/Light modes. The TRANSLATED bit (64) composes with the existing style bits.
   if (inTranslatedBlock) {
     fontStyle = static_cast<EpdFontFamily::Style>(fontStyle | EpdFontFamily::TRANSLATED);
@@ -417,13 +417,13 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
       return;
     }
 
-    // Pre-Translation: the two PAIRING layouts route through their own builder, which buffers
+    // Lingua: the two PAIRING layouts route through their own builder, which buffers
     // originals and pairs them with their translations. currentBlockIsTranslated and
     // currentBlockParagraphIdx are stamped AFTER this flush by the caller, so here they still
     // describe the block being flushed — exactly what those builders inspect.
-    if (ptLayout == PtLayout::SideBySide) {
+    if (linguaLayout == LinguaLayout::SideBySide) {
       makePagesTableMode();
-    } else if (ptLayout == PtLayout::Interlinear) {
+    } else if (linguaLayout == LinguaLayout::Interlinear) {
       makePagesInterlinearMode();
     } else {
       makePages();
@@ -435,7 +435,7 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
   currentTextBlock.reset(new ParsedText(extraParagraphSpacing, hyphenationEnabled, focusReadingEnabled, blockStyle));
   wordsExtractedInBlock = 0;
   listItemBulletOnly = false;
-  // Pre-Translation: a fresh physical text block has not been assigned a paragraph index yet. The
+  // Lingua: a fresh physical text block has not been assigned a paragraph index yet. The
   // next content block-open (original) that lands on it claims the index and advances the counter;
   // nested opens that reuse this same block (empty / li-bullet reuse paths above) leave the flag set
   // and inherit the index, so exactly one index is consumed per distinct content block.
@@ -520,7 +520,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     self->xpathListItemIndex++;
   }
 
-  // Extract class, style, id, dir, and lang attributes for CSS/RTL/Pre-Translation processing.
+  // Extract class, style, id, dir, and lang attributes for CSS/RTL/Lingua processing.
   // langAttr detects translated paragraphs (Calibre and CrossPoint emit translated blocks with a
   // lang= / xml:lang= attribute differing from the book's primary language declared in content.opf).
   std::string classAttr;
@@ -563,7 +563,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     }
   }
 
-  // Pre-Translation: determine whether this element introduces (or sits inside) a translated block.
+  // Lingua: determine whether this element introduces (or sits inside) a translated block.
   // Skip html/body to avoid false-positives from a document-level lang (e.g. <html lang="en">).
   // The language comparison itself is translationdetect::isTranslatedLangTag -- the SAME predicate
   // Section's per-chapter "does this chapter have a translation" gate scans with, so the gate can
@@ -672,7 +672,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     headerStyle.bold = false;
     headerStyle.hasItalic = true;
     headerStyle.italic = true;
-    // Pre-Translation: this synthetic "Tab Row N, Cell M:" label is UI text, not book content,
+    // Lingua: this synthetic "Tab Row N, Cell M:" label is UI text, not book content,
     // so it is intentionally left unmarked (isTranslatedBlock stays false).
     self->inlineStyleStack.push_back(headerStyle);
     self->updateEffectiveInlineStyle();
@@ -1066,7 +1066,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       entry.depth = self->depth;
       entry.hasTextDecoration = true;
       entry.textDecoration = CssTextDecoration::Underline;
-      entry.isTranslatedBlock = currentIsTranslated;  // Pre-Translation: inherit from enclosing block
+      entry.isTranslatedBlock = currentIsTranslated;  // Lingua: inherit from enclosing block
       applyDirectionToEntry(entry, cssStyle);
       self->inlineStyleStack.push_back(entry);
       self->updateEffectiveInlineStyle();
@@ -1107,7 +1107,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     if (self->embeddedStyle && cssStyle.hasTextAlign()) {
       headerBlockStyle.alignment = cssStyle.textAlign;
     }
-    // Pre-Translation: push a no-op inline-style marker so child inline tags inherit
+    // Lingua: push a no-op inline-style marker so child inline tags inherit
     // isTranslatedBlock through nesting. It carries no style bits, so it does not affect
     // effective styles; it is popped by the generic inline-pop in endElement.
     StyleStackEntry translationEntry;
@@ -1117,14 +1117,14 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     const auto accumulated =
         self->blockStyleStack.back().getCombinedBlockStyle(headerBlockStyle, BlockStyle::CombineAxis::Horizontal);
     self->blockStyleStack.push_back(accumulated);
-    // Pre-Translation (SideBySide, mode 5): the unpaired-original marker is no longer emitted
+    // Lingua (SideBySide, mode 5): the unpaired-original marker is no longer emitted
     // pre-emptively here. makePagesTableMode buffers each original and only decides it is
     // unpaired (appending the marker via flushBufferedOriginal) once the next original arrives
     // or EOF is reached, so a pre-emptive mark here would double-mark and bake into paired blocks.
     self->startNewTextBlock(accumulated.withoutBottom());
     self->boldUntilDepth = std::min(self->boldUntilDepth, self->depth);
     self->updateEffectiveInlineStyle();
-    // Pre-Translation: stamp the paragraph index AFTER startNewTextBlock so the previous block is
+    // Lingua: stamp the paragraph index AFTER startNewTextBlock so the previous block is
     // flushed under the previous translation state. The counter advances once per content-bearing
     // original block at ANY nesting depth: the FIRST open to claim a freshly-created text block
     // takes the next index (currentBlockIndexAssigned latches so nested opens reusing the same empty
@@ -1166,7 +1166,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       self->startNewTextBlock(brStyle);
     } else {
       self->currentCssStyle = cssStyle;
-      // Pre-Translation: push a no-op inline-style marker for isTranslatedBlock propagation.
+      // Lingua: push a no-op inline-style marker for isTranslatedBlock propagation.
       StyleStackEntry translationEntry;
       translationEntry.depth = self->depth;
       translationEntry.isTranslatedBlock = currentIsTranslated;
@@ -1174,12 +1174,12 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       const auto accumulated = self->blockStyleStack.back().getCombinedBlockStyle(userAlignmentBlockStyle,
                                                                                   BlockStyle::CombineAxis::Horizontal);
       self->blockStyleStack.push_back(accumulated);
-      // Pre-Translation (SideBySide, mode 5): the unpaired-original marker is no longer emitted
+      // Lingua (SideBySide, mode 5): the unpaired-original marker is no longer emitted
       // pre-emptively here — makePagesTableMode/flushBufferedOriginal own the unpaired decision
       // (see the header branch above for the full rationale).
       self->startNewTextBlock(accumulated.withoutBottom());
       self->updateEffectiveInlineStyle();
-      // Pre-Translation: stamp the paragraph index AFTER startNewTextBlock so the previous block
+      // Lingua: stamp the paragraph index AFTER startNewTextBlock so the previous block
       // flushed inside it uses the previous translation state. The counter advances once per
       // content-bearing original block at ANY nesting depth: the FIRST open to claim a freshly-
       // created text block takes the next index (currentBlockIndexAssigned latches so nested opens
@@ -1206,7 +1206,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       self->nextWordContinues = true;
     }
     self->pushDecorationStyleEntry(CssTextDecoration::Underline, cssStyle);
-    // Pre-Translation: inherit translated state (the helper does not know about it).
+    // Lingua: inherit translated state (the helper does not know about it).
     self->inlineStyleStack.back().isTranslatedBlock = currentIsTranslated;
   } else if (matches(name, LINETHROUGH_TAGS, std::size(LINETHROUGH_TAGS))) {
     // Flush buffer before style change so preceding text gets current style
@@ -1215,7 +1215,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       self->nextWordContinues = true;
     }
     self->pushDecorationStyleEntry(CssTextDecoration::LineThrough, cssStyle);
-    // Pre-Translation: inherit translated state (the helper does not know about it).
+    // Lingua: inherit translated state (the helper does not know about it).
     self->inlineStyleStack.back().isTranslatedBlock = currentIsTranslated;
   } else if (matches(name, BOLD_TAGS, std::size(BOLD_TAGS))) {
     // Flush buffer before style change so preceding text gets current style
@@ -1229,7 +1229,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     entry.depth = self->depth;  // Track depth for matching pop
     entry.hasBold = true;
     entry.bold = true;
-    entry.isTranslatedBlock = currentIsTranslated;  // Pre-Translation: inherit from enclosing block
+    entry.isTranslatedBlock = currentIsTranslated;  // Lingua: inherit from enclosing block
     if (cssStyle.hasFontStyle()) {
       entry.hasItalic = true;
       entry.italic = cssStyle.fontStyle == CssFontStyle::Italic;
@@ -1250,7 +1250,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     entry.depth = self->depth;  // Track depth for matching pop
     entry.hasItalic = true;
     entry.italic = true;
-    entry.isTranslatedBlock = currentIsTranslated;  // Pre-Translation: inherit from enclosing block
+    entry.isTranslatedBlock = currentIsTranslated;  // Lingua: inherit from enclosing block
     if (cssStyle.hasFontWeight()) {
       entry.hasBold = true;
       entry.bold = cssStyle.fontWeight == CssFontWeight::Bold;
@@ -1266,7 +1266,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     }
     StyleStackEntry entry;
     entry.depth = self->depth;
-    entry.isTranslatedBlock = currentIsTranslated;  // Pre-Translation: inherit from enclosing block
+    entry.isTranslatedBlock = currentIsTranslated;  // Lingua: inherit from enclosing block
     if (strcmp(name, "sup") == 0) {
       entry.hasSup = true;
       entry.sup = true;
@@ -1290,7 +1290,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       }
       StyleStackEntry entry;
       entry.depth = self->depth;                      // Track depth for matching pop
-      entry.isTranslatedBlock = currentIsTranslated;  // Pre-Translation: inherit or set
+      entry.isTranslatedBlock = currentIsTranslated;  // Lingua: inherit or set
       if (cssStyle.hasFontWeight()) {
         entry.hasBold = true;
         entry.bold = cssStyle.fontWeight == CssFontWeight::Bold;
@@ -1332,7 +1332,7 @@ void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char
     return;
   }
 
-  // Collect ruby text instead of normal word processing. Pre-Translation: skip the append when the
+  // Collect ruby text instead of normal word processing. Lingua: skip the append when the
   // enclosing block is dropped for the active mode — its base words never reach the text block, so
   // the annotation has nothing to attach to (see the </rt> handler).
   if (self->collectingRubyText) {
@@ -1490,7 +1490,7 @@ void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char
   // the original and hand both halves to renderSideBySide / renderInterlinear at endElement. A
   // mid-block flush escapes that entirely — it lays the prefix out here and pushes it straight to the
   // page through addLineToPage, so an ORIGINAL loses its column / its annotation strips (source line
-  // directly under source line, which is exactly what PtLayout::Interlinear's alternation rule
+  // directly under source line, which is exactly what LinguaLayout::Interlinear's alternation rule
   // forbids) and a TRANSLATION is dumped into the main flow at BODY size, because currentLineRole()
   // resolves to Body for both modes. Only the tail that survives to endElement is paired.
   //
@@ -1499,7 +1499,7 @@ void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char
   // the OOM backstop: it is the bound the untranslated path already lives with, and past it a broken
   // pair is better than a heap exhaustion.
   const size_t blockWordCount = self->currentTextBlock->size();
-  const bool pairedLayout = self->ptLayout == PtLayout::SideBySide || self->ptLayout == PtLayout::Interlinear;
+  const bool pairedLayout = self->linguaLayout == LinguaLayout::SideBySide || self->linguaLayout == LinguaLayout::Interlinear;
   const size_t softFlushThreshold =
       (self->embeddedStyle && !pairedLayout) ? TEXT_BLOCK_SOFT_FLUSH_WORDS_WITH_CSS : TEXT_BLOCK_SOFT_FLUSH_WORDS;
   if (blockWordCount > softFlushThreshold) {
@@ -1539,7 +1539,7 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
   // Ruby text: </rt> distributes ruby to base words, </ruby> resets ruby state
   if (strcmp(name, "rt") == 0) {
     self->collectingRubyText = false;
-    // Pre-Translation: in a mode that drops this block (OrigOnly/TransOnly/PageTranslation/Tooltip), the base
+    // Lingua: in a mode that drops this block (OrigOnly/TransOnly/PageTranslation/Tooltip), the base
     // characters never became words, so baseWordCount would be 0 and the fallback below would walk
     // back and glue this furigana onto the last SURVIVING word of an unrelated run. Skip the whole
     // distribution instead; rubyTextBuffer is cleared below either way.
@@ -1696,7 +1696,7 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
       // Start a new text block with the parent style to prevent subsequent bare text
       // from inheriting the closed block style (e.g. alignment or margins).
       //
-      // Pre-Translation: this close-side call is now the point at which the just-closed block is
+      // Lingua: this close-side call is now the point at which the just-closed block is
       // flushed — startNewTextBlock() routes a non-empty currentTextBlock through
       // makePagesTableMode() in SideBySide (mode 5) or makePages() otherwise. Both READ
       // currentBlockParagraphIdx / currentBlockIsTranslated, so those fields must still describe
@@ -1816,12 +1816,12 @@ bool ChapterHtmlSlimParser::finishParse() {
 
   // Process last page if there is still text
   if (currentTextBlock) {
-    // Pre-Translation: flush the trailing outermost block through the pairing builder that owns this
+    // Lingua: flush the trailing outermost block through the pairing builder that owns this
     // layout. A trailing original is buffered (not laid out) there, so drain any block still buffered
     // — the last original of the chapter — full-width via flushBufferedOriginal (which appends the
     // italic "not translated" marker under SideBySide only; Interlinear just shows the source).
-    if (ptLayout == PtLayout::SideBySide || ptLayout == PtLayout::Interlinear) {
-      if (ptLayout == PtLayout::SideBySide) {
+    if (linguaLayout == LinguaLayout::SideBySide || linguaLayout == LinguaLayout::Interlinear) {
+      if (linguaLayout == LinguaLayout::SideBySide) {
         makePagesTableMode();
       } else {
         makePagesInterlinearMode();
@@ -1898,13 +1898,13 @@ void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line, const
   // Apply horizontal left inset (margin + padding) as x position offset
   const int16_t xOffset = line->getBlockStyle().leftInset();
   auto pageLine = std::make_shared<PageLine>(line, xOffset, currentPageNextY);
-  // Pre-Translation: stamp the line with its originating paragraph index so the renderer (and the
+  // Lingua: stamp the line with its originating paragraph index so the renderer (and the
   // Page Translation overlay) can map rendered lines back to original paragraphs.
   pageLine->paragraphIdx = currentBlockParagraphIdx;
   // ... and with the role it was measured and advanced with, which is the whole of what the renderer
   // needs to draw it in the same font (PageLine::render -> PageFontSet::forRole).
   pageLine->fontRole = role;
-  // Pre-Translation: track which original paragraph indices contribute to this page. Translated
+  // Lingua: track which original paragraph indices contribute to this page. Translated
   // blocks share their original's index (via the pairing logic in startElement), so the range
   // still represents original paragraphs.
   if (currentBlockParagraphIdx >= 0) {
@@ -1967,7 +1967,7 @@ void ChapterHtmlSlimParser::makePages() {
     currentPageNextY = 0;
   }
 
-  // Pre-Translation: resolve the role ONCE for the whole block and use its font for measurement,
+  // Lingua: resolve the role ONCE for the whole block and use its font for measurement,
   // for the per-line advance (addLineToPage) and for the paragraph gap below, so every vertical
   // number this block contributes is in the type size it is drawn at.
   const LineFontRole role = currentLineRole();
@@ -2006,7 +2006,7 @@ void ChapterHtmlSlimParser::makePages() {
   }
 
   // Extra paragraph spacing if enabled (default behavior).
-  // Pre-Translation (SideBySide, mode 5): paired blocks lay out through renderSideBySide, not
+  // Lingua (SideBySide, mode 5): paired blocks lay out through renderSideBySide, not
   // makePages, so there is no longer a translated block flowing through here to suppress. The
   // only mode-5 callers of makePages are full-width fallbacks (an unpaired original, or a
   // translation with no buffered original), which both want normal paragraph spacing.
@@ -2015,7 +2015,7 @@ void ChapterHtmlSlimParser::makePages() {
   }
 }
 
-// Pre-Translation (SideBySide, mode 5): route one flushed outermost block to the two-column
+// Lingua (SideBySide, mode 5): route one flushed outermost block to the two-column
 // table. currentBlockIsTranslated / currentBlockParagraphIdx still describe the block being
 // flushed at this point (the caller stamps the next block's state only after this returns).
 void ChapterHtmlSlimParser::makePagesTableMode() {
@@ -2055,7 +2055,7 @@ void ChapterHtmlSlimParser::makePagesTableMode() {
   }
 }
 
-// Pre-Translation (SideBySide, mode 5): lay out a buffered original that never received a paired
+// Lingua (SideBySide, mode 5): lay out a buffered original that never received a paired
 // translation. It renders full-width (via makePages) with the italic "not translated" marker inline.
 void ChapterHtmlSlimParser::flushBufferedOriginal() {
   if (!bufferedOriginalBlock) return;
@@ -2088,7 +2088,7 @@ void ChapterHtmlSlimParser::flushBufferedOriginal() {
   currentBlockIsTranslated = savedIsTranslated;
 }
 
-// Pre-Translation (SideBySide, mode 5): lay a SOURCE block and its paired TRANSLATION block into
+// Lingua (SideBySide, mode 5): lay a SOURCE block and its paired TRANSLATION block into
 // two half-width columns, emitted as lockstep PageLine rows sharing one yPos and advancing one
 // lineHeight per row. Both columns stamp the original paragraph's index
 // (bufferedOriginalParagraphIdx) so the Page Translation overlay's line->paragraph mapping still
@@ -2242,9 +2242,9 @@ void ChapterHtmlSlimParser::renderSideBySide(std::unique_ptr<ParsedText> sourceB
 }
 
 void ChapterHtmlSlimParser::appendSideBySideNoTranslationMarkerIfUnpaired() {
-  // Only PtLayout::SideBySide surfaces the inline marker; every other layout either drops or
+  // Only LinguaLayout::SideBySide surfaces the inline marker; every other layout either drops or
   // pairs content elsewhere.
-  if (ptLayout != PtLayout::SideBySide) return;
+  if (linguaLayout != LinguaLayout::SideBySide) return;
   // currentBlockIsTranslated reflects the most-recently-opened outermost block. If it was a
   // translation, the preceding original is already paired — no marker. If it was an original,
   // the caller has determined nothing will pair with it (next outermost block is also an
@@ -2287,7 +2287,7 @@ void ChapterHtmlSlimParser::appendSideBySideNoTranslationMarkerIfUnpaired() {
   }
 }
 
-// ── Pre-Translation (PtLayout::Interlinear) ───────────────────────────────────
+// ── Lingua (LinguaLayout::Interlinear) ───────────────────────────────────
 //
 // Route one flushed outermost block to the interlinear builder. Identical buffering shape to
 // makePagesTableMode (see there for why currentBlockIsTranslated / currentBlockParagraphIdx are
@@ -2677,7 +2677,7 @@ void ChapterHtmlSlimParser::emitInterlinearPair(const std::vector<InterlinearRun
 //
 // THE MODEL, in four rules that are load-bearing and not preferences:
 //
-// 1. THE SOURCE FLOWS COMPLETELY NORMALLY. It is laid out exactly as PtLayout::OriginalOnly would
+// 1. THE SOURCE FLOWS COMPLETELY NORMALLY. It is laid out exactly as LinguaLayout::OriginalOnly would
 //    lay it out — same DP, same hyphenation, same justification, same indent, no constraint of any
 //    kind. Sentences do NOT each start a new line. Line breaking of the source is left alone and the
 //    TRANSLATION is the thing made to fit.
@@ -2820,7 +2820,7 @@ void ChapterHtmlSlimParser::renderInterlinear(std::unique_ptr<ParsedText> origBl
   }
 
   // STEP 1 — lay the SOURCE out, completely unconstrained. This is byte-for-byte the layout
-  // PtLayout::OriginalOnly would produce for the same paragraph; the tracked words only ride along.
+  // LinguaLayout::OriginalOnly would produce for the same paragraph; the tracked words only ride along.
   std::vector<std::shared_ptr<TextBlock>> srcLines;
   srcLines.reserve(8);
   origBlock->layoutAndExtractLines(
@@ -2889,7 +2889,7 @@ void ChapterHtmlSlimParser::renderInterlinear(std::unique_ptr<ParsedText> origBl
       // paragraph until the call returns. Nothing below reads an earlier line. That restores the
       // makePages peak -- one page's worth of TextBlocks, freed as onPageComplete serializes each
       // page -- for a paragraph long enough to span several pages, which is exactly the shape this
-      // layout produces most of (see the page-cost estimate in PtLayout.h).
+      // layout produces most of (see the page-cost estimate in LinguaLayout.h).
       srcLines[nextLine].reset();
       nextLine++;
     }

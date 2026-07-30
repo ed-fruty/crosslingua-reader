@@ -70,7 +70,7 @@ static void test_no_language_on_the_element_is_not_translated() {
 
 static void test_an_unknown_book_language_is_never_translated() {
   // A book with no (or an empty) <dc:language> gives no way to tell which of two languages is the
-  // original, so nothing may be classified as a translation: the chapter degrades to PtLayout::Both
+  // original, so nothing may be classified as a translation: the chapter degrades to LinguaLayout::Both
   // and renders its full text, instead of a filtering layout guessing and blanking it.
   TEST_ASSERT_FALSE(isTranslatedLangTag("uk", ""));
   TEST_ASSERT_FALSE(isTranslatedLangTag("uk", nullptr));

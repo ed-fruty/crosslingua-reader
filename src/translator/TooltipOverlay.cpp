@@ -445,7 +445,7 @@ static std::vector<std::string> tokenizeWords(const std::string& text) {
 // memory at a time, and the aligner's fixed scratch is the caller's (ParseCtx), so this frame stays
 // small.
 //
-// The alignment RULE itself lives in SentencePairing (shared with PtLayout::Interlinear and
+// The alignment RULE itself lives in SentencePairing (shared with LinguaLayout::Interlinear and
 // host-tested); this function is now just tokenize -> align -> materialize the index strings.
 static void addPairToIndex(const std::string& origText, const std::string& transText, SentencePairScratch& scratch,
                            std::vector<SentEntry>& index) {

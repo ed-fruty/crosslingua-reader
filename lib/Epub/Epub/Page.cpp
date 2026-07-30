@@ -43,7 +43,7 @@ bool PageLine::serialize(HalFile& file) {
 
   // serialize TextBlock pointed to by PageLine
   if (!block->serialize(file)) return false;
-  // Pre-Translation: paragraph index (section-cache version bump forces a full re-read).
+  // Lingua: paragraph index (section-cache version bump forces a full re-read).
   serialization::writePod(file, paragraphIdx);
   // Per-line font role, one byte after paragraphIdx.
   serialization::writePod(file, static_cast<uint8_t>(fontRole));
@@ -62,7 +62,7 @@ std::unique_ptr<PageLine> PageLine::deserialize(HalFile& file) {
     return nullptr;
   }
 
-  // Pre-Translation: paragraph index written after the TextBlock (see serialize()).
+  // Lingua: paragraph index written after the TextBlock (see serialize()).
   int16_t paragraphIdx = -1;
   serialization::readPod(file, paragraphIdx);
 
@@ -199,7 +199,7 @@ bool Page::serialize(HalFile& file) const {
     }
   }
 
-  // Pre-Translation: paragraph range for this page (appended after footnotes for back-compat).
+  // Lingua: paragraph range for this page (appended after footnotes for back-compat).
   serialization::writePod(file, firstParagraphIdx);
   serialization::writePod(file, lastParagraphIdx);
 
@@ -269,7 +269,7 @@ std::unique_ptr<Page> Page::deserialize(HalFile& file) {
     entry.href[sizeof(entry.href) - 1] = '\0';
   }
 
-  // Pre-Translation: paragraph range (always present: the section version bump invalidates
+  // Lingua: paragraph range (always present: the section version bump invalidates
   // any pre-v32 file at the header check, so Page::deserialize only runs on v32+ pages).
   serialization::readPod(file, page->firstParagraphIdx);
   serialization::readPod(file, page->lastParagraphIdx);

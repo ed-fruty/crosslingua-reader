@@ -1435,7 +1435,7 @@ bool ParsedText::extractLine(const size_t breakIndex, const size_t emittedOrdina
   // token index and its final x are both in hand. Called only after the line's TextBlock is known
   // valid, so a dropped line neither consumes an ordinal nor claims a tracked word.
   //
-  // Empty in every layout but PtLayout::Interlinear, and the null test is the first thing checked,
+  // Empty in every layout but LinguaLayout::Interlinear, and the null test is the first thing checked,
   // so this costs one pointer compare per line for everyone else.
   const auto recordTrackedWords = [&]() {
     if (trackedOut == nullptr || trackedWords.empty()) return;

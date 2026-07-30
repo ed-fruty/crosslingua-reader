@@ -291,7 +291,7 @@ class GfxRenderer {
   // Grayscale functions
   void setRenderMode(const RenderMode mode) { this->renderMode = mode; }
   RenderMode getRenderMode() const { return renderMode; }
-  // Pre-Translation: gray level applied to glyphs whose style carries the TRANSLATED bit.
+  // Lingua: gray level applied to glyphs whose style carries the TRANSLATED bit.
   // 0=black (default, no remap), 1=dark gray (also drawn in BW pass as fallback), 2=light gray.
   void setTranslationGrayLevel(uint8_t level) { translationGrayLevel = level; }
   uint8_t getTranslationGrayLevel() const { return translationGrayLevel; }

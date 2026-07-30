@@ -19,8 +19,8 @@ class ParsedText {
   // line and an x without re-deriving anything layout already knows exactly.
   //
   // The block is laid out with NO knowledge of the tracked indices — they constrain nothing. This is
-  // a pure REPORT, which is what lets PtLayout::Interlinear break its source exactly as
-  // PtLayout::OriginalOnly would and still know where each sentence landed.
+  // a pure REPORT, which is what lets LinguaLayout::Interlinear break its source exactly as
+  // LinguaLayout::OriginalOnly would and still know where each sentence landed.
   struct TrackedWordPos {
     static constexpr uint16_t NOT_PLACED = 0xFFFF;
     // Ordinal among the lines actually EMITTED. A line dropped to a TextBlock arena OOM does not
@@ -57,7 +57,7 @@ class ParsedText {
   std::vector<uint16_t> visualOrderScratch;
   // Word indices (in the CURRENT layout call's PRE-layout index space) whose final resting place the
   // caller wants reported back. Ascending, at most INTERLINEAR_MAX_ANNOTATIONS entries. Empty for
-  // every layout but PtLayout::Interlinear, and every path below short-circuits on empty, so an
+  // every layout but LinguaLayout::Interlinear, and every path below short-circuits on empty, so an
   // untouched block breaks and costs byte-for-byte what it did before this member existed.
   std::vector<uint16_t> trackedWords;
   // Destination for those reports, borrowed for the duration of one layoutAndExtractLines call and
@@ -115,7 +115,7 @@ class ParsedText {
   // Grow all five parallel token vectors (and rubyTexts, when it is in use) to hold `additionalTokens`
   // more entries in ONE step, instead of letting each double independently from zero. addWord uses it
   // on its multi-token paths; call it directly before any external push loop whose length is known
-  // (PtLayout::Interlinear re-emitting one sentence span into an annotation row). A caller that
+  // (LinguaLayout::Interlinear re-emitting one sentence span into an annotation row). A caller that
   // under-estimates is still correct — the vectors simply fall back to doubling.
   void reserveAdditionalWords(size_t additionalTokens);
   void setRubyForWordAt(size_t index, const std::string& ruby);
@@ -124,7 +124,7 @@ class ParsedText {
     return index < wordStyles.size() ? wordStyles[index] : EpdFontFamily::REGULAR;
   }
   // Read-only access to a word still in LOGICAL order, i.e. before layoutAndExtractLines consumes
-  // the block (which also hyphenates and BiDi-reorders). PtLayout::Interlinear reads the buffered
+  // the block (which also hyphenates and BiDi-reorders). LinguaLayout::Interlinear reads the buffered
   // TRANSLATION block this way: it is never laid out as a paragraph of its own, only re-emitted word
   // by word into the small annotation rows, so its words must be readable without laying it out.
   // Out-of-range yields the empty string rather than undefined behaviour.
@@ -145,7 +145,7 @@ class ParsedText {
   // before any line leaves this class, so the page words every other consumer reads never contain
   // one. A caller that walks the PRE-layout token stream as if it were words must merge on this flag
   // or it counts "O" "k" where the rest of the system counts "Ok" — which is a different sentence,
-  // a different match key and a different junk verdict (PtLayout::Interlinear's sentence pairing).
+  // a different match key and a different junk verdict (LinguaLayout::Interlinear's sentence pairing).
   bool wordIsFocusSuffixAt(const size_t index) const {
     return index < wordIsFocusSuffix.size() && wordIsFocusSuffix[index];
   }
@@ -165,7 +165,7 @@ class ParsedText {
   size_t size() const { return words.size(); }
   bool isEmpty() const { return words.empty(); }
   // Ask layout to REPORT where each listed word ends up. It constrains nothing — the block breaks
-  // exactly as it would with an empty list, which is the whole point: PtLayout::Interlinear needs
+  // exactly as it would with an empty list, which is the whole point: LinguaLayout::Interlinear needs
   // its source to flow like any other paragraph and still needs to know which line each sentence
   // starts on and at what x.
   //
@@ -189,7 +189,7 @@ class ParsedText {
   // Lay out exactly ONE line at `width` and consume only that line's words, leaving the rest of the
   // block for a later call — at a DIFFERENT width if the caller wants one.
   //
-  // layoutAndExtractLines wraps a whole block at a single measure, which PtLayout::Interlinear
+  // layoutAndExtractLines wraps a whole block at a single measure, which LinguaLayout::Interlinear
   // cannot use: each annotation row is confined to the horizontal BAND its own source line leaves
   // free, and those bands differ row by row (the first is shortened by the x its source sentence
   // starts at, the last by the x the NEXT source sentence starts at). So the rows of one sentence

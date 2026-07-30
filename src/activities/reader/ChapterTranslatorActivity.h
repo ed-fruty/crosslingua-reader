@@ -40,7 +40,7 @@ class ChapterTranslatorActivity final : public Activity {
     DONE,
     // Post-success chooser: when at least one paragraph was translated, this replaces the
     // DONE screen so the user can enable a bilingual display mode without diving back into
-    // the Lingua submenu (a no-translation fallback leaves the mode at PT_NORMAL). Confirm
+    // the Lingua submenu (a no-translation fallback leaves the mode at LINGUA_NORMAL). Confirm
     // persists the highlighted mode; Back skips. Both exit via the normal returnToCaller().
     CHOOSE_DISPLAY_MODE,
     FAILED,
@@ -79,10 +79,10 @@ class ChapterTranslatorActivity final : public Activity {
 
   State state = SOURCE_LANG_SELECTION;
 
-  // Cursor into the CHOOSE_DISPLAY_MODE list: an index into PT_SELECTABLE_MODES
-  // (0..PT_SELECTABLE_MODE_COUNT-1), NOT a raw mode value -- the retired holes at 1/2 make the
+  // Cursor into the CHOOSE_DISPLAY_MODE list: an index into LINGUA_SELECTABLE_MODES
+  // (0..LINGUA_SELECTABLE_MODE_COUNT-1), NOT a raw mode value -- the retired holes at 1/2 make the
   // value range non-contiguous. Seeded from the current SETTINGS.translationDisplayMode via
-  // ptSelectableIndex() when the chooser opens so it starts pre-highlighted.
+  // linguaSelectableIndex() when the chooser opens so it starts pre-highlighted.
   int displayModeSelection = 0;
 
   // ─── Translation task ──────────────────────────────────────────────────────

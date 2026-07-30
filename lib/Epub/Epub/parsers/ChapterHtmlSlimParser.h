@@ -13,7 +13,7 @@
 #include "Epub/InterlinearAnnotation.h"
 #include "Epub/PageFontSet.h"
 #include "Epub/ParsedText.h"
-#include "Epub/PtLayout.h"
+#include "Epub/LinguaLayout.h"
 #include "Epub/blocks/ImageBlock.h"
 #include "Epub/blocks/TextBlock.h"
 #include "Epub/css/CssParser.h"
@@ -64,21 +64,21 @@ class ChapterHtmlSlimParser {
   std::string imageBasePath;
   int imageCounter = 0;
 
-  // Pre-Translation feature: the page layout to produce. The parser never sees the user's display
-  // mode -- CrossPointSettings::ptLayoutForDisplayMode() collapses the modes onto these layouts.
-  PtLayout ptLayout = PtLayout::Both;
-  // Pre-Translation: font the TRANSLATED text is laid out in, or 0 for "same as fontId" (the ONLY
+  // Lingua feature: the page layout to produce. The parser never sees the user's display
+  // mode -- CrossPointSettings::linguaLayoutForDisplayMode() collapses the modes onto these layouts.
+  LinguaLayout linguaLayout = LinguaLayout::Both;
+  // Lingua: font the TRANSLATED text is laid out in, or 0 for "same as fontId" (the ONLY
   // unset sentinel — negative ids are normal, see PageFontSet.h). A non-zero id makes translated
   // lines a second type size on the page: they are measured, broken and advanced with it, and
   // stamped LineFontRole::Translation so the renderer resolves the same id back out of the page's
   // PageFontSet. 0 keeps every line Body, which is byte-for-byte the pre-existing layout.
   int translationFontId = 0;
-  // Pre-Translation (PtLayout::Interlinear): font the small ANNOTATION rows are laid out in, or 0
+  // Lingua (LinguaLayout::Interlinear): font the small ANNOTATION rows are laid out in, or 0
   // for "same as fontId" (the same single sentinel as translationFontId). Rows are measured, broken
   // and advanced with it and stamped LineFontRole::Annotation, so the renderer resolves the same id
   // back out of the page's PageFontSet.
   int annotationFontId = 0;
-  // Pre-Translation (PtLayout::Interlinear): the app's sentence aligner (see
+  // Lingua (LinguaLayout::Interlinear): the app's sentence aligner (see
   // Epub/InterlinearAnnotation.h). nullptr means "no annotations": the source paragraph still lays
   // out, it just carries no rows.
   InterlinearPairFn interlinearPairFn = nullptr;
@@ -104,7 +104,7 @@ class ChapterHtmlSlimParser {
   std::string bookPrimaryLang;            // Book's content.opf language; a differing lang= marks a translated block
   std::string translatedHyphenLang;       // Last lang= applied to the Hyphenator's translated slot; avoids re-resolving
 
-  // Pre-Translation (SideBySide and Interlinear): the current ORIGINAL outermost block is buffered
+  // Lingua (SideBySide and Interlinear): the current ORIGINAL outermost block is buffered
   // here until its paired translation arrives, because the parser flushes the original long before
   // the <p lang="..."> translation block is read and both layouts need the two texts in hand at once
   // (see renderSideBySide / renderInterlinear). bufferedOriginalParagraphIdx carries the original's
@@ -136,7 +136,7 @@ class ChapterHtmlSlimParser {
     CssTextDirection direction = CssTextDirection::Ltr;
     bool hasSup = false, sup = false;
     bool hasSub = false, sub = false;
-    // Pre-Translation: true when the enclosing block/inline element has a lang= attribute
+    // Lingua: true when the enclosing block/inline element has a lang= attribute
     // differing from the book's primary language (propagated to children through nesting).
     bool isTranslatedBlock = false;
   };
@@ -191,11 +191,11 @@ class ChapterHtmlSlimParser {
   void startNewTextBlock(const BlockStyle& blockStyle);
   void flushPendingAnchor();
   void flushPartWordBuffer();
-  // Pre-Translation: true when the block currently being parsed is one the active ptLayout
+  // Lingua: true when the block currently being parsed is one the active linguaLayout
   // drops, so its words never reach the layout engine. Shared by flushPartWordBuffer (which drops
   // the word) and the <ruby>/<rt> handlers (which must not annotate words that were never added).
   bool wordIsFiltered() const;
-  // Pre-Translation: the role every line of the currently-open block carries. Reads the SAME
+  // Lingua: the role every line of the currently-open block carries. Reads the SAME
   // block-level translated signal as the per-block hyphenation slot and the word-drop filter
   // (currentBlockIsTranslated), so the parser keeps exactly one notion of "translated".
   LineFontRole currentLineRole() const;
@@ -211,7 +211,7 @@ class ChapterHtmlSlimParser {
   // the entries they could not reach (a block that produced fewer lines than its anchors need), shared
   // by makePages and both custom emitters so all three behave identically.
   void flushPendingFootnotesToCurrentPage();
-  // Pre-Translation: one block's footnote ledger — the anchors pending for it and the word base those
+  // Lingua: one block's footnote ledger — the anchors pending for it and the word base those
   // indices are relative to. Both drains compare an index against wordsExtractedInBlock, so installing
   // a ledger is what makes a drain match its own block and nothing else.
   struct FootnoteLedger {
@@ -229,7 +229,7 @@ class ChapterHtmlSlimParser {
   // recycled), which is the precondition the next buffered block relies on.
   void releaseFootnoteLedger(FootnoteLedger& parked);
   void makePages();
-  // Pre-Translation (PtLayout::SideBySide): two-column table layout. makePagesTableMode routes an
+  // Lingua (LinguaLayout::SideBySide): two-column table layout. makePagesTableMode routes an
   // outermost block to either buffering (an original, held in bufferedOriginalBlock) or pairing
   // (a translation, laid beside the buffered original). renderSideBySide lays a buffered original
   // and its paired translation into two half-width columns, emitting them as lockstep PageLine
@@ -242,13 +242,13 @@ class ChapterHtmlSlimParser {
   void makePagesTableMode();
   void flushBufferedOriginal();
   void renderSideBySide(std::unique_ptr<ParsedText> sourceBlock, std::unique_ptr<ParsedText> transBlock);
-  // Pre-Translation (PtLayout::SideBySide): if the outermost block currently held in
+  // Lingua (LinguaLayout::SideBySide): if the outermost block currently held in
   // currentTextBlock is an ORIGINAL paragraph with no translation paired to it, append a
   // short ITALIC "not translated" marker inline after its source text before it lays out, so
   // the missing translation is visible but unobtrusive. Italic rather than a gray level because no
   // per-word gray vehicle can be confined to this marker; see the body. No-op outside SideBySide.
   void appendSideBySideNoTranslationMarkerIfUnpaired();
-  // Pre-Translation (PtLayout::Interlinear). Same buffering shape as SideBySide --
+  // Lingua (LinguaLayout::Interlinear). Same buffering shape as SideBySide --
   // makePagesInterlinearMode holds an original until its translation arrives -- but the pair is
   // emitted as one full-width flow of STRICTLY ALTERNATING rows: one small annotation strip, one
   // source line, one strip, one line, all the way down. An unpaired original falls back to plain
@@ -323,7 +323,7 @@ class ChapterHtmlSlimParser {
                                  const std::string& imageBasePath, const uint8_t imageRendering = 0,
                                  std::vector<std::string> tocAnchors = {},
                                  const std::function<void()>& popupFn = nullptr, const CssParser* cssParser = nullptr,
-                                 const PtLayout ptLayout = PtLayout::Both, const std::string& bookPrimaryLang = "",
+                                 const LinguaLayout linguaLayout = LinguaLayout::Both, const std::string& bookPrimaryLang = "",
                                  const int translationFontId = 0, const int annotationFontId = 0,
                                  const InterlinearPairFn interlinearPairFn = nullptr)
 
@@ -345,7 +345,7 @@ class ChapterHtmlSlimParser {
         imageRendering(imageRendering),
         contentBase(contentBase),
         imageBasePath(imageBasePath),
-        ptLayout(ptLayout),
+        linguaLayout(linguaLayout),
         translationFontId(translationFontId),
         annotationFontId(annotationFontId),
         interlinearPairFn(interlinearPairFn),

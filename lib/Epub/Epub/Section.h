@@ -30,9 +30,9 @@ class Section {
   void writeSectionFileHeader(const ReaderRenderSpec& spec, bool translatedSource, bool embeddedTranslation);
   uint32_t onPageComplete(std::unique_ptr<Page> page);
 
-  // Pre-Translation per-chapter fallback: a filtering/pairing layout on a chapter with no committed
+  // Lingua per-chapter fallback: a filtering/pairing layout on a chapter with no committed
   // translated HTML would filter for translated words that do not exist and render a blank chapter,
-  // so such a chapter is laid out (and cache-keyed) as PtLayout::Both instead -- which on an
+  // so such a chapter is laid out (and cache-keyed) as LinguaLayout::Both instead -- which on an
   // untranslated chapter is simply the plain original. This is the single source of truth for the
   // fallback, shared by loadSectionFile() (cache-key match) and startBuild() (layout) so the .bin is
   // written and looked up under the SAME effective layout -- an untranslated chapter caches under
@@ -40,12 +40,12 @@ class Section {
   // visit. The fallback is per-chapter only: it never touches the persisted display-mode setting,
   // so re-entering a translated chapter restores the mode.
   //
-  // The layout is only HALF the Pre-Translation cache key: Both is what an untranslated chapter and
+  // The layout is only HALF the Lingua cache key: Both is what an untranslated chapter and
   // a chapter merely requesting Normal both resolve to, so `translatedSource` (hasTranslation()) is
   // stamped into the header alongside it and compared on load. Taken as a parameter rather than
   // read inside, so each caller resolves the presence once and keys the layout and the source flag
   // off the SAME observation.
-  static PtLayout effectiveLayout(PtLayout requested, bool translatedSource);
+  static LinguaLayout effectiveLayout(LinguaLayout requested, bool translatedSource);
 
   // Page-offset table entry, kept in RAM while an incremental build is running so
   // already-built pages can be located in the partially-written .bin.
@@ -132,7 +132,7 @@ class Section {
   bool clearCache() const;
   bool createSectionFile(const ReaderRenderSpec& spec, const std::function<void()>& popupFn = nullptr);
 
-  // Pre-Translation: path to the persisted bilingual HTML for this spine
+  // Lingua: path to the persisted bilingual HTML for this spine
   // (`<cache>/sections/<spineIndex>.translated.html`). The translator subsystem writes it;
   // startBuild() prefers it over the unzipped chapter HTML when present, and it survives
   // layout-cache invalidation (font/size/mode changes only invalidate the `.bin`).
@@ -253,7 +253,7 @@ class Section {
   //
   // What the LUT does buy: it is a pure function of the source HTML, so within its coverage it
   // survives every re-layout (font family/size, line and paragraph spacing, margins, orientation,
-  // Pre-Translation layout), unlike a page number or a page ratio. The three wrappers below extend
+  // Lingua layout), unlike a page number or a page ratio. The three wrappers below extend
   // the on-disk lookups above to a build in PROGRESS, whose pages exist only in build_->lut -- the
   // state a re-layout is always in, since the cache-key mismatch that triggered it deleted the
   // committed .bin.

@@ -2,7 +2,7 @@
 #include <cstdint>
 
 #include "InterlinearAnnotation.h"
-#include "PtLayout.h"
+#include "LinguaLayout.h"
 
 // The resolved text-rendering configuration a reader hands to the layout
 // engine. Section-cache validation keys on every VALUE field: a section file built
@@ -25,21 +25,21 @@ struct ReaderRenderSpec {
   bool embeddedStyle = true;
   uint8_t imageRendering = 0;
   bool focusReadingEnabled = false;
-  // Pre-Translation: the page LAYOUT the display mode implies, NOT the raw mode. Different modes
+  // Lingua: the page LAYOUT the display mode implies, NOT the raw mode. Different modes
   // that produce identical pages share one layout, so switching between them is a cache HIT
-  // instead of a full chapter re-layout. See PtLayout.h and
-  // CrossPointSettings::ptLayoutForDisplayMode().
-  PtLayout ptLayout = PtLayout::Both;
-  // Pre-Translation: font the TRANSLATED text is laid out in. 0 -- and ONLY 0 -- means "same as
+  // instead of a full chapter re-layout. See LinguaLayout.h and
+  // CrossPointSettings::linguaLayoutForDisplayMode().
+  LinguaLayout linguaLayout = LinguaLayout::Both;
+  // Lingua: font the TRANSLATED text is laid out in. 0 -- and ONLY 0 -- means "same as
   // fontId": font ids are signed hashes, so a negative id is a perfectly normal font (see the
   // UNSET SENTINEL note in PageFontSet.h, which uses the same single-sentinel rule).
   // A distinct font changes word measurement and therefore line breaking, so unlike the drawing-
-  // only shade this IS part of the cache key -- but only under PtLayout::Both, the one layout that
+  // only shade this IS part of the cache key -- but only under LinguaLayout::Both, the one layout that
   // lays translated words out in it (OriginalOnly drops them; TranslationOnly and SideBySide lay
   // them out in the body font by design). Section normalizes it to 0 for every other layout, for the
   // key and for the layout engine alike; callers may set the real id unconditionally.
   int translationFontId = 0;
-  // Pre-Translation (PtLayout::Interlinear): font the small ANNOTATION rows are laid out in. 0 --
+  // Lingua (LinguaLayout::Interlinear): font the small ANNOTATION rows are laid out in. 0 --
   // and only 0 -- means "same as fontId" (see the sentinel note above); that is also the graceful
   // answer when the annotation face cannot cover the target script, in which case the rows still
   // appear above their sentences, just at body size.
@@ -49,7 +49,7 @@ struct ReaderRenderSpec {
   // but Interlinear (keyedAnnotationFontId), for the key and the layout engine alike, so a future
   // annotation-size row cannot invalidate the cache of a mode that draws no annotations.
   int annotationFontId = 0;
-  // Pre-Translation (PtLayout::Interlinear): the app's sentence aligner. NOT a cache key -- it is a
+  // Lingua (LinguaLayout::Interlinear): the app's sentence aligner. NOT a cache key -- it is a
   // pure function of the two texts, identical in every build, so it cannot change what a cached page
   // contains; it is carried here only because this struct is already the one channel from the app to
   // the layout engine. nullptr disables annotation emission (the source paragraph then lays out
@@ -74,7 +74,7 @@ struct ReaderRenderSpec {
            viewportWidth == other.viewportWidth && viewportHeight == other.viewportHeight &&
            hyphenationEnabled == other.hyphenationEnabled && embeddedStyle == other.embeddedStyle &&
            imageRendering == other.imageRendering && focusReadingEnabled == other.focusReadingEnabled &&
-           ptLayout == other.ptLayout && translationFontId == other.translationFontId &&
+           linguaLayout == other.linguaLayout && translationFontId == other.translationFontId &&
            annotationFontId == other.annotationFontId;
   }
 };

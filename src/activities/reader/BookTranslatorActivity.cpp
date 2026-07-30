@@ -12,7 +12,7 @@
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
-#include "PreTranslationModes.h"
+#include "LinguaModes.h"
 #include "activities/ActivityManager.h"
 #include "activities/ActivityResult.h"
 #include "activities/network/WifiSelectionActivity.h"
@@ -179,7 +179,7 @@ void BookTranslatorActivity::onTargetLangSelected(uint8_t resultIndex) {
   scanAlreadyTranslated();
 }
 
-// ─── pre-translation scan ─────────────────────────────────────────────────────
+// ─── lingua scan ─────────────────────────────────────────────────────
 
 void BookTranslatorActivity::scanAlreadyTranslated() {
   alreadyTranslatedCount = 0;
@@ -650,7 +650,7 @@ void BookTranslatorActivity::loop() {
       } else if (chaptersCompleted > 0) {
         // Success with at least one chapter available: offer the display-mode chooser so the
         // user can enable a bilingual mode straight away. Pre-highlight the current mode.
-        displayModeSelection = static_cast<int>(ptSelectableIndex(SETTINGS.translationDisplayMode));
+        displayModeSelection = static_cast<int>(linguaSelectableIndex(SETTINGS.translationDisplayMode));
         state = CHOOSE_DISPLAY_MODE;
       } else {
         state = DONE;
@@ -678,18 +678,18 @@ void BookTranslatorActivity::loop() {
   // normal return path so the relaunched reader picks up the mode from settings.
   if (state == CHOOSE_DISPLAY_MODE) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
-      displayModeSelection = (displayModeSelection + static_cast<int>(PT_SELECTABLE_MODE_COUNT) - 1) %
-                             static_cast<int>(PT_SELECTABLE_MODE_COUNT);
+      displayModeSelection = (displayModeSelection + static_cast<int>(LINGUA_SELECTABLE_MODE_COUNT) - 1) %
+                             static_cast<int>(LINGUA_SELECTABLE_MODE_COUNT);
       requestUpdate();
       return;
     }
     if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
-      displayModeSelection = (displayModeSelection + 1) % static_cast<int>(PT_SELECTABLE_MODE_COUNT);
+      displayModeSelection = (displayModeSelection + 1) % static_cast<int>(LINGUA_SELECTABLE_MODE_COUNT);
       requestUpdate();
       return;
     }
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-      const uint8_t chosen = static_cast<uint8_t>(PT_SELECTABLE_MODES[displayModeSelection]);
+      const uint8_t chosen = static_cast<uint8_t>(LINGUA_SELECTABLE_MODES[displayModeSelection]);
       if (SETTINGS.translationDisplayMode != chosen) {  // guard SPIFFS write on no-op selections
         SETTINGS.translationDisplayMode = chosen;
         SETTINGS.saveToFile();
@@ -901,8 +901,8 @@ void BookTranslatorActivity::renderDisplayModeChooser() {
   // Captureless lambda -> no std::function heap allocation; the row string is built from the
   // static StrId table each frame (transient, like the submenu's list).
   GUI.drawList(renderer, Rect{screen.x, contentTop, screen.width, contentHeight},
-               static_cast<int>(PT_SELECTABLE_MODE_COUNT), displayModeSelection,
-               [](int index) -> std::string { return I18N.get(ptModeLabel(PT_SELECTABLE_MODES[index])); });
+               static_cast<int>(LINGUA_SELECTABLE_MODE_COUNT), displayModeSelection,
+               [](int index) -> std::string { return I18N.get(linguaModeLabel(LINGUA_SELECTABLE_MODES[index])); });
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

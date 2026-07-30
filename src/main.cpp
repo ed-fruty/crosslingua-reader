@@ -153,7 +153,7 @@ enum class BootResume : uint8_t {
 // startDeepSleep() does not return, so a set latch only ends at the wakeup reset.
 static bool deepSleepInProgress = false;
 
-// Pre-Translation: map the display mode + shade sub-setting to the renderer's 3-level gray value
+// Lingua: map the display mode + shade sub-setting to the renderer's 3-level gray value
 // for words carrying the per-word EpdFontFamily::TRANSLATED bit. INTERLEAVED, and only Interleaved,
 // dims translated text this way, and the shade picks how far (SHADE_DIMMED->1,
 // SHADE_DIMMED_LIGHT->2). Every other mode draws in normal black (0), including the overlay modes
@@ -179,7 +179,7 @@ static bool deepSleepInProgress = false;
 // The shade is DRAWING-only, which is why it is read here (every tick) and not in the section cache
 // key. constexpr keeps this a compile-time lookup with zero runtime/flash overhead.
 static constexpr uint8_t modeToGray(uint8_t mode, uint8_t shade) {
-  return (mode != CrossPointSettings::PT_INTERLEAVED) ? 0 : (shade == CrossPointSettings::SHADE_DIMMED_LIGHT) ? 2 : 1;
+  return (mode != CrossPointSettings::LINGUA_INTERLEAVED) ? 0 : (shade == CrossPointSettings::SHADE_DIMMED_LIGHT) ? 2 : 1;
 }
 
 void silentRestart() {

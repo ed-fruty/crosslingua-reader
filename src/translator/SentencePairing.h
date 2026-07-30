@@ -10,7 +10,7 @@
 // Two consumers need exactly the same answer to "which translated sentence belongs to this source
 // sentence?", so the rule lives here once instead of in each of them:
 //   * TooltipOverlay  — builds a key -> translation index at view time and shows one unit per press;
-//   * PtLayout::Interlinear — forces each sentence to start a line and emits its annotation row above it.
+//   * LinguaLayout::Interlinear — forces each sentence to start a line and emits its annotation row above it.
 // Both must feed it the same WORDS, which is not automatic: the tooltip reads laid-out page words,
 // while Interlinear reads a ParsedText before layout, and with Focus Reading on that block stores a
 // bold prefix and a regular tail as two tokens ("O" + "k"). Interlinear merges them back
@@ -84,7 +84,7 @@ struct SentenceStep {
 // translated sentence (so all K map to the same translated span), or an unmatched sentence
 // inherited a neighbour's translation via gap-fill. Without this the user sees the identical
 // tooltip several presses in a row, and Interlinear would print the identical annotation row K
-// times — the photo-verified PT_TOOLTIP bug. Empty (untranslated) sentences are never a step and
+// times — the photo-verified LINGUA_TOOLTIP bug. Empty (untranslated) sentences are never a step and
 // terminate a run, so a page-boundary partial sentence stays out of a group's span.
 //
 // Two entry points, ONE rule (see the shared implementation in the .cpp):

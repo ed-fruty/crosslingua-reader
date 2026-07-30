@@ -18,7 +18,7 @@ namespace {
 // READ THIS BEFORE COMPARING THE NUMBER TO ANYTHING OUTSIDE THIS FORK.
 // This fork's format at version 34 is NOT upstream develop's format at any version. Our header
 // carries four fields upstream's does not have at all -- translationFontId, annotationFontId, the
-// PtLayout byte, and the translatedSource / embeddedTranslation pair -- so an upstream-written .bin
+// LinguaLayout byte, and the translatedSource / embeddedTranslation pair -- so an upstream-written .bin
 // and one of ours are mutually unreadable whatever number either stamps. The version byte is
 // therefore only meaningful WITHIN this fork: it is a cache key for our own files, never a
 // compatibility claim against upstream. Nothing may treat "34" as a portable format identifier, and
@@ -45,7 +45,7 @@ namespace {
 // this order, and HEADER_SIZE below is the sum):
 //   version:uint8, fontId:int, translationFontId:int, annotationFontId:int, lineCompression:float,
 //   extraParagraphSpacing:bool, paragraphAlignment:uint8, viewportWidth:uint16,
-//   viewportHeight:uint16, hyphenationEnabled:bool, embeddedStyle:bool, ptLayout:uint8,
+//   viewportHeight:uint16, hyphenationEnabled:bool, embeddedStyle:bool, linguaLayout:uint8,
 //   translatedSource:bool, embeddedTranslation:bool, imageRendering:uint8,
 //   focusReadingEnabled:bool, pageCount:uint16, then four uint32 LUT offsets.
 // Every field except embeddedTranslation is part of the cache key.
@@ -69,11 +69,11 @@ namespace {
 //   language) hyphenates with its own script's rules, so a bilingual en->uk book's translated text
 //   breaks correctly. Hyphenated splits are baked into the serialized pages, which is why changing
 //   this rule is always a format change.
-// * Pre-Translation stores the LAYOUT, not the display mode. The header holds a PtLayout byte
+// * Lingua stores the LAYOUT, not the display mode. The header holds a LinguaLayout byte
 //   (Both / OriginalOnly / TranslationOnly / SideBySide / Interlinear) rather than the raw user
 //   mode, so modes whose pages are byte-identical -- Normal vs Interleaved (a gray level, drawn not
 //   laid out), Original Only vs Page Translation vs Tooltip (overlays composited at view time) --
-//   share one cache entry and switching between them is instant. PtLayout.h states the rule: the
+//   share one cache entry and switching between them is instant. LinguaLayout.h states the rule: the
 //   byte is part of the cache key, so adding a value to the enum is itself a format change.
 //   - SideBySide lays original and translation into two half-width columns (renderSideBySide),
 //     reusing the existing per-line xPos field rather than adding structure.
@@ -97,7 +97,7 @@ namespace {
 //   TRANSLATIONS -- from either source: a reader-produced `.translated.html` sidecar, or
 //   translations embedded in the chapter's own XHTML (a Calibre-plugin bilingual book interleaves
 //   `<p lang="uk">` after each `lang="en"` original; there is no sidecar and no marker attribute).
-//   The PtLayout byte cannot express this: Both is stamped both by an untranslated chapter and by
+//   The LinguaLayout byte cannot express this: Both is stamped both by an untranslated chapter and by
 //   one that simply requested Normal. Without the flag, a chapter laid out before its translation
 //   arrived would stay a cache HIT afterwards and silently serve untranslated pages in a bilingual
 //   mode -- and, symmetrically, a translated cache would survive the translation being deleted.
@@ -123,7 +123,7 @@ namespace {
 //    catch it". Two different header layouts were once written under the number 38 during
 //    development -- first without translatedSource, then with it. That byte sits in the MIDDLE of
 //    the header, so the earlier layout passes the version gate and then every field after the
-//    PtLayout byte is read shifted by one. The parameter-mismatch check usually catches that as a
+//    LinguaLayout byte is read shifted by one. The parameter-mismatch check usually catches that as a
 //    stale key and rebuilds, but it is NOT guaranteed to (shifted bytes can compare equal), and the
 //    pageCount and LUT offsets that follow are consumed BEFORE any such check can help. Any
 //    mid-header insertion makes a bump mandatory rather than merely correct.
@@ -167,8 +167,8 @@ constexpr uint8_t SECTION_FILE_PARTIAL_VERSION = 0xFE - (SECTION_FILE_VERSION - 
 static_assert(SECTION_FILE_PARTIAL_VERSION > SECTION_FILE_VERSION &&
                   SECTION_FILE_PARTIAL_VERSION != SECTION_FILE_INCOMPLETE_VERSION,
               "Partial sentinel collides with a real version");
-// The second sizeof(int) is the Pre-Translation translationFontId and the third is the
-// annotationFontId; the extra sizeof(uint8_t) after the two bools is the Pre-Translation PtLayout
+// The second sizeof(int) is the Lingua translationFontId and the third is the
+// annotationFontId; the extra sizeof(uint8_t) after the two bools is the Lingua LinguaLayout
 // byte, the sizeof(bool) right after it is the translated-source flag, and the sizeof(bool) after
 // THAT is the embedded-translation memo.
 constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) + sizeof(int) + sizeof(int) + sizeof(int) + sizeof(float) +
@@ -195,14 +195,14 @@ constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) + sizeof(int) + sizeof(int) + s
 // with no committed translation is laid out as Both even in Tooltip mode (Section::effectiveLayout),
 // and keyedTranslationFontId keeps the real id for it exactly as it would for an actually-translated
 // chapter. That is NOT a don't-care: ChapterHtmlSlimParser::currentBlockIsTranslated is a lang=
-// mismatch against the book's primary language, not "this chapter has a committed Pre-Translation" --
+// mismatch against the book's primary language, not "this chapter has a committed Lingua" --
 // so the chapter's OWN original HTML can carry lang-tagged blocks (a foreign epigraph, a quoted
 // phrase) that currentLineRole() still tags LineFontRole::Translation under Both and lays out in this
 // font. Zeroing the id here for an untranslated chapter would let a later change to it (e.g. the
 // Interleaved mode's Smaller Translation Size) silently keep serving those blocks from a stale cache
 // at the wrong size instead of invalidating it.
-constexpr int keyedTranslationFontId(const int translationFontId, const PtLayout effectiveLayout) {
-  return effectiveLayout == PtLayout::Both ? translationFontId : 0;
+constexpr int keyedTranslationFontId(const int translationFontId, const LinguaLayout effectiveLayout) {
+  return effectiveLayout == LinguaLayout::Both ? translationFontId : 0;
 }
 
 // Same rule, same reasoning, for the annotation font: it only reaches a page under the ONE layout
@@ -211,8 +211,8 @@ constexpr int keyedTranslationFontId(const int translationFontId, const PtLayout
 // let a future annotation-size row invalidate every cached chapter of a mode that draws no
 // annotations at all. Applied in all three places the translation one is -- the header write, the
 // lookup compare and the id handed to the parser -- so the key and the layout can never disagree.
-constexpr int keyedAnnotationFontId(const int annotationFontId, const PtLayout effectiveLayout) {
-  return effectiveLayout == PtLayout::Interlinear ? annotationFontId : 0;
+constexpr int keyedAnnotationFontId(const int annotationFontId, const LinguaLayout effectiveLayout) {
+  return effectiveLayout == LinguaLayout::Interlinear ? annotationFontId : 0;
 }
 }  // namespace
 
@@ -262,7 +262,7 @@ void Section::writeSectionFileHeader(const ReaderRenderSpec& spec, const bool tr
                                    sizeof(spec.extraParagraphSpacing) + sizeof(spec.paragraphAlignment) +
                                    sizeof(spec.viewportWidth) + sizeof(spec.viewportHeight) + sizeof(pageCount) +
                                    sizeof(spec.hyphenationEnabled) + sizeof(spec.embeddedStyle) +
-                                   sizeof(uint8_t) /* PtLayout */ + sizeof(translatedSource) +
+                                   sizeof(uint8_t) /* LinguaLayout */ + sizeof(translatedSource) +
                                    sizeof(embeddedTranslation) + sizeof(spec.imageRendering) +
                                    sizeof(spec.focusReadingEnabled) + sizeof(uint32_t) + sizeof(uint32_t) +
                                    sizeof(uint32_t) + sizeof(uint32_t),
@@ -271,8 +271,8 @@ void Section::writeSectionFileHeader(const ReaderRenderSpec& spec, const bool tr
   // SECTION_FILE_VERSION as the last step, committing the file.
   serialization::writePod(file, SECTION_FILE_INCOMPLETE_VERSION);
   serialization::writePod(file, spec.fontId);
-  serialization::writePod(file, spec.translationFontId);  // Pre-Translation translated-text font (cache key)
-  // Pre-Translation annotation-row font (cache key). Non-zero only under PtLayout::Interlinear.
+  serialization::writePod(file, spec.translationFontId);  // Lingua translated-text font (cache key)
+  // Lingua annotation-row font (cache key). Non-zero only under LinguaLayout::Interlinear.
   serialization::writePod(file, spec.annotationFontId);
   serialization::writePod(file, spec.lineCompression);
   serialization::writePod(file, spec.extraParagraphSpacing);
@@ -281,7 +281,7 @@ void Section::writeSectionFileHeader(const ReaderRenderSpec& spec, const bool tr
   serialization::writePod(file, spec.viewportHeight);
   serialization::writePod(file, spec.hyphenationEnabled);
   serialization::writePod(file, spec.embeddedStyle);
-  serialization::writePod(file, static_cast<uint8_t>(spec.ptLayout));  // Pre-Translation page layout (cache key)
+  serialization::writePod(file, static_cast<uint8_t>(spec.linguaLayout));  // Lingua page layout (cache key)
   // Whether the HTML these pages were laid out from contained translations (cache key). The layout
   // byte cannot express it: Both is stamped both by an untranslated chapter and by one that simply
   // requested Normal.
@@ -333,7 +333,7 @@ bool Section::loadSectionFile(const ReaderRenderSpec& spec) {
     uint8_t fileParagraphAlignment;
     bool fileHyphenationEnabled;
     bool fileEmbeddedStyle;
-    uint8_t filePtLayout;
+    uint8_t fileLinguaLayout;
     bool fileTranslatedSource;
     bool fileEmbeddedTranslation;
     uint8_t fileImageRendering;
@@ -348,7 +348,7 @@ bool Section::loadSectionFile(const ReaderRenderSpec& spec) {
     serialization::readPod(file, fileViewportHeight);
     serialization::readPod(file, fileHyphenationEnabled);
     serialization::readPod(file, fileEmbeddedStyle);
-    serialization::readPod(file, filePtLayout);
+    serialization::readPod(file, fileLinguaLayout);
     serialization::readPod(file, fileTranslatedSource);
     serialization::readPod(file, fileEmbeddedTranslation);
     serialization::readPod(file, fileImageRendering);
@@ -359,7 +359,7 @@ bool Section::loadSectionFile(const ReaderRenderSpec& spec) {
     // -- otherwise a filtering layout never matches the Both-stamped cache and rebuilds on every
     // visit. See effectiveLayout().
     //
-    // The source flag is the other half of the Pre-Translation key. Both is stamped by an
+    // The source flag is the other half of the Lingua key. Both is stamped by an
     // untranslated chapter AND by a chapter that simply requested Normal, so without this compare a
     // chapter laid out before its translation was downloaded would stay a cache HIT afterwards and
     // serve untranslated pages in a bilingual mode (and, symmetrically, a translated cache would
@@ -386,14 +386,14 @@ bool Section::loadSectionFile(const ReaderRenderSpec& spec) {
     // on a MISS it is superseded by the rebuild below. Either way it is what a caller recording a
     // reposition anchor needs, without a second SD stat.
     translatedSource_ = translatedSource;
-    const PtLayout layout = effectiveLayout(spec.ptLayout, translatedSource);
+    const LinguaLayout layout = effectiveLayout(spec.linguaLayout, translatedSource);
     if (spec.fontId != fileFontId || keyedTranslationFontId(spec.translationFontId, layout) != fileTranslationFontId ||
         keyedAnnotationFontId(spec.annotationFontId, layout) != fileAnnotationFontId ||
         spec.lineCompression != fileLineCompression || spec.extraParagraphSpacing != fileExtraParagraphSpacing ||
         spec.paragraphAlignment != fileParagraphAlignment || spec.viewportWidth != fileViewportWidth ||
         spec.viewportHeight != fileViewportHeight || spec.hyphenationEnabled != fileHyphenationEnabled ||
         spec.embeddedStyle != fileEmbeddedStyle || translatedSource != fileTranslatedSource ||
-        static_cast<uint8_t>(layout) != filePtLayout || spec.imageRendering != fileImageRendering ||
+        static_cast<uint8_t>(layout) != fileLinguaLayout || spec.imageRendering != fileImageRendering ||
         spec.focusReadingEnabled != fileFocusReadingEnabled) {
       file.close();
       LOG_ERR("SCT", "Deserialization failed: Parameters do not match");
@@ -533,13 +533,13 @@ void Section::resolveTranslationPresence() {
   }
 }
 
-PtLayout Section::effectiveLayout(const PtLayout requested, const bool translatedSource) {
+LinguaLayout Section::effectiveLayout(const LinguaLayout requested, const bool translatedSource) {
   // With no translation in the source there are no translated words to drop, keep or pair, so EVERY
   // layout degrades to Both -- which on an untranslated chapter is just the plain original. Both is
   // therefore both the request and the fallback, which is exactly why it says nothing about the
   // source the pages came from and why the caller pairs this with the translatedSource flag in the
   // cache key. See the declaration comment in Section.h.
-  return translatedSource ? requested : PtLayout::Both;
+  return translatedSource ? requested : LinguaLayout::Both;
 }
 
 bool Section::createSectionFile(const ReaderRenderSpec& spec, const std::function<void()>& popupFn) {
@@ -650,7 +650,7 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
     Storage.mkdir(sectionsDir.c_str());
   }
 
-  // Pre-Translation: prefer the persisted bilingual HTML when the translator subsystem has
+  // Lingua: prefer the persisted bilingual HTML when the translator subsystem has
   // produced one for this spine. It survives layout-cache invalidation (font/size/mode only
   // invalidate the .bin) and is parsed directly instead of the unzipped chapter HTML.
   const auto translatedPath = getTranslatedHtmlPath();
@@ -710,17 +710,17 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   // toast) has already decided whether to notify on entry. The downgrade goes through the SAME
   // effectiveLayout() that loadSectionFile() keys on, off the same translatedSource observation that
   // is stamped into the header, so build and lookup can never disagree.
-  const PtLayout effectivePtLayout = effectiveLayout(spec.ptLayout, translatedSource);
-  if (effectivePtLayout != spec.ptLayout) {
+  const LinguaLayout effectiveLinguaLayout = effectiveLayout(spec.linguaLayout, translatedSource);
+  if (effectiveLinguaLayout != spec.linguaLayout) {
     LOG_DBG("SCT", "No translation for spine %d; laying out with the Both layout", spineIndex);
   }
   // The header cache-key and the parser both key on the effective (post-fallback) layout.
   ReaderRenderSpec effectiveSpec = spec;
-  effectiveSpec.ptLayout = effectivePtLayout;
+  effectiveSpec.linguaLayout = effectiveLinguaLayout;
   // ... and the translation font is only keyed where translated words reach the page; see
   // keyedTranslationFontId(). loadSectionFile() normalizes the lookup the same way.
-  effectiveSpec.translationFontId = keyedTranslationFontId(spec.translationFontId, effectivePtLayout);
-  effectiveSpec.annotationFontId = keyedAnnotationFontId(spec.annotationFontId, effectivePtLayout);
+  effectiveSpec.translationFontId = keyedTranslationFontId(spec.translationFontId, effectiveLinguaLayout);
+  effectiveSpec.annotationFontId = keyedAnnotationFontId(spec.annotationFontId, effectiveLinguaLayout);
 
   if (!Storage.openFileForWrite("SCT", binTmpPath(), file)) {
     if (!reusedHtml) Storage.remove(tmpHtmlPath.c_str());
@@ -784,7 +784,7 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
         ctxPtr->lut.push_back({this->onPageComplete(std::move(page)), paragraphIndex, listItemIndex});
       },
       spec.embeddedStyle, ctxPtr->contentBase, ctxPtr->imageBasePath, spec.imageRendering, std::move(tocAnchors),
-      popupFn, ctxPtr->cssParser, effectivePtLayout, epub->getLanguage(),
+      popupFn, ctxPtr->cssParser, effectiveLinguaLayout, epub->getLanguage(),
       // The NORMALIZED ids, the same ones the header is keyed on: the parser measures translated
       // lines and annotation rows with them, so anything that zeroes one for the key must zero it for
       // the layout too.
@@ -1143,7 +1143,7 @@ std::string Section::getTextFromSectionFile() {
     for (const auto& el : p->elements) {
       if (el->getTag() == TAG_PageLine) {
         const auto& line = static_cast<const PageLine&>(*el);
-        // Skip editorial rows the reader inserted itself. Under PtLayout::Interlinear an Annotation
+        // Skip editorial rows the reader inserted itself. Under LinguaLayout::Interlinear an Annotation
         // row is a fragment of translated text, so including it would interleave two languages in
         // every consumer of this text (the QR page-text view, bookmark summaries). Scoped to Annotation
         // only: Translation rows ARE part of the chapter under the Both layout (Interleaved), and

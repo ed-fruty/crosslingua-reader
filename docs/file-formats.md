@@ -119,7 +119,7 @@ the note under [Side-by-Side](#side-by-side-two-column-layout)).
 
 > **The number now matches upstream's, but the format does not.** This fork's header carries four fields
 > upstream's has no concept of — `translationFontId`, `annotationFontId`, the
-> `PtLayout` byte, and the `translatedSource` / `embeddedTranslation` pair — so an
+> `LinguaLayout` byte, and the `translatedSource` / `embeddedTranslation` pair — so an
 > upstream-written `.bin` and one of ours are mutually unreadable whatever number
 > either stamps. The version byte is a cache key **within this fork only**, never a
 > portable format identifier and never a compatibility claim. No cross-fork cache
@@ -169,7 +169,7 @@ settings, the section is discarded and rebuilt. In write order:
 | `viewportHeight` | `u16` | yes |
 | `hyphenationEnabled` | `bool` | yes |
 | `embeddedStyle` | `bool` | yes |
-| `ptLayout` | `u8` | yes |
+| `linguaLayout` | `u8` | yes |
 | `translatedSource` | `bool` | yes |
 | `embeddedTranslation` | `bool` | **no** — memo only |
 | `imageRendering` | `u8` | yes |
@@ -179,11 +179,11 @@ settings, the section is discarded and rebuilt. In write order:
 
 `embeddedTranslation` is the only field that is not part of the key.
 
-#### Pre-Translation: the header stores a layout, not a display mode
+#### Lingua: the header stores a layout, not a display mode
 
-The Pre-Translation byte holds the `PtLayout` a display mode *implies*, not the raw
+The Lingua byte holds the `LinguaLayout` a display mode *implies*, not the raw
 mode: `0 = Both`, `1 = OriginalOnly`, `2 = TranslationOnly`, `3 = SideBySide`,
-`4 = Interlinear` (see `lib/Epub/Epub/PtLayout.h`). Several display modes produce
+`4 = Interlinear` (see `lib/Epub/Epub/LinguaLayout.h`). Several display modes produce
 byte-identical pages and share one cache entry: Normal and Interleaved both map to
 `Both`, and Original Only / Page Translation / Tooltip all map to `OriginalOnly` (the
 overlay modes composite their translation at view time, so their main flow is
@@ -216,7 +216,7 @@ edge on one page. No sentence metadata reaches disk: everything is resolved befo
 the page is written.
 
 - **The source flows completely normally.** It is laid out exactly as
-  `PtLayout::OriginalOnly` would lay it out: same DP, same hyphenation, same
+  `LinguaLayout::OriginalOnly` would lay it out: same DP, same hyphenation, same
   justification, same first-line indent, no constraint of any kind. Sentences do
   **not** each begin a new line. Sentence starts are handed to layout as *tracked
   words* (`ParsedText::setTrackedWords`), which constrain nothing — layout simply
@@ -376,7 +376,7 @@ are all-`Body`). `Annotation` is emitted under the `Interlinear` layout only.
 
 #### `translatedSource` and `embeddedTranslation`
 
-- **`translatedSource`** is a 1-byte `bool` immediately after the `PtLayout` byte. It
+- **`translatedSource`** is a 1-byte `bool` immediately after the `LinguaLayout` byte. It
   records whether the HTML these pages were laid out from **contained translations** —
   from *either* source: a reader-produced `.translated.html` sidecar, or translations
   embedded in the chapter's own XHTML. A book translated by a Calibre plugin has no
@@ -392,7 +392,7 @@ are all-`Body`). `Annotation` is emitted under the `Interlinear` layout only.
   with `-` and `_` both ending the subtag, so `uk-UA` in an `en` book is translated
   while `en-GB` is not. It is never class, style, colour or `dir` — those are one
   plugin's presentation choices. A book with no `<dc:language>` answers "not
-  translated", which degrades to `PtLayout::Both` and renders the full text. The
+  translated", which degrades to `LinguaLayout::Both` and renders the full text. The
   predicate is shared with `ChapterHtmlSlimParser`, so the gate that enables a bilingual
   layout and the engine that renders it can never disagree.
 - **`embeddedTranslation`** is a 1-byte `bool` immediately after `translatedSource`,
@@ -423,7 +423,7 @@ a book that gains one is a different file with a different cache directory.
 - **Closed-tag block splits.** A closing block tag starts a fresh text block, so a
   closed block's style does not leak into following bare text.
 - **The ruby word-style bit is 128 (bit 7),** not upstream's `64`: `64` is this fork's
-  `TRANSLATED` bit (Pre-Translation). The reservation bit 7 previously carried for the
+  `TRANSLATED` bit (Lingua). The reservation bit 7 previously carried for the
   Tooltip display mode is retired — that flag was never written nor persisted. The word
   style byte is now **full**: a further flag requires widening the persisted style (the
   `TextBlock` arena stores `styles[]` as `uint8_t`) plus a version bump.
@@ -440,7 +440,7 @@ instead of full-width sequential blocks. The two columns are emitted as lockstep
 `PageLine` rows — the left line at `xPos = 0` and the right line at `xPos = rightColX`,
 both sharing one `yPos` — reusing the existing per-line `xPos` field, so no new fields
 are added. An inline "not translated" marker is laid out after originals that have no
-paired translation. See [Side by Side](./pre-translation.md#side-by-side).
+paired translation. See [Side by Side](./lingua.md#side-by-side).
 
 #### Two rules this history paid for
 
@@ -448,7 +448,7 @@ paired translation. See [Side by Side](./pre-translation.md#side-by-side).
    "would catch it".** Two different header layouts were once written under the number
    38 during development — first without `translatedSource`, then with it. That byte
    sits in the *middle* of the header, so the earlier layout passes a version-38 gate
-   and then every field after the `PtLayout` byte is read shifted by one, including the
+   and then every field after the `LinguaLayout` byte is read shifted by one, including the
    `pageCount` and LUT offsets, which are consumed *before* the parameter-mismatch check
    could reject the entry. The check usually catches it, but it is not guaranteed to —
    shifted bytes can compare equal. **Version 38 was never a stable layout and nothing
@@ -479,7 +479,7 @@ script's rules instead of the single book-wide hyphenator, so a bilingual book
 splits are baked into the serialized pages, so sections cached under v32 stored
 English-only splits on Cyrillic text and must be regenerated.
 
-Version 32 adds the Pre-Translation feature: a `translationMode` byte in the
+Version 32 adds the Lingua feature: a `translationMode` byte in the
 header (part of the cache key), a per-line `paragraphIdx`, and a per-page
 paragraph range (`firstParagraphIdx` / `lastParagraphIdx`). These let the
 reader map rendered lines back to their originating source paragraphs and
@@ -536,7 +536,7 @@ fn format_string(String s) {
     return s.data;
 };
 
-enum PtLayout : u8 {
+enum LinguaLayout : u8 {
     Both = 0,
     OriginalOnly = 1,
     TranslationOnly = 2,
@@ -627,7 +627,7 @@ struct PageLine {
     s16 xPos;
     s16 yPos;
     TextBlock block;
-    s16 paragraphIdx [[comment("Pre-Translation: source paragraph index; -1 = unset")]];
+    s16 paragraphIdx [[comment("Lingua: source paragraph index; -1 = unset")]];
     LineFontRole fontRole [[comment("Which role's font this line draws in")]];
 };
 
@@ -669,8 +669,8 @@ struct Page {
     u16 footnoteCount;
     FootnoteEntry footnotes[footnoteCount];
 
-    s16 firstParagraphIdx [[comment("Pre-Translation: first source paragraph on this page; -1 = none")]];
-    s16 lastParagraphIdx [[comment("Pre-Translation: last source paragraph on this page; -1 = none")]];
+    s16 firstParagraphIdx [[comment("Lingua: first source paragraph on this page; -1 = none")]];
+    s16 lastParagraphIdx [[comment("Lingua: last source paragraph on this page; -1 = none")]];
 };
 
 struct AnchorEntry {
@@ -696,7 +696,7 @@ struct SectionBin {
 
     s32 fontId;
     s32 translationFontId [[comment("Font translated text is laid out in; 0 = same as fontId")]];
-    s32 annotationFontId [[comment("Font the Interlinear annotation rows are laid out in; 0 = same as fontId; non-zero only under PtLayout::Interlinear")]];
+    s32 annotationFontId [[comment("Font the Interlinear annotation rows are laid out in; 0 = same as fontId; non-zero only under LinguaLayout::Interlinear")]];
     float lineCompression;
     bool extraParagraphSpacing;
     u8 paragraphAlignment;
@@ -704,7 +704,7 @@ struct SectionBin {
     u16 viewportHeight;
     bool hyphenationEnabled;
     bool embeddedStyle;
-    PtLayout ptLayout [[comment("Pre-Translation page layout (NOT the display mode); part of the cache key")]];
+    LinguaLayout linguaLayout [[comment("Lingua page layout (NOT the display mode); part of the cache key")]];
     bool translatedSource [[comment("Laid out from content containing translations - a .translated.html sidecar OR translations embedded in the chapter's own XHTML; part of the cache key")]];
     bool embeddedTranslation [[comment("The chapter's own XHTML embeds translated blocks; a memo, NOT a cache key - lets a load recompute translatedSource with one sidecar stat instead of re-scanning the HTML. False also means 'this build read the sidecar and never looked'")]];
     u8 imageRendering;
@@ -756,8 +756,8 @@ named `sections/<spineIndex>.translated.html` inside the book's
 `xml:lang` attribute whose value differs from the book's primary language (declared in
 `content.opf`); the layout parser treats those blocks as translations and pairs, dims,
 or filters them according to the active **Translation Mode** — more precisely, according to
-the `PtLayout` that mode maps to (the layout byte in the `section.bin` header). See the
-[Pre-Translation guide](./pre-translation.md#how-it-stores-translations).
+the `LinguaLayout` that mode maps to (the layout byte in the `section.bin` header). See the
+[Lingua guide](./lingua.md#how-it-stores-translations).
 
 The reader prefers this sidecar over re-extracting the original chapter from the EPUB,
 so translated content **survives layout-cache invalidation**: changing the font, size,
@@ -787,18 +787,18 @@ clean, complete write has finished. Consequences:
 
 ### Side-by-Side two-column layout
 
-`section.bin` layouts built in **Side by Side** mode (`PtLayout::SideBySide`) place each
+`section.bin` layouts built in **Side by Side** mode (`LinguaLayout::SideBySide`) place each
 original paragraph and its paired translation into two half-width columns: the original
 in the left column (`xPos = 0`), the translation in the right column (`xPos = rightColX`,
 where `rightColX = colWidth + gapWidth`, `gapWidth = viewportWidth * 0.04`, and
 `colWidth = (viewportWidth - gapWidth) / 2`). The parser buffers the original block and,
 when its paired translation arrives, lays both out at `colWidth` and emits them as lockstep
 `PageLine` rows: the left and right lines of each row share one `yPos`, and `yPos` advances
-one line-height per row (see [Side by Side](./pre-translation.md#side-by-side)). This rides
+one line-height per row (see [Side by Side](./lingua.md#side-by-side)). This rides
 entirely on the existing per-line `xPos` field, so the serialized `Page`/`PageLine` structure
 is unchanged; the layout difference on its own is what forced a `SECTION_FILE_VERSION` bump
 when it landed (the header cache key was identical across that change, since the
-Pre-Translation header byte kept the same value).
+Lingua header byte kept the same value).
 
 An original paragraph that has no paired translation renders full-width, with a short,
 dimmed `tr(STR_NO_TRANSLATION)` marker appended inline after its source text so the gap is

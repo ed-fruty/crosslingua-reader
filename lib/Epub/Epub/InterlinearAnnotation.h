@@ -1,7 +1,7 @@
 #pragma once
 #include <cstdint>
 
-// PtLayout::Interlinear: the boundary between the LAYOUT (this library) and the sentence ALIGNMENT
+// LinguaLayout::Interlinear: the boundary between the LAYOUT (this library) and the sentence ALIGNMENT
 // (the app).
 //
 // lib/Epub owns everything geometric: how a sentence start constrains line breaking, how tall an
@@ -10,7 +10,7 @@
 // sentence" — that heuristic is shared with the Tooltip display mode, is host-unit-tested
 // (test/test_sentence_splitter) and lives in src/translator/SentencePairing. Injecting it as a
 // plain function pointer is what keeps this library free of an app-level include, exactly as
-// PtLayout keeps it free of the app's display-mode enum.
+// LinguaLayout keeps it free of the app's display-mode enum.
 
 // One annotation: the translated words belonging to one source sentence group, which
 // renderInterlinear then flows across the annotation strips sitting above that sentence's source

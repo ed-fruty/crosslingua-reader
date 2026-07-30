@@ -178,46 +178,46 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     QUICK_RESUME_SLEEP_SCREEN_COUNT
   };
 
-  // Pre-Translation feature: how translated text renders on e-ink.
+  // Lingua feature: how translated text renders on e-ink.
   // VALUE STABILITY: translationDisplayMode persists as this integer in settings.json, so new
   // modes MUST be APPENDED at the end — never inserted or renumbered — or existing on-device
-  // saves are silently reinterpreted. PT_TOOLTIP is therefore 7 here even though the upstream
+  // saves are silently reinterpreted. LINGUA_TOOLTIP is therefore 7 here even though the upstream
   // fork numbered its tooltip mode 6 (its enum ordered TOOLTIP before its Modal mode); v2 had
-  // already shipped that mode as 6 — PT_PAGE_TRANSLATION — so tooltip appends as 7.
+  // already shipped that mode as 6 — LINGUA_PAGE_TRANSLATION — so tooltip appends as 7.
   //
   // PERMANENT HOLES: 1 and 2. They were the "Dimmed" / "Dimmed Light" modes, which are now ONE
-  // mode (PT_INTERLEAVED) plus the translationShade colour sub-setting. The two values are retired,
-  // NEVER selectable (they are absent from PT_SELECTABLE_MODES in PreTranslationModes.h) and
-  // migrated to PT_INTERLEAVED + shade at load (see fromJson). They are kept as holes — never
+  // mode (LINGUA_INTERLEAVED) plus the translationShade colour sub-setting. The two values are retired,
+  // NEVER selectable (they are absent from LINGUA_SELECTABLE_MODES in LinguaModes.h) and
+  // migrated to LINGUA_INTERLEAVED + shade at load (see fromJson). They are kept as holes — never
   // reused, never renumbered — so an old settings.json is migrated rather than reinterpreted.
-  enum PRE_TRANSLATION_MODE : uint8_t {
-    PT_NORMAL = 0,
-    PT_LEGACY_DIMMED = 1,        // retired hole -> PT_INTERLEAVED + SHADE_DIMMED
-    PT_LEGACY_DIMMED_LIGHT = 2,  // retired hole -> PT_INTERLEAVED + SHADE_DIMMED_LIGHT
-    PT_ORIGINAL_ONLY = 3,
-    PT_TRANSLATION_ONLY = 4,
-    PT_SIDE_BY_SIDE = 5,
-    PT_PAGE_TRANSLATION = 6,
-    PT_TOOLTIP = 7,
-    PT_INTERLEAVED = 8,
+  enum LINGUA_MODE : uint8_t {
+    LINGUA_NORMAL = 0,
+    LINGUA_LEGACY_DIMMED = 1,        // retired hole -> LINGUA_INTERLEAVED + SHADE_DIMMED
+    LINGUA_LEGACY_DIMMED_LIGHT = 2,  // retired hole -> LINGUA_INTERLEAVED + SHADE_DIMMED_LIGHT
+    LINGUA_ORIGINAL_ONLY = 3,
+    LINGUA_TRANSLATION_ONLY = 4,
+    LINGUA_SIDE_BY_SIDE = 5,
+    LINGUA_PAGE_TRANSLATION = 6,
+    LINGUA_TOOLTIP = 7,
+    LINGUA_INTERLEAVED = 8,
     // Each sentence's translation on its own small line ABOVE the source line it starts on. The one
-    // mode with a layout that is not shared with any other (PtLayout::Interlinear).
-    PT_INTERLINEAR = 9,
+    // mode with a layout that is not shared with any other (LinguaLayout::Interlinear).
+    LINGUA_INTERLINEAR = 9,
   };
   // LOAD-TIME VALIDITY BOUND ONLY: fromJson() clamps a stored translationDisplayMode >= this to
-  // PT_NORMAL. It is deliberately NOT an enumerator and NOT a UI iteration count — the retired
+  // LINGUA_NORMAL. It is deliberately NOT an enumerator and NOT a UI iteration count — the retired
   // holes at 1 and 2 make the value range non-contiguous, so every UI list and cycle walks
-  // PT_SELECTABLE_MODES instead (src/PreTranslationModes.h).
-  static constexpr uint8_t PT_MODE_COUNT = PT_INTERLINEAR + 1;
+  // LINGUA_SELECTABLE_MODES instead (src/LinguaModes.h).
+  static constexpr uint8_t LINGUA_MODE_COUNT = LINGUA_INTERLINEAR + 1;
 
-  // Pre-Translation: colour of translated text in Interleaved mode (PT_INTERLEAVED). It selects the
+  // Lingua: colour of translated text in Interleaved mode (LINGUA_INTERLEAVED). It selects the
   // renderer's gray level for words carrying the TRANSLATED style bit.
   // DRAWING ONLY: it never changes word measurement, line breaking or pagination, so it must NOT
   // enter the section.bin cache key (ReaderRenderSpec) — switching shade stays instant.
   // VALUE STABILITY: persisted as an integer; 0/1 are fixed — append only, never renumber.
   enum TRANSLATION_SHADE : uint8_t { SHADE_DIMMED = 0, SHADE_DIMMED_LIGHT = 1, TRANSLATION_SHADE_COUNT };
 
-  // Pre-Translation: colour of the SECONDARY text in the two modes that render it as its own
+  // Lingua: colour of the SECONDARY text in the two modes that render it as its own
   // typographic object rather than inline — the annotation rows in Interlinear and the translation
   // column in Side by Side.
   //
@@ -246,7 +246,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     LINGUA_SHADE_COUNT,
   };
 
-  // Pre-Translation: type size of the TRANSLATED text relative to the book's own text.
+  // Lingua: type size of the TRANSLATED text relative to the book's own text.
   // SIZE_SMALLER means one step DOWN the active family's point-size ladder, resolved by
   // smallerReaderFontId().
   // ONE ENUM, THREE INDEPENDENT FIELDS: the value space is shared, the choice is not. Each mode
@@ -262,7 +262,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // VALUE STABILITY: persisted as an integer; 0/1 are fixed — append only, never renumber.
   enum TRANSLATION_SIZE : uint8_t { SIZE_SAME = 0, SIZE_SMALLER = 1, TRANSLATION_SIZE_COUNT };
 
-  // Pre-Translation feature: translation backend selection
+  // Lingua feature: translation backend selection
   // Values match upstream fork (crosspoint-reader) to keep JSON-stored indices stable.
   // VALUE STABILITY: persisted as an integer — append only, never renumber.
   enum TRANSLATION_ENGINE : uint8_t {
@@ -411,15 +411,15 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // Quick Resume: keep current content visible with moon icon instead of showing a static sleep screen.
   uint8_t quickResumeSleepScreen = QUICK_RESUME_NEVER;
 
-  // Pre-Translation feature
+  // Lingua feature
   // translationLanguage: index into LanguagePickerActivity::LANGUAGES[], 0xFF = unset
   uint8_t translationLanguage = 0xFF;
   // sourceTranslationLanguage: 0xFF = auto-detect, otherwise LANGUAGES[] index
   uint8_t sourceTranslationLanguage = 0xFF;
   uint8_t translationEngine = ENGINE_GOOGLE_V2;
   char translateApiKey[128] = "";
-  uint8_t translationDisplayMode = PT_NORMAL;
-  // Interleaved-mode (PT_INTERLEAVED) translated-text colour. Drawing-only; see TRANSLATION_SHADE.
+  uint8_t translationDisplayMode = LINGUA_NORMAL;
+  // Interleaved-mode (LINGUA_INTERLEAVED) translated-text colour. Drawing-only; see TRANSLATION_SHADE.
   uint8_t translationShade = SHADE_DIMMED;
   // ONE FIELD PER MODE, never shared — same rule as the three translated-text sizes below. The two
   // modes present the secondary text completely differently (an 8pt row above the line vs a
@@ -446,16 +446,16 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t interleavedTranslationSize = SIZE_SAME;
   uint8_t tooltipTranslationSize = SIZE_SMALLER;
   uint8_t pageTranslationSize = SIZE_SMALLER;
-  // Tooltip display mode (PT_TOOLTIP) controls. Ported from the upstream fork.
+  // Tooltip display mode (LINGUA_TOOLTIP) controls. Ported from the upstream fork.
   // tooltipButtons: which button pair steps through per-sentence tooltips (OVERLAY_BUTTONS).
   //   Default SIDE — the page-turn pair reads as the natural "next sentence" control.
   // tooltipBehavior: what stepping does at a page boundary (TOOLTIP_NAVIGATION).
   //   Default TURN_PAGE — stepping past the last sentence turns the page and continues.
-  // Persisted manually in toJson/fromJson alongside the other Pre-Translation fields (they are
+  // Persisted manually in toJson/fromJson alongside the other Lingua fields (they are
   // edited from the Lingua submenu, not the generic on-device Settings list).
   uint8_t tooltipButtons = OVERLAY_BUTTONS_SIDE;
   uint8_t tooltipBehavior = TOOLTIP_NAV_TURN_PAGE;
-  // Page Translation display mode (PT_PAGE_TRANSLATION) control: which button pair scrolls/closes
+  // Page Translation display mode (LINGUA_PAGE_TRANSLATION) control: which button pair scrolls/closes
   // the OPEN overlay (OVERLAY_BUTTONS). The overlay still OPENS on a side long-press regardless of
   // this setting. Default SIDE (same pair that opened it). Persisted manually in toJson/fromJson,
   // under the "pageTranslationButtons" key (legacy files stored it as "modalButtons"; fromJson
@@ -532,13 +532,13 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // Unlocked for the same reason as statusBarSpec(); see the note above.
   ReaderRenderSpec readerRenderSpec(uint16_t viewportWidth, uint16_t viewportHeight) const;
 
-  // Pre-Translation: which page LAYOUT a display mode implies. This is THE mode -> layout mapping;
+  // Lingua: which page LAYOUT a display mode implies. This is THE mode -> layout mapping;
   // the layout engine never sees the raw mode. Modes that produce byte-identical pages collapse
-  // onto one PtLayout so switching between them reuses the cached section instead of re-laying the
+  // onto one LinguaLayout so switching between them reuses the cached section instead of re-laying the
   // chapter out. A switch with no `default:` case, so -Wswitch flags an unmapped future mode.
-  static PtLayout ptLayoutForDisplayMode(uint8_t mode);
+  static LinguaLayout linguaLayoutForDisplayMode(uint8_t mode);
 
-  // Pre-Translation: font id the TRANSLATED text is drawn in, or 0 for "same as the body font".
+  // Lingua: font id the TRANSLATED text is drawn in, or 0 for "same as the body font".
   // FOUR resolvers, one per owning mode — deliberately not one shared accessor, so that the two
   // layout-affecting choices and the two view-time ones cannot be confused at a call site.
   //
@@ -546,7 +546,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // (ReaderRenderSpec::translationFontId) and the render-time font set (readerPageFontSet), so the
   // two can never disagree about what a cached page was measured with. Returns 0 whenever the active
   // mode is not Interleaved — the mode gate has to live here rather than in the layout engine,
-  // which only ever sees the PtLayout that Normal and Interleaved share.
+  // which only ever sees the LinguaLayout that Normal and Interleaved share.
   int getInterleavedTranslationFontId() const;
   // LAYOUT (Interlinear): the other one that reaches the cache, and THE single place the small
   // annotation face is chosen — a future user-facing Annotation Size row, or a smaller face merging
@@ -561,9 +561,9 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   int getTooltipTranslationFontId() const;
   int getPageTranslationOverlayFontId() const;
 
-  // Pre-Translation: ink level a role's lines are drawn in, or PageFontSet::INK_INHERIT for "this
+  // Lingua: ink level a role's lines are drawn in, or PageFontSet::INK_INHERIT for "this
   // mode does not colour that role". Mode-gated HERE for the same reason the font resolvers are:
-  // lib/Epub only ever sees a PtLayout and must not carry mode semantics. Read at draw time only —
+  // lib/Epub only ever sees a LinguaLayout and must not carry mode semantics. Read at draw time only —
   // no cache, no spec, no re-layout.
   uint8_t getInterlinearAnnotationInk() const;
   uint8_t getSideBySideTranslationInk() const;
@@ -588,7 +588,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // THE single TRANSLATION_SIZE -> font id rule behind the three size accessors above: SIZE_SAME (and
   // a SIZE_SMALLER the active family cannot honour) resolve to 0, the "same as the body font" signal.
   int translationFontIdForSize(uint8_t sizeSetting) const;
-  // True when the small annotation face can render the selected Pre-Translation target language's
+  // True when the small annotation face can render the selected Lingua target language's
   // script. See the definition for the exact coverage of the 8pt face and why an uncovered target
   // falls back to the body font rather than being blocked.
   bool interlinearAnnotationScriptSupported() const;

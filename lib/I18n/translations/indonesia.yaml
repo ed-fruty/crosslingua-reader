@@ -427,7 +427,7 @@ STR_FIRMWARE_UPDATE_DO_NOT_POWER_OFF: "Jangan matikan daya!"
 STR_RECOVERY_MODE: "Mode Pemulihan"
 STR_RECOVERY_MODE_HINT: "Tempatkan firmware.bin di akar kartu SD lalu pilih"
 
-STR_PRE_TRANSLATION: "Lingua"
+STR_LINGUA: "Lingua"
 STR_DISPLAY_MODE: "Mode Tampilan"
 STR_CHOOSE_DISPLAY_MODE: "Pilih mode tampilan"
 STR_DELETE_TRANSLATIONS: "Hapus Terjemahan"

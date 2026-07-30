@@ -2,7 +2,7 @@
 
 #include <Epub/InterlinearAnnotation.h>
 
-// The app half of the PtLayout::Interlinear boundary (see lib/Epub/Epub/InterlinearAnnotation.h).
+// The app half of the LinguaLayout::Interlinear boundary (see lib/Epub/Epub/InterlinearAnnotation.h).
 //
 // Wraps the shared sentence aligner (SentencePairing.h) in the plain-C-pointer signature the layout
 // engine calls through, so lib/Epub never includes an app header. Handed to the engine by

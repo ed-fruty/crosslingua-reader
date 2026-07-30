@@ -9,7 +9,7 @@
 // SECTION_FILE_VERSION bump.
 enum class LineFontRole : uint8_t {
   Body = 0,         // the book's own text, in the reader font
-  Translation = 1,  // translated text (Pre-Translation), optionally in a smaller font
+  Translation = 1,  // translated text (Lingua), optionally in a smaller font
   Annotation = 2,   // editorial furniture inserted by the reader, e.g. a "not translated" marker
 };
 

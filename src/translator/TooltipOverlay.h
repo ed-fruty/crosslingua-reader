@@ -18,13 +18,13 @@
 // source sentences at once. [firstSentence..lastSentence] are inclusive indices into
 // the page's sentence spans (SentenceSplitResult::spans).
 //
-// The step type itself is shared: PtLayout::Interlinear groups sentences by the same rule to decide
+// The step type itself is shared: LinguaLayout::Interlinear groups sentences by the same rule to decide
 // how many annotation rows a paragraph gets, so both consumers name one type (SentencePairing.h).
 using TooltipStep = SentenceStep;
 
-// Pre-Translation "Tooltip" display mode (PT_TOOLTIP). The reader lays the page out as
+// Lingua "Tooltip" display mode (LINGUA_TOOLTIP). The reader lays the page out as
 // original-only text (the ChapterHtmlSlimParser drops translated words in this mode, exactly like
-// PT_PAGE_TRANSLATION / PT_ORIGINAL_ONLY); this overlay then surfaces the translation of ONE sentence at a
+// LINGUA_PAGE_TRANSLATION / LINGUA_ORIGINAL_ONLY); this overlay then surfaces the translation of ONE sentence at a
 // time as a small popup near the selected sentence, which is underlined on the page.
 //
 // Translation data is NOT read from the section.bin cache — it is re-parsed on demand from the

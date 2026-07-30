@@ -127,7 +127,7 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   // Stored as ISO code string ("EN", "DE", ...) for stability across enum reorders.
   doc["language"] = (language < getLanguageCount()) ? LANGUAGE_CODES[language] : "EN";
 
-  // Pre-Translation feature -- managed by LanguagePickerActivity / EngineSelectActivity,
+  // Lingua feature -- managed by LanguagePickerActivity / EngineSelectActivity,
   // not in SettingsList. 0xFF sentinels and a free-form API key don't fit the SettingInfo schema.
   doc["translationLanguage"] = translationLanguage;
   doc["sourceTranslationLanguage"] = sourceTranslationLanguage;
@@ -273,7 +273,7 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
     language = static_cast<uint8_t>(I18n::languageFromCode(doc["language"].as<const char*>()));
   }
 
-  // Pre-Translation feature -- absent keys keep struct-initializer defaults (backward compatible
+  // Lingua feature -- absent keys keep struct-initializer defaults (backward compatible
   // with settings.json files written before this feature shipped).
   translationLanguage = doc["translationLanguage"] | translationLanguage;
   sourceTranslationLanguage = doc["sourceTranslationLanguage"] | sourceTranslationLanguage;
@@ -308,19 +308,19 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   pageTranslationSize =
       clamp(doc["pageTranslationSize"] | (uint8_t)SIZE_SMALLER, (uint8_t)TRANSLATION_SIZE_COUNT, (uint8_t)SIZE_SMALLER);
   // Display mode, with the retired-hole migration. Values 1 and 2 were the separate "Dimmed" and
-  // "Dimmed Light" modes; they are now ONE mode (PT_INTERLEAVED) plus the translationShade colour
+  // "Dimmed Light" modes; they are now ONE mode (LINGUA_INTERLEAVED) plus the translationShade colour
   // sub-setting, so a stored 1/2 folds into that pair and requests a resave — same needsResave
   // mechanism as the font-size rescale and the OpenDyslexic family remap above. Anything else out
-  // of range clamps to PT_NORMAL. These two branches are exhaustive over the stored value, and
+  // of range clamps to LINGUA_NORMAL. These two branches are exhaustive over the stored value, and
   // the migration branch runs FIRST, so translationDisplayMode can never come out of a load
   // holding a retired hole.
-  const uint8_t storedDisplayMode = doc["translationDisplayMode"] | (uint8_t)PT_NORMAL;
-  if (storedDisplayMode == PT_LEGACY_DIMMED || storedDisplayMode == PT_LEGACY_DIMMED_LIGHT) {
-    translationDisplayMode = PT_INTERLEAVED;
-    translationShade = (storedDisplayMode == PT_LEGACY_DIMMED_LIGHT) ? SHADE_DIMMED_LIGHT : SHADE_DIMMED;
+  const uint8_t storedDisplayMode = doc["translationDisplayMode"] | (uint8_t)LINGUA_NORMAL;
+  if (storedDisplayMode == LINGUA_LEGACY_DIMMED || storedDisplayMode == LINGUA_LEGACY_DIMMED_LIGHT) {
+    translationDisplayMode = LINGUA_INTERLEAVED;
+    translationShade = (storedDisplayMode == LINGUA_LEGACY_DIMMED_LIGHT) ? SHADE_DIMMED_LIGHT : SHADE_DIMMED;
     needsResave = true;
   } else {
-    translationDisplayMode = clamp(storedDisplayMode, (uint8_t)PT_MODE_COUNT, (uint8_t)PT_NORMAL);
+    translationDisplayMode = clamp(storedDisplayMode, (uint8_t)LINGUA_MODE_COUNT, (uint8_t)LINGUA_NORMAL);
   }
   // Tooltip / Page Translation overlay controls: 0/1 selectors clamped to their enum counts. An
   // ABSENT key falls back to the feature default (SIDE buttons, TURN_PAGE nav) rather than 0 — a
@@ -369,34 +369,34 @@ CrossPointSettings::StatusBarSpec CrossPointSettings::statusBarSpec() const {
   return spec;
 }
 
-PtLayout CrossPointSettings::ptLayoutForDisplayMode(const uint8_t mode) {
-  switch (static_cast<PRE_TRANSLATION_MODE>(mode)) {
+LinguaLayout CrossPointSettings::linguaLayoutForDisplayMode(const uint8_t mode) {
+  switch (static_cast<LINGUA_MODE>(mode)) {
     // Overlay modes surface their translations in a popup composited at view time, so their main
     // flow is original-only — the same pages Original Only produces, byte for byte.
-    case PT_ORIGINAL_ONLY:
-    case PT_PAGE_TRANSLATION:
-    case PT_TOOLTIP:
-      return PtLayout::OriginalOnly;
-    case PT_TRANSLATION_ONLY:
-      return PtLayout::TranslationOnly;
-    case PT_SIDE_BY_SIDE:
-      return PtLayout::SideBySide;
+    case LINGUA_ORIGINAL_ONLY:
+    case LINGUA_PAGE_TRANSLATION:
+    case LINGUA_TOOLTIP:
+      return LinguaLayout::OriginalOnly;
+    case LINGUA_TRANSLATION_ONLY:
+      return LinguaLayout::TranslationOnly;
+    case LINGUA_SIDE_BY_SIDE:
+      return LinguaLayout::SideBySide;
     // Its own layout: every source sentence starts a new line and the translation is emitted as a
     // small annotation row ABOVE that line, so the pages genuinely differ from every other mode's and
     // cannot share a cache entry with them.
-    case PT_INTERLINEAR:
-      return PtLayout::Interlinear;
+    case LINGUA_INTERLINEAR:
+      return LinguaLayout::Interlinear;
     // Everything inline-bilingual. Interleaved differs from Normal only in the gray level translated
     // words are DRAWN at (translationShade), which never moves a glyph, so the pages are identical.
     // The retired holes can never reach this function (fromJson migrates them), but are mapped so the
     // switch stays exhaustive.
-    case PT_NORMAL:
-    case PT_INTERLEAVED:
-    case PT_LEGACY_DIMMED:
-    case PT_LEGACY_DIMMED_LIGHT:
-      return PtLayout::Both;
+    case LINGUA_NORMAL:
+    case LINGUA_INTERLEAVED:
+    case LINGUA_LEGACY_DIMMED:
+    case LINGUA_LEGACY_DIMMED_LIGHT:
+      return LinguaLayout::Both;
   }
-  return PtLayout::Both;  // unreachable: every enumerator returns above
+  return LinguaLayout::Both;  // unreachable: every enumerator returns above
 }
 
 int CrossPointSettings::translationFontIdForSize(const uint8_t sizeSetting) const {
@@ -415,27 +415,27 @@ int CrossPointSettings::getInterleavedTranslationFontId() const {
   // the fonts it was measured with. The overlay sizes deliberately have no path to either.
   //
   // Gated on the mode being Interleaved, and this is the ONLY place that gate can live: Normal and
-  // Interleaved collapse onto the same PtLayout::Both (their pages differ only in how translated
+  // Interleaved collapse onto the same LinguaLayout::Both (their pages differ only in how translated
   // words are drawn), so the layout engine cannot tell them apart -- yet Normal must keep the
   // translation at body size, because presenting the two languages as one undifferentiated flow is
   // the entire point of that mode. A stored Smaller therefore sits dormant while the mode is anything
   // but Interleaved and returns the instant it is selected again, with no SPIFFS write either way.
   // (Interlinear has its OWN layout and its own font slot -- see getInterlinearAnnotationFontId --
   // so it neither reads nor is affected by this size.)
-  if (translationDisplayMode != PT_INTERLEAVED) return 0;
+  if (translationDisplayMode != LINGUA_INTERLEAVED) return 0;
   return translationFontIdForSize(interleavedTranslationSize);
 }
 
 int CrossPointSettings::getInterlinearAnnotationFontId() const {
   // Same shape as getInterleavedTranslationFontId: mode-gated here, because the layout engine only
-  // ever sees a PtLayout and must not carry mode semantics. Feeds BOTH the section cache key
+  // ever sees a LinguaLayout and must not carry mode semantics. Feeds BOTH the section cache key
   // (ReaderRenderSpec::annotationFontId) and the render-time font set (readerPageFontSet), so an
   // annotation row is always drawn in the face it was measured and advanced with.
   //
   // THE single place the annotation face is chosen. SMALL_FONT_ID is the
   // multilingual EdsLab UI cut registered unconditionally at startup, so it is
   // also available in the slim build.
-  if (translationDisplayMode != PT_INTERLINEAR) return 0;
+  if (translationDisplayMode != LINGUA_INTERLINEAR) return 0;
   if (!interlinearAnnotationScriptSupported()) return 0;
   // v1: the 8pt UI face. Registered unconditionally at startup (src/main.cpp), so no new font
   // loading and the slim build has it; SD-card font families register their own 8pt face under the
@@ -483,7 +483,7 @@ uint8_t CrossPointSettings::getInterlinearAnnotationInk() const {
   // Interlinear only; no other mode emits a LineFontRole::Annotation line, so inherit. (Side by
   // Side's "not translated" marker is editorial furniture too, but it is inline WORDS on a source
   // line, not an annotation line -- it is set apart by italics, not by ink.)
-  if (translationDisplayMode != PT_INTERLINEAR) return PageFontSet::INK_INHERIT;
+  if (translationDisplayMode != LINGUA_INTERLINEAR) return PageFontSet::INK_INHERIT;
   return interlinearAnnotationShade;  // LINGUA_* values ARE the renderer's ink levels
 }
 
@@ -492,7 +492,7 @@ uint8_t CrossPointSettings::getSideBySideTranslationInk() const {
   // translated lines are tagged with it whenever a distinct translation font is configured) but
   // colours them through the per-word TRANSLATED bit and its own translationShade; handing it an
   // ink here would override that path and silently take over Interleaved's colour row.
-  if (translationDisplayMode != PT_SIDE_BY_SIDE) return PageFontSet::INK_INHERIT;
+  if (translationDisplayMode != LINGUA_SIDE_BY_SIDE) return PageFontSet::INK_INHERIT;
   // Reaches the PAIRED translation column and nothing else, because that is the only thing tagged
   // LineFontRole::Translation under this layout. Translated text that escapes the pairing -- an
   // unpaired translation paragraph, or a block big enough to trip the mid-block soft flush -- is
@@ -533,13 +533,13 @@ ReaderRenderSpec CrossPointSettings::readerRenderSpec(const uint16_t viewportWid
   spec.embeddedStyle = embeddedStyle != 0;
   spec.imageRendering = imageRendering;
   spec.focusReadingEnabled = focusReadingEnabled != 0;
-  // Pre-Translation: the cache key carries the LAYOUT the mode implies, never the mode itself.
+  // Lingua: the cache key carries the LAYOUT the mode implies, never the mode itself.
   // Drawing-only differences (translationShade) and the overlay modes therefore do not invalidate
   // a cached section. The INTERLEAVED translated-text font does change line breaking, so it IS keyed
   // — and it is the only one of the three sizes that is, which is why this reads the Interleaved
   // accessor by name rather than a shared one: the tooltip and Page Translation sizes are composited
   // over a finished page and must never reach a spec.
-  spec.ptLayout = ptLayoutForDisplayMode(translationDisplayMode);
+  spec.linguaLayout = linguaLayoutForDisplayMode(translationDisplayMode);
   spec.translationFontId = getInterleavedTranslationFontId();
   // The Interlinear annotation face is the second layout-affecting size, keyed for the same reason
   // (it decides both the annotation row's wrap and its pitch) and normalized to 0 by Section for

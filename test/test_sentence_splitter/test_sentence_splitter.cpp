@@ -232,7 +232,7 @@ void test_countSentencesBefore_start_of_text(void) {
   TEST_ASSERT_EQUAL(0, countSentencesBefore("A. B. C.", "A. B."));
 }
 
-// ── Tooltip grouping: merged-sentence collapse (the photo-verified PT_TOOLTIP bug) ──
+// ── Tooltip grouping: merged-sentence collapse (the photo-verified LINGUA_TOOLTIP bug) ──
 //
 // Engine merged TWO English source sentences into ONE Ukrainian sentence, so both
 // source sentences resolve to the SAME translation string. Pre-fix the tooltip showed
@@ -325,7 +325,7 @@ void test_groupSteps_one_source_concatenated_translation(void) {
 // ── Sentence pairing: source sentence -> translation word span ────────────────
 //
 // The mapper shared by the Tooltip overlay (which joins each span back into a string for its index)
-// and by PtLayout::Interlinear (which emits the span's words straight into an annotation row). The
+// and by LinguaLayout::Interlinear (which emits the span's words straight into an annotation row). The
 // span form is only equivalent to the old string form because splitSentences' spans are contiguous
 // and the midpoints are monotonic, so a source sentence's matches are always ONE run — these tests
 // pin that property along with the mapping itself.
@@ -422,7 +422,7 @@ void test_mergeJunkSentences_folds_stray_dot(void) {
 // ParsedText::addWord splits every word into a BOLD PREFIX plus a regular tail when the setting is
 // on ("Ok" is stored as "O" + "k"), and peels punctuation into a token of its own. extractLine
 // concatenates the tail back before a line leaves the layout engine, so the page words the Tooltip
-// overlay splits are "Ok" ".". PtLayout::Interlinear reads the block PRE-layout, so it is the one
+// overlay splits are "Ok" ".". LinguaLayout::Interlinear reads the block PRE-layout, so it is the one
 // caller that can see the raw tokens — and it must merge them first, which is what
 // buildMergedWordStream (ChapterHtmlSlimParser.cpp) exists for.
 //
@@ -459,7 +459,7 @@ void test_focus_reading_tokens_need_merging_before_pairing(void) {
 
 // ── Paragraph-aware page splitting ───────────────────────────────────────────
 //
-// These cover the shape that made PT_TOOLTIP mis-map from the first sentence of a chapter: the
+// These cover the shape that made LINGUA_TOOLTIP mis-map from the first sentence of a chapter: the
 // tooltip builds its key -> translation index one entry per PARAGRAPH pair, but built the PAGE side
 // by flattening every PageLine's words into one array and splitting it on punctuation alone. A
 // paragraph that ends without a terminator — a heading, a stat line, a list row — was therefore

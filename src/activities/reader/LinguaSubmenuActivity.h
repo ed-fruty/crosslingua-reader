@@ -19,14 +19,14 @@
 // and starve wolfSSL of heap); instead it finishes with one of these and the
 // reader runs launchTranslation() after releasing the Epub. Encoded in the
 // returned ActivityResult's MenuResult::action field.
-enum class PreTranslationResult : uint8_t {
+enum class LinguaResult : uint8_t {
   NONE = 0,
   TRANSLATE_CHAPTER = 1,
   TRANSLATE_BOOK = 2,
 };
 
 /**
- * Consolidated submenu that aggregates every Pre-Translation action and setting
+ * Consolidated submenu that aggregates every Lingua action and setting
  * into a single screen launched from the EPUB reader menu.
  *
  * Mirrors EpubReaderMenuActivity's vertical list pattern. Selecting most items
@@ -37,7 +37,7 @@ enum class PreTranslationResult : uint8_t {
  * state so labels like "Translate Chapter" flip to "Re-translate Chapter" and
  * the "Delete Translations" entry appears once any chapter has been translated.
  */
-class PreTranslationSubmenuActivity final : public Activity {
+class LinguaSubmenuActivity final : public Activity {
  public:
   enum class Action : uint8_t {
     CYCLE_DISPLAY_MODE,
@@ -48,14 +48,14 @@ class PreTranslationSubmenuActivity final : public Activity {
     PICK_SOURCE_LANG,
     CYCLE_ENGINE,
     ENTER_API_KEY,
-    // Tooltip-mode (PT_TOOLTIP) controls. Persisted manually via CrossPointSettings toJson/fromJson
+    // Tooltip-mode (LINGUA_TOOLTIP) controls. Persisted manually via CrossPointSettings toJson/fromJson
     // (NOT SettingsList.h) so they aren't double-written; edited only from this submenu.
     CYCLE_TOOLTIP_BUTTONS,
     CYCLE_TOOLTIP_BEHAVIOR,
-    // Page Translation mode (PT_PAGE_TRANSLATION) control: which button pair scrolls/closes the
+    // Page Translation mode (LINGUA_PAGE_TRANSLATION) control: which button pair scrolls/closes the
     // open overlay.
     CYCLE_PAGE_TRANSLATION_BUTTONS,
-    // Interleaved mode (PT_INTERLEAVED) control: gray level translated words are drawn at.
+    // Interleaved mode (LINGUA_INTERLEAVED) control: gray level translated words are drawn at.
     CYCLE_TRANSLATION_COLOUR,
     // Colour of the secondary text in the two modes that give it its own place on the page:
     // Interlinear's annotation rows and Side by Side's translation column. THREE colour actions,
@@ -73,7 +73,7 @@ class PreTranslationSubmenuActivity final : public Activity {
     CYCLE_PAGE_TRANSLATION_SIZE,
   };
 
-  explicit PreTranslationSubmenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
+  explicit LinguaSubmenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                          std::shared_ptr<Epub> epub, int currentSpineIndex);
 
   void onEnter() override;
