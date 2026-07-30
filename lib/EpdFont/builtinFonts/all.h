@@ -18,8 +18,8 @@
 #include <builtinFonts/edslab_18_italic.h>
 #include <builtinFonts/edslab_18_regular.h>
 #include <builtinFonts/edslab_ui_8_regular.h>
-#include <builtinFonts/edslab_ui_11_bold.h>
-#include <builtinFonts/edslab_ui_11_regular.h>
+#include <builtinFonts/edslab_ui_10_bold.h>
+#include <builtinFonts/edslab_ui_10_regular.h>
 #include <builtinFonts/edslab_ui_12_bold.h>
 #include <builtinFonts/edslab_ui_12_regular.h>
 #include <builtinFonts/notosans_8_regular.h>

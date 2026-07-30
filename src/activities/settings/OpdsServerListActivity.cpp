@@ -191,7 +191,7 @@ void OpdsServerListActivity::render(RenderLock&&) {
   const int itemCount = getItemCount();
 
   if (itemCount == 0) {
-    renderer.drawCenteredText(UI_11_FONT_ID, pageHeight / 2, tr(STR_NO_SERVERS));
+    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_NO_SERVERS));
   } else {
     const auto& servers = OPDS_STORE.getServers();
     const auto serverCount = static_cast<int>(servers.size());

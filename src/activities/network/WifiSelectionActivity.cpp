@@ -519,7 +519,7 @@ void WifiSelectionActivity::loop() {
   if (state == WifiSelectionState::SAVE_PROMPT) {
     {
       const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
-      const auto height = renderer.getLineHeight(UI_11_FONT_ID);
+      const auto height = renderer.getLineHeight(UI_10_FONT_ID);
       const int buttonY = screen.y + (screen.height - height * 3) / 2 + 80;
       constexpr int buttonWidth = 60;
       constexpr int buttonSpacing = 30;
@@ -576,7 +576,7 @@ void WifiSelectionActivity::loop() {
   if (state == WifiSelectionState::FORGET_PROMPT) {
     {
       const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
-      const auto height = renderer.getLineHeight(UI_11_FONT_ID);
+      const auto height = renderer.getLineHeight(UI_10_FONT_ID);
       const int buttonY = screen.y + (screen.height - height * 3) / 2 + 80;
       constexpr int buttonWidth = 120;
       constexpr int buttonSpacing = 30;
@@ -820,9 +820,9 @@ void WifiSelectionActivity::render(RenderLock&&) {
 void WifiSelectionActivity::renderNetworkList(const Rect* screen, const ThemeMetrics* metrics) const {
   if (networks.empty()) {
     // No networks found or scan failed
-    const auto height = renderer.getLineHeight(UI_11_FONT_ID);
+    const auto height = renderer.getLineHeight(UI_10_FONT_ID);
     const auto top = screen->y + (screen->height - height) / 2;
-    UITheme::drawCenteredText(renderer, *screen, UI_11_FONT_ID, top, tr(STR_NO_NETWORKS));
+    UITheme::drawCenteredText(renderer, *screen, UI_10_FONT_ID, top, tr(STR_NO_NETWORKS));
     UITheme::drawCenteredText(renderer, *screen, SMALL_FONT_ID, top + height + 10, tr(STR_PRESS_OK_SCAN));
   } else {
     int contentTop =
@@ -859,7 +859,7 @@ void WifiSelectionActivity::renderNetworkList(const Rect* screen, const ThemeMet
 
 void WifiSelectionActivity::renderConnecting(const Rect* screen, const ThemeMetrics* metrics) const {
   constexpr int MAX_STATUS_LINES = 2;
-  const auto height = renderer.getLineHeight(UI_11_FONT_ID);
+  const auto height = renderer.getLineHeight(UI_10_FONT_ID);
   const auto top = screen->y + (screen->height - height) / 2;
   const int statusX = screen->x + metrics->contentSidePadding;
   const int statusWidth = screen->width - metrics->contentSidePadding * 2;
@@ -867,7 +867,7 @@ void WifiSelectionActivity::renderConnecting(const Rect* screen, const ThemeMetr
   if (state == WifiSelectionState::SCANNING) {
     const char* statusText = autoConnecting ? tr(STR_FINDING_SAVED_WIFI) : tr(STR_SCANNING);
     const Rect statusBounds{statusX, screen->y, statusWidth, screen->height};
-    UITheme::drawCenteredWrappedText(renderer, statusBounds, UI_11_FONT_ID, statusText, MAX_STATUS_LINES);
+    UITheme::drawCenteredWrappedText(renderer, statusBounds, UI_10_FONT_ID, statusText, MAX_STATUS_LINES);
     if (autoConnecting) {
       const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), tr(STR_SHOW_NETWORKS), "", "");
       GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
@@ -882,7 +882,7 @@ void WifiSelectionActivity::renderConnecting(const Rect* screen, const ThemeMetr
     if (ssidInfo.length() > 25) {
       ssidInfo.replace(22, ssidInfo.length() - 22, "...");
     }
-    UITheme::drawCenteredText(renderer, *screen, UI_11_FONT_ID, top, ssidInfo.c_str());
+    UITheme::drawCenteredText(renderer, *screen, UI_10_FONT_ID, top, ssidInfo.c_str());
     if (autoConnecting) {
       const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), tr(STR_SHOW_NETWORKS), "", "");
       GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
@@ -891,7 +891,7 @@ void WifiSelectionActivity::renderConnecting(const Rect* screen, const ThemeMetr
 }
 
 void WifiSelectionActivity::renderConnected(const Rect* screen, const ThemeMetrics* metrics) const {
-  const auto height = renderer.getLineHeight(UI_11_FONT_ID);
+  const auto height = renderer.getLineHeight(UI_10_FONT_ID);
   const auto top = screen->y + (screen->height - height * 4) / 2;
 
   UITheme::drawCenteredText(renderer, *screen, UI_12_FONT_ID, top - 30, tr(STR_CONNECTED), true, EpdFontFamily::BOLD);
@@ -900,10 +900,10 @@ void WifiSelectionActivity::renderConnected(const Rect* screen, const ThemeMetri
   if (ssidInfo.length() > 28) {
     ssidInfo.replace(25, ssidInfo.length() - 25, "...");
   }
-  UITheme::drawCenteredText(renderer, *screen, UI_11_FONT_ID, top + 10, ssidInfo.c_str());
+  UITheme::drawCenteredText(renderer, *screen, UI_10_FONT_ID, top + 10, ssidInfo.c_str());
 
   const std::string ipInfo = std::string(tr(STR_IP_ADDRESS_PREFIX)) + connectedIP;
-  UITheme::drawCenteredText(renderer, *screen, UI_11_FONT_ID, top + 40, ipInfo.c_str());
+  UITheme::drawCenteredText(renderer, *screen, UI_10_FONT_ID, top + 40, ipInfo.c_str());
 
   // Use centralized button hints
   const auto labels = mappedInput.mapLabels("", tr(STR_DONE), "", "");
@@ -911,7 +911,7 @@ void WifiSelectionActivity::renderConnected(const Rect* screen, const ThemeMetri
 }
 
 void WifiSelectionActivity::renderSavePrompt(const Rect* screen, const ThemeMetrics* metrics) const {
-  const auto height = renderer.getLineHeight(UI_11_FONT_ID);
+  const auto height = renderer.getLineHeight(UI_10_FONT_ID);
   const auto top = screen->y + (screen->height - height * 3) / 2;
 
   UITheme::drawCenteredText(renderer, *screen, UI_12_FONT_ID, top - 40, tr(STR_CONNECTED), true, EpdFontFamily::BOLD);
@@ -920,9 +920,9 @@ void WifiSelectionActivity::renderSavePrompt(const Rect* screen, const ThemeMetr
   if (ssidInfo.length() > 28) {
     ssidInfo.replace(25, ssidInfo.length() - 25, "...");
   }
-  UITheme::drawCenteredText(renderer, *screen, UI_11_FONT_ID, top, ssidInfo.c_str());
+  UITheme::drawCenteredText(renderer, *screen, UI_10_FONT_ID, top, ssidInfo.c_str());
 
-  UITheme::drawCenteredText(renderer, *screen, UI_11_FONT_ID, top + 40, tr(STR_SAVE_PASSWORD));
+  UITheme::drawCenteredText(renderer, *screen, UI_10_FONT_ID, top + 40, tr(STR_SAVE_PASSWORD));
 
   // Draw Yes/No buttons
   const int buttonY = top + 80;
@@ -934,17 +934,17 @@ void WifiSelectionActivity::renderSavePrompt(const Rect* screen, const ThemeMetr
   // Draw "Yes" button
   if (savePromptSelection == 0) {
     std::string text = "[" + std::string(tr(STR_YES)) + "]";
-    renderer.drawText(UI_11_FONT_ID, startX, buttonY, text.c_str());
+    renderer.drawText(UI_10_FONT_ID, startX, buttonY, text.c_str());
   } else {
-    renderer.drawText(UI_11_FONT_ID, startX + 4, buttonY, tr(STR_YES));
+    renderer.drawText(UI_10_FONT_ID, startX + 4, buttonY, tr(STR_YES));
   }
 
   // Draw "No" button
   if (savePromptSelection == 1) {
     std::string text = "[" + std::string(tr(STR_NO)) + "]";
-    renderer.drawText(UI_11_FONT_ID, startX + buttonWidth + buttonSpacing, buttonY, text.c_str());
+    renderer.drawText(UI_10_FONT_ID, startX + buttonWidth + buttonSpacing, buttonY, text.c_str());
   } else {
-    renderer.drawText(UI_11_FONT_ID, startX + buttonWidth + buttonSpacing + 4, buttonY, tr(STR_NO));
+    renderer.drawText(UI_10_FONT_ID, startX + buttonWidth + buttonSpacing + 4, buttonY, tr(STR_NO));
   }
 
   // Use centralized button hints
@@ -953,12 +953,12 @@ void WifiSelectionActivity::renderSavePrompt(const Rect* screen, const ThemeMetr
 }
 
 void WifiSelectionActivity::renderConnectionFailed(const Rect* screen, const ThemeMetrics* metrics) const {
-  const auto height = renderer.getLineHeight(UI_11_FONT_ID);
+  const auto height = renderer.getLineHeight(UI_10_FONT_ID);
   const auto top = screen->y + (screen->height - height * 2) / 2;
 
   UITheme::drawCenteredText(renderer, *screen, UI_12_FONT_ID, top - 20, tr(STR_CONNECTION_FAILED), true,
                             EpdFontFamily::BOLD);
-  UITheme::drawCenteredText(renderer, *screen, UI_11_FONT_ID, top + 20, connectionError.c_str());
+  UITheme::drawCenteredText(renderer, *screen, UI_10_FONT_ID, top + 20, connectionError.c_str());
 
   // Use centralized button hints
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_DONE), "", "");
@@ -966,7 +966,7 @@ void WifiSelectionActivity::renderConnectionFailed(const Rect* screen, const The
 }
 
 void WifiSelectionActivity::renderForgetPrompt(const Rect* screen, const ThemeMetrics* metrics) const {
-  const auto height = renderer.getLineHeight(UI_11_FONT_ID);
+  const auto height = renderer.getLineHeight(UI_10_FONT_ID);
   const auto top = screen->y + (screen->height - height * 3) / 2;
 
   UITheme::drawCenteredText(renderer, *screen, UI_12_FONT_ID, top - 40, tr(STR_FORGET_NETWORK), true,
@@ -976,9 +976,9 @@ void WifiSelectionActivity::renderForgetPrompt(const Rect* screen, const ThemeMe
   if (ssidInfo.length() > 28) {
     ssidInfo.replace(25, ssidInfo.length() - 25, "...");
   }
-  UITheme::drawCenteredText(renderer, *screen, UI_11_FONT_ID, top, ssidInfo.c_str());
+  UITheme::drawCenteredText(renderer, *screen, UI_10_FONT_ID, top, ssidInfo.c_str());
 
-  UITheme::drawCenteredText(renderer, *screen, UI_11_FONT_ID, top + 40, tr(STR_FORGET_AND_REMOVE));
+  UITheme::drawCenteredText(renderer, *screen, UI_10_FONT_ID, top + 40, tr(STR_FORGET_AND_REMOVE));
 
   // Draw Cancel/Forget network buttons
   const int buttonY = top + 80;
@@ -990,17 +990,17 @@ void WifiSelectionActivity::renderForgetPrompt(const Rect* screen, const ThemeMe
   // Draw "Cancel" button
   if (forgetPromptSelection == 0) {
     std::string text = "[" + std::string(tr(STR_CANCEL)) + "]";
-    renderer.drawText(UI_11_FONT_ID, startX, buttonY, text.c_str());
+    renderer.drawText(UI_10_FONT_ID, startX, buttonY, text.c_str());
   } else {
-    renderer.drawText(UI_11_FONT_ID, startX + 4, buttonY, tr(STR_CANCEL));
+    renderer.drawText(UI_10_FONT_ID, startX + 4, buttonY, tr(STR_CANCEL));
   }
 
   // Draw "Forget network" button
   if (forgetPromptSelection == 1) {
     std::string text = "[" + std::string(tr(STR_FORGET_BUTTON)) + "]";
-    renderer.drawText(UI_11_FONT_ID, startX + buttonWidth + buttonSpacing, buttonY, text.c_str());
+    renderer.drawText(UI_10_FONT_ID, startX + buttonWidth + buttonSpacing, buttonY, text.c_str());
   } else {
-    renderer.drawText(UI_11_FONT_ID, startX + buttonWidth + buttonSpacing + 4, buttonY, tr(STR_FORGET_BUTTON));
+    renderer.drawText(UI_10_FONT_ID, startX + buttonWidth + buttonSpacing + 4, buttonY, tr(STR_FORGET_BUTTON));
   }
 
   // Use centralized button hints

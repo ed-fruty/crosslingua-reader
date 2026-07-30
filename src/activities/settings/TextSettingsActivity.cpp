@@ -108,7 +108,7 @@ void TextSettingsActivity::rebuildSizeList() {
 TextSettingsActivity::PaneGeometry TextSettingsActivity::paneGeometry() const {
   const int previewTop = afterHeader;
   const int tabTop = previewTop + previewHeight;
-  const int captionH = renderer.getTextHeight(UI_11_FONT_ID) + metrics_.verticalSpacing;
+  const int captionH = renderer.getTextHeight(UI_10_FONT_ID) + metrics_.verticalSpacing;
   const int listTop = tabTop + metrics_.tabBarHeight + metrics_.verticalSpacing;
   const int listHeight = usableHeight - previewHeight - metrics_.tabBarHeight - metrics_.verticalSpacing - captionH;
   return {previewTop, tabTop, listTop, listHeight};
@@ -292,7 +292,7 @@ void TextSettingsActivity::render(RenderLock&&) {
 
   if (focusedRowHasNoPreview()) {
     const int capY = geo.listTop + geo.listHeight + metrics_.verticalSpacing;
-    renderer.drawText(UI_11_FONT_ID, metrics_.previewPadding, capY, tr(STR_NOT_IN_PREVIEW));
+    renderer.drawText(UI_10_FONT_ID, metrics_.previewPadding, capY, tr(STR_NOT_IN_PREVIEW));
   }
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));

@@ -745,7 +745,7 @@ void BookTranslatorActivity::render(RenderLock&&) {
     char countStr[80];
     snprintf(countStr, sizeof(countStr), "%d / %d %s", alreadyTranslatedCount, totalChapters,
              tr(STR_CHAPTERS_ALREADY_TRANSLATED));
-    renderer.drawCenteredText(UI_11_FONT_ID, 100, countStr);
+    renderer.drawCenteredText(UI_10_FONT_ID, 100, countStr);
 
     // Two-option selection: 0 = Skip Translated, 1 = Re-translate All.
     const int optY = 200;
@@ -770,13 +770,13 @@ void BookTranslatorActivity::render(RenderLock&&) {
     // Language + engine summary header.
     if (!targetLangName.empty()) {
       std::string langLine = sourceLangName + " -> " + targetLangName;
-      renderer.drawCenteredText(UI_11_FONT_ID, 50, langLine.c_str());
+      renderer.drawCenteredText(UI_10_FONT_ID, 50, langLine.c_str());
     }
     char engineLine[80];
     snprintf(engineLine, sizeof(engineLine), tr(STR_ENGINE_LABEL_FORMAT), getEngineName());
-    renderer.drawCenteredText(UI_11_FONT_ID, 80, engineLine);
+    renderer.drawCenteredText(UI_10_FONT_ID, 80, engineLine);
 
-    renderer.drawCenteredText(UI_11_FONT_ID, 120, tr(STR_TRANSLATING_BOOK));
+    renderer.drawCenteredText(UI_10_FONT_ID, 120, tr(STR_TRANSLATING_BOOK));
 
     // Atomic-ish snapshot: copy volatiles into locals.
     const int total = progressTotal;
@@ -795,7 +795,7 @@ void BookTranslatorActivity::render(RenderLock&&) {
     // the UI_12 heading overlap the UI_10 percentage. The two section-top anchors stay as
     // plain Y constants, matching the rest of this screen's fixed layout.
     const int headingH = renderer.getLineHeight(UI_12_FONT_ID);
-    const int pctH = renderer.getLineHeight(UI_11_FONT_ID);
+    const int pctH = renderer.getLineHeight(UI_10_FONT_ID);
 
     // Draws one progress section (heading + percentage + bar) anchored at sectionTop.
     // Local lambda invoked in place — no std::function storage, so no heap/bloat.
@@ -807,7 +807,7 @@ void BookTranslatorActivity::render(RenderLock&&) {
         char pctStr[16];
         const int pct = (int)((long)done * 100 / outOf);
         snprintf(pctStr, sizeof(pctStr), "%d%%", pct);
-        renderer.drawCenteredText(UI_11_FONT_ID, pctY, pctStr);
+        renderer.drawCenteredText(UI_10_FONT_ID, pctY, pctStr);
       }
       renderer.drawRect(barX, barY, barW, barH, true);
       if (outOf > 0 && done > 0) {
@@ -827,22 +827,22 @@ void BookTranslatorActivity::render(RenderLock&&) {
     // Overall section: chapters completed across the whole book.
     drawProgressSection(260, tr(STR_OVERALL_PROGRESS), chDone, totalChapters);
 
-    renderer.drawCenteredText(UI_11_FONT_ID, 380, tr(STR_BACK_TO_CANCEL));
+    renderer.drawCenteredText(UI_10_FONT_ID, 380, tr(STR_BACK_TO_CANCEL));
     const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   } else if (state == DONE) {
     if (!targetLangName.empty()) {
       std::string langLine = sourceLangName + " -> " + targetLangName;
-      renderer.drawCenteredText(UI_11_FONT_ID, 50, langLine.c_str());
+      renderer.drawCenteredText(UI_10_FONT_ID, 50, langLine.c_str());
     }
     renderer.drawCenteredText(UI_12_FONT_ID, 150, tr(STR_BOOK_TRANSLATION_DONE), true, EpdFontFamily::BOLD);
 
     char doneStr[64];
     snprintf(doneStr, sizeof(doneStr), "%d / %d chapters", (int)chaptersCompleted, totalChapters);
-    renderer.drawCenteredText(UI_11_FONT_ID, 200, doneStr);
+    renderer.drawCenteredText(UI_10_FONT_ID, 200, doneStr);
 
-    renderer.drawCenteredText(UI_11_FONT_ID, 380, tr(STR_PRESS_ANY_CONTINUE));
+    renderer.drawCenteredText(UI_10_FONT_ID, 380, tr(STR_PRESS_ANY_CONTINUE));
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_OK_BUTTON), "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
@@ -852,21 +852,21 @@ void BookTranslatorActivity::render(RenderLock&&) {
     if (lowMemoryAbort) {
       // Long translated message -> wrap across the content width (statusMsg's
       // 64-byte buffer can't hold the Ukrainian text, so it is bypassed here).
-      const auto lines = renderer.wrappedText(UI_11_FONT_ID, tr(STR_TRANSLATION_LOW_MEMORY), pageWidth - 80, 4);
-      const int lineH = renderer.getLineHeight(UI_11_FONT_ID);
+      const auto lines = renderer.wrappedText(UI_10_FONT_ID, tr(STR_TRANSLATION_LOW_MEMORY), pageWidth - 80, 4);
+      const int lineH = renderer.getLineHeight(UI_10_FONT_ID);
       int y = 200;
       for (const auto& line : lines) {
-        renderer.drawCenteredText(UI_11_FONT_ID, y, line.c_str());
+        renderer.drawCenteredText(UI_10_FONT_ID, y, line.c_str());
         y += lineH;
       }
       doneY = y + 10;  // push the chapter count below the (multi-line) message
     } else if (statusMsg[0]) {
-      renderer.drawCenteredText(UI_11_FONT_ID, 200, statusMsg);
+      renderer.drawCenteredText(UI_10_FONT_ID, 200, statusMsg);
     }
     char doneStr[64];
     snprintf(doneStr, sizeof(doneStr), "%d / %d chapters completed", (int)chaptersCompleted, totalChapters);
-    renderer.drawCenteredText(UI_11_FONT_ID, doneY, doneStr);
-    renderer.drawCenteredText(UI_11_FONT_ID, 380, tr(STR_PRESS_ANY_CONTINUE));
+    renderer.drawCenteredText(UI_10_FONT_ID, doneY, doneStr);
+    renderer.drawCenteredText(UI_10_FONT_ID, 380, tr(STR_PRESS_ANY_CONTINUE));
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_OK_BUTTON), "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
@@ -874,8 +874,8 @@ void BookTranslatorActivity::render(RenderLock&&) {
     renderer.drawCenteredText(UI_12_FONT_ID, 150, tr(STR_BOOK_TRANSLATION_CANCELLED), true, EpdFontFamily::BOLD);
     char doneStr[64];
     snprintf(doneStr, sizeof(doneStr), "%d / %d chapters completed", (int)chaptersCompleted, totalChapters);
-    renderer.drawCenteredText(UI_11_FONT_ID, 200, doneStr);
-    renderer.drawCenteredText(UI_11_FONT_ID, 380, tr(STR_PRESS_ANY_CONTINUE));
+    renderer.drawCenteredText(UI_10_FONT_ID, 200, doneStr);
+    renderer.drawCenteredText(UI_10_FONT_ID, 380, tr(STR_PRESS_ANY_CONTINUE));
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_OK_BUTTON), "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   }

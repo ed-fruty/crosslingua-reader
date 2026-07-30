@@ -120,7 +120,7 @@ void EpubReaderFootnotesActivity::render(RenderLock&&) {
   renderer.drawText(UI_12_FONT_ID, titleX, 15 + contentY, tr(STR_FOOTNOTES), true, EpdFontFamily::BOLD);
 
   if (footnotes.empty()) {
-    renderer.drawCenteredText(UI_11_FONT_ID, 90 + contentY, tr(STR_NO_FOOTNOTES));
+    renderer.drawCenteredText(UI_10_FONT_ID, 90 + contentY, tr(STR_NO_FOOTNOTES));
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
     renderer.displayBuffer();
@@ -149,7 +149,7 @@ void EpubReaderFootnotesActivity::render(RenderLock&&) {
     if (label.empty()) {
       label = tr(STR_LINK);
     }
-    renderer.drawText(UI_11_FONT_ID, marginLeft, y + 4, label.c_str(), !isSelected);
+    renderer.drawText(UI_10_FONT_ID, marginLeft, y + 4, label.c_str(), !isSelected);
   }
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), "", "");

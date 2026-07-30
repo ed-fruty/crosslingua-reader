@@ -83,20 +83,20 @@ void KOReaderAuthActivity::render(RenderLock&&) {
 
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight},
                  mode == Mode::SIGN_UP ? tr(STR_SIGN_UP) : tr(STR_KOREADER_AUTH));
-  const auto height = renderer.getLineHeight(UI_11_FONT_ID);
+  const auto height = renderer.getLineHeight(UI_10_FONT_ID);
   const auto top = (pageHeight - height) / 2;
 
   if (state == AUTHENTICATING) {
-    renderer.drawCenteredText(UI_11_FONT_ID, top, statusMessage.c_str());
+    renderer.drawCenteredText(UI_10_FONT_ID, top, statusMessage.c_str());
   } else if (state == SUCCESS) {
-    renderer.drawCenteredText(UI_11_FONT_ID, top,
+    renderer.drawCenteredText(UI_10_FONT_ID, top,
                               mode == Mode::SIGN_UP ? tr(STR_ACCOUNT_CREATED) : tr(STR_AUTH_SUCCESS), true,
                               EpdFontFamily::BOLD);
-    renderer.drawCenteredText(UI_11_FONT_ID, top + height + 10, tr(STR_SYNC_READY));
+    renderer.drawCenteredText(UI_10_FONT_ID, top + height + 10, tr(STR_SYNC_READY));
   } else if (state == FAILED) {
-    renderer.drawCenteredText(UI_11_FONT_ID, top, mode == Mode::SIGN_UP ? tr(STR_SIGNUP_FAILED) : tr(STR_AUTH_FAILED),
+    renderer.drawCenteredText(UI_10_FONT_ID, top, mode == Mode::SIGN_UP ? tr(STR_SIGNUP_FAILED) : tr(STR_AUTH_FAILED),
                               true, EpdFontFamily::BOLD);
-    renderer.drawCenteredText(UI_11_FONT_ID, top + height + 10, errorMessage.c_str());
+    renderer.drawCenteredText(UI_10_FONT_ID, top + height + 10, errorMessage.c_str());
   }
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");

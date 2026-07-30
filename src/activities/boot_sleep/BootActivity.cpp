@@ -14,7 +14,7 @@ void BootActivity::onEnter() {
 
   renderer.clearScreen();
   renderer.drawImage(Logo200, (pageWidth - 200) / 2, (pageHeight - 200) / 2 - 40, 200, 200);
-  renderer.drawCenteredText(UI_11_FONT_ID, pageHeight / 2 + 70, tr(STR_CROSSPOINT), true, EpdFontFamily::BOLD);
+  renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 70, tr(STR_CROSSPOINT), true, EpdFontFamily::BOLD);
   renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 101, tr(STR_BOOTING));
   renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 30, CROSSPOINT_VERSION);
   renderer.displayBuffer();

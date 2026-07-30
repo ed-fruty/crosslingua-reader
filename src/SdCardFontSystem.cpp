@@ -31,7 +31,8 @@ struct UiFontSize {
 constexpr UiFontSize kUiFontSizes[] = {
     {SMALL_FONT_ID, 8},
 #if CROSSLINGUA_UI_EDSLAB
-    {UI_11_FONT_ID, 11},
+    // UI_10 is the stable upstream role; CrossLingua's EdsLab asset behind it is physically 11 pt.
+    {UI_10_FONT_ID, 11},
 #else
     {UI_10_FONT_ID, 10},
 #endif

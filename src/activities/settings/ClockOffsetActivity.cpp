@@ -336,7 +336,7 @@ void ClockOffsetActivity::render(RenderLock&&) {
     if (halClock.formatTime(timeBuf, sizeof(timeBuf), encoded, SETTINGS.clockFormat == 1)) {
       char preview[24];
       snprintf(preview, sizeof(preview), "%s %s", tr(STR_CURRENT_TIME), timeBuf);
-      renderer.drawCenteredText(UI_11_FONT_ID, centreY + 60, preview);
+      renderer.drawCenteredText(UI_10_FONT_ID, centreY + 60, preview);
     }
   }
 

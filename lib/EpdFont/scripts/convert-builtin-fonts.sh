@@ -60,7 +60,9 @@ for size in ${NOTOSANS_FONT_SIZES[@]}; do
   done
 done
 
-EDSLAB_UI_FONT_SIZES=(11 12)
+# Keep the public/upstream UI slots named 10 and 12. CrossLingua renders the
+# primary UI_10 slot with an 11-point EdsLab face for legibility.
+EDSLAB_UI_FONT_SPECS=("10:11" "12:12")
 LEGACY_UI_FONT_SIZES=(10 12)
 UI_FONT_STYLES=("Regular" "Bold")
 
@@ -92,11 +94,13 @@ ARABIC_INTERVALS=(
   --additional-intervals 0xFE80,0xFEFC  # Presentation Forms-B: core Arabic + Lam-Alef
 )
 
-for size in ${EDSLAB_UI_FONT_SIZES[@]}; do
+for spec in ${EDSLAB_UI_FONT_SPECS[@]}; do
+  slot="${spec%%:*}"
+  point_size="${spec##*:}"
   for style in ${UI_FONT_STYLES[@]}; do
     # EdsLab is the CrossLingua UI face. Script-specific fonts remain later in
     # the stack as fallbacks for glyphs EdsLab does not ship.
-    font_name="edslab_ui_${size}_$(echo $style | tr '[:upper:]' '[:lower:]')"
+    font_name="edslab_ui_${slot}_$(echo $style | tr '[:upper:]' '[:lower:]')"
     font_path="../builtinFonts/source/EdsLab/EdsLab-${style}.ttf"
     hebrew_path="../builtinFonts/source/NotoSansHebrew/NotoSansHebrew-${style}.ttf"
     arabic_path="../builtinFonts/source/NotoSansArabic/NotoSansArabic-${style}.ttf"
@@ -104,7 +108,7 @@ for size in ${EDSLAB_UI_FONT_SIZES[@]}; do
     # EdsLab does not ship. The font stack keeps EdsLab at highest priority.
     viet_path="../builtinFonts/source/Ubuntu/Ubuntu-Vietnamese-${style}.ttf"
     output_path="../builtinFonts/${font_name}.h"
-    python fontconvert.py $font_name $size $font_path $hebrew_path $arabic_path $viet_path \
+    python fontconvert.py $font_name $point_size $font_path $hebrew_path $arabic_path $viet_path \
       --additional-intervals 0x05D0,0x05EA "${ARABIC_INTERVALS[@]}" > $output_path
     echo "Generated $output_path"
   done

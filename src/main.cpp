@@ -103,9 +103,11 @@ EpdFontFamily notosans18FontFamily(&notosans18RegularFont, &notosans18BoldFont, 
 EpdFont smallFont(&edslab_ui_8_regular);
 EpdFontFamily smallFontFamily(&smallFont);
 
-EpdFont ui11RegularFont(&edslab_ui_11_regular);
-EpdFont ui11BoldFont(&edslab_ui_11_bold);
-EpdFontFamily ui11FontFamily(&ui11RegularFont, &ui11BoldFont);
+// Keep the upstream UI_10 semantic slot stable; CrossLingua supplies an
+// 11-point EdsLab face underneath it for better legibility.
+EpdFont ui10RegularFont(&edslab_ui_10_regular);
+EpdFont ui10BoldFont(&edslab_ui_10_bold);
+EpdFontFamily ui10FontFamily(&ui10RegularFont, &ui10BoldFont);
 
 EpdFont ui12RegularFont(&edslab_ui_12_regular);
 EpdFont ui12BoldFont(&edslab_ui_12_bold);
@@ -295,11 +297,7 @@ void setupDisplayAndFonts(bool seamless = false) {
   renderer.insertFont(NOTOSANS_16_FONT_ID, notosans16FontFamily);
   renderer.insertFont(NOTOSANS_18_FONT_ID, notosans18FontFamily);
 #endif  // OMIT_FONTS
-#if CROSSLINGUA_UI_EDSLAB
-  renderer.insertFont(UI_11_FONT_ID, ui11FontFamily);
-#else
   renderer.insertFont(UI_10_FONT_ID, ui10FontFamily);
-#endif
   renderer.insertFont(UI_12_FONT_ID, ui12FontFamily);
   renderer.insertFont(SMALL_FONT_ID, smallFontFamily);
 
