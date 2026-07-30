@@ -510,6 +510,33 @@ void EpubReaderActivity::loop() {
     return;
   }
 
+  // Optional Interlinear reveal shortcut. The selected pair becomes release-driven so its short
+  // press retains ordinary page navigation even when the global reader setting turns pages on the
+  // initial press. A long press wins over that base behaviour and only toggles annotation drawing;
+  // the already-laid-out rows remain in the Page, preserving their space.
+  if (section && SETTINGS.translationDisplayMode == CrossPointSettings::PT_INTERLINEAR &&
+      SETTINGS.interlinearToggleByLongPress) {
+    const bool useFront = SETTINGS.interlinearToggleButtons == CrossPointSettings::OVERLAY_BUTTONS_FRONT;
+    const auto backButton =
+        useFront ? MappedInputManager::Button::Left : MappedInputManager::Button::PageBack;
+    const auto forwardButton =
+        useFront ? MappedInputManager::Button::Right : MappedInputManager::Button::PageForward;
+    const bool backReleased = mappedInput.wasReleased(backButton);
+    const bool forwardReleased = mappedInput.wasReleased(forwardButton);
+    if (backReleased || forwardReleased) {
+      if (mappedInput.getHeldTime() >= ReaderUtils::SKIP_HOLD_MS) {
+        interlinearTranslationVisible = !interlinearTranslationVisible;
+        requestUpdate();
+      } else {
+        pageTurn(forwardReleased);
+      }
+      return;
+    }
+    if (mappedInput.isPressed(backButton) || mappedInput.isPressed(forwardButton)) {
+      return;
+    }
+  }
+
   // End-of-Book screen reached (currentSpineIndex == spine count) means the book is
   // finished. Two independent finished-book features key off this same condition.
   const bool atEndOfBook = currentSpineIndex > 0 && currentSpineIndex >= epub->getSpineItemsCount();
@@ -2152,7 +2179,10 @@ void EpubReaderActivity::renderContents(Page& page, const int orientedMarginTop,
                                         const int orientedMarginBottom, const int orientedMarginLeft) {
   // THE per-render font set: the body font plus (later) a distinct translated-text font. Built
   // from SETTINGS so the ids match the ones readerRenderSpec() keyed the section cache on.
-  const PageFontSet fonts = SETTINGS.readerPageFontSet();
+  PageFontSet fonts = SETTINGS.readerPageFontSet();
+  if (SETTINGS.translationDisplayMode == CrossPointSettings::PT_INTERLINEAR) {
+    fonts.annotationVisible = interlinearTranslationVisible;
+  }
   const int fontId = fonts.body;
 
   // Manual (power-button) refresh latched by handleForcedRefresh() (upstream d7c98adc). Read and

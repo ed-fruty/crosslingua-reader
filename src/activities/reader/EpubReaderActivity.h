@@ -131,6 +131,9 @@ class EpubReaderActivity final : public Activity {
   // cannot silently drop the notice.
   bool fallbackDialogDrawn = false;
   bool currentPageBookmarked = false;
+  // Session-only Interlinear reveal state. Hiding is a render-time operation: annotation lines stay
+  // in the cached page and therefore continue to reserve exactly the same vertical space.
+  bool interlinearTranslationVisible = true;
   // Idle-time glyph prewarm: after a page settles, scan the LIKELY next page
   // (scan mode draws nothing) and load its missing glyphs from SD during idle,
   // so the next turn's in-render prewarm is a cache hit instead of ~100 ms of

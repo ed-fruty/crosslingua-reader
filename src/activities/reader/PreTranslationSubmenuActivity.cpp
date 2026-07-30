@@ -171,8 +171,10 @@ void PreTranslationSubmenuActivity::appendModeChildren() {
       return;
     case CrossPointSettings::PT_INTERLINEAR:
       // Colours the ANNOTATION ROWS only. Size is still fixed at the small UI face in v1 (see
-      // getInterlinearAnnotationFontId), so Colour is this mode's only sub-setting for now.
+      // getInterlinearAnnotationFontId). The reveal controls below are drawing/input-only too.
       child(Action::CYCLE_INTERLINEAR_COLOUR, StrId::STR_TRANSLATION_COLOUR);
+      child(Action::CYCLE_INTERLINEAR_TOGGLE_LONG_PRESS, StrId::STR_TOGGLE_BY_LONGPRESS);
+      child(Action::CYCLE_INTERLINEAR_TOGGLE_BUTTONS, StrId::STR_TOGGLE_BUTTONS);
       return;
     // No sub-settings. Normal is NOT "no translated text": it maps to PtLayout::Both exactly as
     // Interleaved does, so its pages are byte-identical and do carry the translation inline. What
@@ -383,6 +385,19 @@ void PreTranslationSubmenuActivity::onActionSelected(Action a) {
       cycleLinguaShade(SETTINGS.interlinearAnnotationShade);
       return;
 
+    case Action::CYCLE_INTERLINEAR_TOGGLE_LONG_PRESS:
+      SETTINGS.interlinearToggleByLongPress = SETTINGS.interlinearToggleByLongPress ? 0 : 1;
+      SETTINGS.saveToFile();
+      requestUpdate();
+      return;
+
+    case Action::CYCLE_INTERLINEAR_TOGGLE_BUTTONS:
+      SETTINGS.interlinearToggleButtons =
+          static_cast<uint8_t>((SETTINGS.interlinearToggleButtons + 1) % CrossPointSettings::OVERLAY_BUTTONS_COUNT);
+      SETTINGS.saveToFile();
+      requestUpdate();
+      return;
+
     case Action::CYCLE_SIDE_BY_SIDE_COLOUR:
       cycleLinguaShade(SETTINGS.sideBySideTranslationShade);
       return;
@@ -456,8 +471,12 @@ const char* PreTranslationSubmenuActivity::displayModeLabel() const {
 }
 
 const char* PreTranslationSubmenuActivity::tooltipButtonsLabel() const {
-  return I18N.get(SETTINGS.tooltipButtons == CrossPointSettings::OVERLAY_BUTTONS_SIDE ? StrId::STR_SIDE_BUTTONS
-                                                                                      : StrId::STR_FRONT_BUTTONS);
+  return overlayButtonsLabel(SETTINGS.tooltipButtons);
+}
+
+const char* PreTranslationSubmenuActivity::overlayButtonsLabel(const uint8_t storedButtons) const {
+  return I18N.get(storedButtons == CrossPointSettings::OVERLAY_BUTTONS_SIDE ? StrId::STR_SIDE_BUTTONS
+                                                                           : StrId::STR_FRONT_BUTTONS);
 }
 
 const char* PreTranslationSubmenuActivity::tooltipBehaviorLabel() const {
@@ -606,6 +625,10 @@ void PreTranslationSubmenuActivity::render(RenderLock&&) {
             return translationColourLabel();
           case Action::CYCLE_INTERLINEAR_COLOUR:
             return linguaShadeLabel(SETTINGS.interlinearAnnotationShade);
+          case Action::CYCLE_INTERLINEAR_TOGGLE_LONG_PRESS:
+            return I18N.get(SETTINGS.interlinearToggleByLongPress ? StrId::STR_ON : StrId::STR_OFF);
+          case Action::CYCLE_INTERLINEAR_TOGGLE_BUTTONS:
+            return overlayButtonsLabel(SETTINGS.interlinearToggleButtons);
           case Action::CYCLE_SIDE_BY_SIDE_COLOUR:
             return linguaShadeLabel(SETTINGS.sideBySideTranslationShade);
           case Action::CYCLE_INTERLEAVED_SIZE:

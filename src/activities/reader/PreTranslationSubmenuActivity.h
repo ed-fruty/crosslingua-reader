@@ -61,6 +61,8 @@ class PreTranslationSubmenuActivity final : public Activity {
     // three independent fields — the Interleaved one above cannot be reused, it has no Black and
     // its stored value is that mode's own (see CrossPointSettings::LINGUA_SHADE).
     CYCLE_INTERLINEAR_COLOUR,
+    CYCLE_INTERLINEAR_TOGGLE_LONG_PRESS,
+    CYCLE_INTERLINEAR_TOGGLE_BUTTONS,
     CYCLE_SIDE_BY_SIDE_COLOUR,
     // Translated-text type size relative to the body text. THREE actions, one per owning mode, each
     // bound to that mode's own stored field — not one action over a shared field, which made the
@@ -132,6 +134,7 @@ class PreTranslationSubmenuActivity final : public Activity {
   const char* targetLangLabel() const;
   const char* sourceLangLabel() const;
   const char* tooltipButtonsLabel() const;
+  const char* overlayButtonsLabel(uint8_t storedButtons) const;
   const char* tooltipBehaviorLabel() const;
   const char* pageTranslationButtonsLabel() const;
   const char* translationColourLabel() const;

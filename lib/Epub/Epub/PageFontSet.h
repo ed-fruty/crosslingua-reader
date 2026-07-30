@@ -45,6 +45,9 @@ struct PageFontSet {
   // the annotation rows in Interlinear. Body text is never inked from here.
   uint8_t translationInk = INK_INHERIT;
   uint8_t annotationInk = INK_INHERIT;
+  // Drawing-only visibility gate. A hidden annotation line is still present in the laid-out Page,
+  // so its vertical space remains reserved.
+  bool annotationVisible = true;
 
   constexpr PageFontSet() = default;
   // Uniform set: every role draws in the body font. This is today's behaviour for every mode.

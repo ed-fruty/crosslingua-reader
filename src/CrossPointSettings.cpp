@@ -138,6 +138,8 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   // One colour key per mode that owns one; see the LINGUA_SHADE comment for why they are never
   // folded into translationShade.
   doc["interlinearAnnotationShade"] = interlinearAnnotationShade;
+  doc["interlinearToggleByLongPress"] = interlinearToggleByLongPress;
+  doc["interlinearToggleButtons"] = interlinearToggleButtons;
   doc["sideBySideTranslationShade"] = sideBySideTranslationShade;
   // One key per mode. These are NEW names, not a rename of the single "translationSize" key they
   // replace: keys are append-only, and a file still carrying the old key must fall through to the
@@ -285,6 +287,11 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   // established pattern here (see the per-mode sizes below).
   interlinearAnnotationShade = clamp(doc["interlinearAnnotationShade"] | (uint8_t)LINGUA_BLACK,
                                      (uint8_t)LINGUA_SHADE_COUNT, (uint8_t)LINGUA_BLACK);
+  interlinearToggleByLongPress =
+      clamp(doc["interlinearToggleByLongPress"] | (uint8_t)1, (uint8_t)2, (uint8_t)1);
+  interlinearToggleButtons =
+      clamp(doc["interlinearToggleButtons"] | (uint8_t)OVERLAY_BUTTONS_SIDE, (uint8_t)OVERLAY_BUTTONS_COUNT,
+            (uint8_t)OVERLAY_BUTTONS_SIDE);
   sideBySideTranslationShade = clamp(doc["sideBySideTranslationShade"] | (uint8_t)LINGUA_BLACK,
                                      (uint8_t)LINGUA_SHADE_COUNT, (uint8_t)LINGUA_BLACK);
   // Per-mode translated-text sizes. ArduinoJson's `|` yields its right operand when the key is

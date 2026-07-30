@@ -427,6 +427,11 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // well in the other. Both default to Black, i.e. exactly what each mode drew before the row
   // existed, so an upgrade changes nothing on screen. See LINGUA_SHADE.
   uint8_t interlinearAnnotationShade = LINGUA_BLACK;
+  // Interlinear can temporarily hide its annotation rows while keeping their layout space. When
+  // enabled, a long press of either button in the selected pair toggles their visibility and takes
+  // precedence over the button's normal reader action.
+  uint8_t interlinearToggleByLongPress = 1;
+  uint8_t interlinearToggleButtons = OVERLAY_BUTTONS_SIDE;
   uint8_t sideBySideTranslationShade = LINGUA_BLACK;
   // Translated-text type size — ONE field per mode that shows translated text, never shared (see
   // TRANSLATION_SIZE). The defaults differ on purpose and each is the mode's own pre-existing

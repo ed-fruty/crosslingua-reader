@@ -26,6 +26,7 @@ static_assert(PageFontSet::INK_INHERIT == GfxRenderer::INK_INHERIT,
               "PageFontSet ink sentinel must match the renderer's");
 
 void PageLine::render(GfxRenderer& renderer, const PageFontSet& fonts, const int xOffset, const int yOffset) {
+  if (fontRole == LineFontRole::Annotation && !fonts.annotationVisible) return;
   // A line is homogeneous, so the role resolves to ONE id here and TextBlock keeps its plain
   // int fontId — the mixed-font page is a property of the page, not of any single line.
   //
