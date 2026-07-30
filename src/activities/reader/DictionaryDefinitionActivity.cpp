@@ -232,8 +232,8 @@ void DictionaryDefinitionActivity::render(RenderLock&&) {
   if (totalPages > 1) {
     char counter[16];
     snprintf(counter, sizeof(counter), "%d/%d", currentPage + 1, totalPages);
-    const int counterWidth = renderer.getTextWidth(UI_10_FONT_ID, counter);
-    renderer.drawText(UI_10_FONT_ID, contentX + contentWidth - SIDE_PADDING - counterWidth, headerY, counter);
+    const int counterWidth = renderer.getTextWidth(UI_11_FONT_ID, counter);
+    renderer.drawText(UI_11_FONT_ID, contentX + contentWidth - SIDE_PADDING - counterWidth, headerY, counter);
   }
 
   // Body: two-pass draw inside a prewarm scope (same pattern as the reader's

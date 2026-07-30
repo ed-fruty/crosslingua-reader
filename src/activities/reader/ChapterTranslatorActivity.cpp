@@ -634,7 +634,7 @@ void ChapterTranslatorActivity::render(RenderLock&&) {
 
   if (state == CONFIRM_RETRANSLATE) {
     renderer.drawCenteredText(UI_12_FONT_ID, 150, tr(STR_CHAPTER_ALREADY_TRANSLATED), true, EpdFontFamily::BOLD);
-    renderer.drawCenteredText(UI_10_FONT_ID, 200, tr(STR_RETRANSLATE_CONFIRM));
+    renderer.drawCenteredText(UI_11_FONT_ID, 200, tr(STR_RETRANSLATE_CONFIRM));
 
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_OK_BUTTON), "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
@@ -644,14 +644,14 @@ void ChapterTranslatorActivity::render(RenderLock&&) {
     // language picker stores names in English (see LanguagePickerActivity.cpp).
     if (!targetLangName.empty()) {
       std::string langLine = sourceLangName + " -> " + targetLangName;
-      renderer.drawCenteredText(UI_10_FONT_ID, 50, langLine.c_str());
+      renderer.drawCenteredText(UI_11_FONT_ID, 50, langLine.c_str());
     }
 
     char engineLine[80];
     snprintf(engineLine, sizeof(engineLine), tr(STR_ENGINE_LABEL_FORMAT), getEngineName());
-    renderer.drawCenteredText(UI_10_FONT_ID, 80, engineLine);
+    renderer.drawCenteredText(UI_11_FONT_ID, 80, engineLine);
 
-    renderer.drawCenteredText(UI_10_FONT_ID, 130, tr(STR_TRANSLATING_CHAPTER));
+    renderer.drawCenteredText(UI_11_FONT_ID, 130, tr(STR_TRANSLATING_CHAPTER));
 
     // Atomic-ish snapshot: copy volatile counters into locals so a worker write
     // mid-render cannot reshape the progress bar within a single frame.
@@ -676,7 +676,7 @@ void ChapterTranslatorActivity::render(RenderLock&&) {
       }
     }
 
-    renderer.drawCenteredText(UI_10_FONT_ID, 380, tr(STR_BACK_TO_CANCEL));
+    renderer.drawCenteredText(UI_11_FONT_ID, 380, tr(STR_BACK_TO_CANCEL));
 
     const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
@@ -684,7 +684,7 @@ void ChapterTranslatorActivity::render(RenderLock&&) {
   } else if (state == DONE) {
     if (!targetLangName.empty()) {
       std::string langLine = sourceLangName + " -> " + targetLangName;
-      renderer.drawCenteredText(UI_10_FONT_ID, 50, langLine.c_str());
+      renderer.drawCenteredText(UI_11_FONT_ID, 50, langLine.c_str());
     }
 
     renderer.drawCenteredText(UI_12_FONT_ID, 150, tr(STR_TRANSLATION_DONE), true, EpdFontFamily::BOLD);
@@ -693,9 +693,9 @@ void ChapterTranslatorActivity::render(RenderLock&&) {
     const int translated = lastResult.paragraphsTranslated;
     const int total = translated + lastResult.paragraphsSkipped;
     snprintf(doneStr, sizeof(doneStr), "%d / %d paragraphs", translated, total);
-    renderer.drawCenteredText(UI_10_FONT_ID, 200, doneStr);
+    renderer.drawCenteredText(UI_11_FONT_ID, 200, doneStr);
 
-    renderer.drawCenteredText(UI_10_FONT_ID, 380, tr(STR_PRESS_ANY_CONTINUE));
+    renderer.drawCenteredText(UI_11_FONT_ID, 380, tr(STR_PRESS_ANY_CONTINUE));
 
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_OK_BUTTON), "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
@@ -705,24 +705,24 @@ void ChapterTranslatorActivity::render(RenderLock&&) {
     if (lowMemoryAbort) {
       // Long translated message -> wrap across the content width (statusMsg's
       // 64-byte buffer can't hold the Ukrainian text, so it is bypassed here).
-      const auto lines = renderer.wrappedText(UI_10_FONT_ID, tr(STR_TRANSLATION_LOW_MEMORY), pageWidth - 80, 4);
-      const int lineH = renderer.getLineHeight(UI_10_FONT_ID);
+      const auto lines = renderer.wrappedText(UI_11_FONT_ID, tr(STR_TRANSLATION_LOW_MEMORY), pageWidth - 80, 4);
+      const int lineH = renderer.getLineHeight(UI_11_FONT_ID);
       int y = 200;
       for (const auto& line : lines) {
-        renderer.drawCenteredText(UI_10_FONT_ID, y, line.c_str());
+        renderer.drawCenteredText(UI_11_FONT_ID, y, line.c_str());
         y += lineH;
       }
     } else if (statusMsg[0]) {
-      renderer.drawCenteredText(UI_10_FONT_ID, 200, statusMsg);
+      renderer.drawCenteredText(UI_11_FONT_ID, 200, statusMsg);
     }
-    renderer.drawCenteredText(UI_10_FONT_ID, 380, tr(STR_PRESS_ANY_CONTINUE));
+    renderer.drawCenteredText(UI_11_FONT_ID, 380, tr(STR_PRESS_ANY_CONTINUE));
 
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_OK_BUTTON), "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   } else if (state == CANCELLED) {
     renderer.drawCenteredText(UI_12_FONT_ID, 150, tr(STR_TRANSLATION_CANCELLED), true, EpdFontFamily::BOLD);
-    renderer.drawCenteredText(UI_10_FONT_ID, 380, tr(STR_PRESS_ANY_CONTINUE));
+    renderer.drawCenteredText(UI_11_FONT_ID, 380, tr(STR_PRESS_ANY_CONTINUE));
 
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_OK_BUTTON), "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

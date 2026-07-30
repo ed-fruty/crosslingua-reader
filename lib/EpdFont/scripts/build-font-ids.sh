@@ -86,10 +86,10 @@ ruby -rdigest -e 'puts [
 ].map{|f| Digest::SHA256.hexdigest(File.read(f)).to_i(16) }.sum % (2 ** 32) - (2 ** 31)'
 ))"
 
-echo "#define EDSLAB_UI_10_FONT_ID ($(
+echo "#define EDSLAB_UI_11_FONT_ID ($(
 ruby -rdigest -e 'puts [
-  "./edslab_ui_10_regular.h",
-  "./edslab_ui_10_bold.h",
+  "./edslab_ui_11_regular.h",
+  "./edslab_ui_11_bold.h",
 ].map{|f| Digest::SHA256.hexdigest(File.read(f)).to_i(16) }.sum % (2 ** 32) - (2 ** 31)'
 ))"
 
@@ -129,11 +129,13 @@ ruby -rdigest -e 'puts [
 cat <<'EOF'
 
 #if CROSSLINGUA_UI_EDSLAB
-#define UI_10_FONT_ID EDSLAB_UI_10_FONT_ID
+#define UI_11_FONT_ID EDSLAB_UI_11_FONT_ID
 #define UI_12_FONT_ID EDSLAB_UI_12_FONT_ID
 #define SMALL_FONT_ID EDSLAB_UI_8_FONT_ID
 #else
 #define UI_10_FONT_ID LEGACY_UI_10_FONT_ID
+// The legacy UI has no 11 pt face; keep the alias valid for non-EdsLab builds.
+#define UI_11_FONT_ID LEGACY_UI_10_FONT_ID
 #define UI_12_FONT_ID LEGACY_UI_12_FONT_ID
 #define SMALL_FONT_ID LEGACY_UI_8_FONT_ID
 #endif
@@ -149,7 +151,7 @@ static_assert(NOTOSANS_12_FONT_ID != 0, "Font ID collision with sentinel");
 static_assert(NOTOSANS_14_FONT_ID != 0, "Font ID collision with sentinel");
 static_assert(NOTOSANS_16_FONT_ID != 0, "Font ID collision with sentinel");
 static_assert(NOTOSANS_18_FONT_ID != 0, "Font ID collision with sentinel");
-static_assert(UI_10_FONT_ID != 0, "Font ID collision with sentinel");
+static_assert(UI_11_FONT_ID != 0, "Font ID collision with sentinel");
 static_assert(UI_12_FONT_ID != 0, "Font ID collision with sentinel");
 static_assert(SMALL_FONT_ID != 0, "Font ID collision with sentinel");
 EOF

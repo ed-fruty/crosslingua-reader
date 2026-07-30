@@ -60,7 +60,8 @@ for size in ${NOTOSANS_FONT_SIZES[@]}; do
   done
 done
 
-UI_FONT_SIZES=(10 12)
+EDSLAB_UI_FONT_SIZES=(11 12)
+LEGACY_UI_FONT_SIZES=(10 12)
 UI_FONT_STYLES=("Regular" "Bold")
 
 # Arabic glyphs for UI text (menus, file browser titles). The built-in fonts
@@ -91,7 +92,7 @@ ARABIC_INTERVALS=(
   --additional-intervals 0xFE80,0xFEFC  # Presentation Forms-B: core Arabic + Lam-Alef
 )
 
-for size in ${UI_FONT_SIZES[@]}; do
+for size in ${EDSLAB_UI_FONT_SIZES[@]}; do
   for style in ${UI_FONT_STYLES[@]}; do
     # EdsLab is the CrossLingua UI face. Script-specific fonts remain later in
     # the stack as fallbacks for glyphs EdsLab does not ship.
@@ -118,7 +119,7 @@ python fontconvert.py edslab_ui_8_regular 8 \
 
 # Keep the legacy UI assets reproducible so CROSSLINGUA_UI_EDSLAB can be
 # switched back to 0 without restoring files from Git.
-for size in ${UI_FONT_SIZES[@]}; do
+for size in ${LEGACY_UI_FONT_SIZES[@]}; do
   for style in ${UI_FONT_STYLES[@]}; do
     font_name="ubuntu_${size}_$(echo $style | tr '[:upper:]' '[:lower:]')"
     font_path="../builtinFonts/source/Ubuntu/Ubuntu-${style}.ttf"

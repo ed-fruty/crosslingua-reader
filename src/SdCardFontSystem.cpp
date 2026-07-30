@@ -30,7 +30,11 @@ struct UiFontSize {
 };
 constexpr UiFontSize kUiFontSizes[] = {
     {SMALL_FONT_ID, 8},
+#if CROSSLINGUA_UI_EDSLAB
+    {UI_11_FONT_ID, 11},
+#else
     {UI_10_FONT_ID, 10},
+#endif
     {UI_12_FONT_ID, 12},
 };
 

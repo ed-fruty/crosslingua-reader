@@ -293,7 +293,7 @@ void StatusBarSettingsActivity::render(RenderLock&&) {
 
   GUI.drawStatusBar(renderer, 75, 8, 32, title, verticalPreviewPadding, 0, false);
 
-  renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding,
+  renderer.drawText(UI_11_FONT_ID, metrics.contentSidePadding,
                     renderer.getScreenHeight() - UITheme::getInstance().getStatusBarHeight() - verticalPreviewPadding -
                         verticalPreviewTextPadding,
                     tr(STR_PREVIEW));

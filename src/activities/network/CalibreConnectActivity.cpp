@@ -176,7 +176,7 @@ void CalibreConnectActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_CALIBRE_WIRELESS));
-  const auto height = renderer.getLineHeight(UI_10_FONT_ID);
+  const auto height = renderer.getLineHeight(UI_11_FONT_ID);
   const auto top = (pageHeight - height) / 2;
 
   if (state == CalibreConnectState::SERVER_STARTING) {

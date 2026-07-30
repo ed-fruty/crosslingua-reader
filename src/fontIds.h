@@ -10,7 +10,7 @@
 #define NOTOSANS_14_FONT_ID (-1589315735)
 #define NOTOSANS_16_FONT_ID (1669013660)
 #define NOTOSANS_18_FONT_ID (37077304)
-#define EDSLAB_UI_10_FONT_ID (-1796158278)
+#define EDSLAB_UI_11_FONT_ID (1662627233)
 #define EDSLAB_UI_12_FONT_ID (1235990737)
 #define EDSLAB_UI_8_FONT_ID (-23268267)
 #define LEGACY_UI_10_FONT_ID (-350896663)
@@ -18,11 +18,13 @@
 #define LEGACY_UI_8_FONT_ID (-2057420480)
 
 #if CROSSLINGUA_UI_EDSLAB
-#define UI_10_FONT_ID EDSLAB_UI_10_FONT_ID
+#define UI_11_FONT_ID EDSLAB_UI_11_FONT_ID
 #define UI_12_FONT_ID EDSLAB_UI_12_FONT_ID
 #define SMALL_FONT_ID EDSLAB_UI_8_FONT_ID
 #else
 #define UI_10_FONT_ID LEGACY_UI_10_FONT_ID
+// The legacy UI has no 11 pt face; keep the alias valid for non-EdsLab builds.
+#define UI_11_FONT_ID LEGACY_UI_10_FONT_ID
 #define UI_12_FONT_ID LEGACY_UI_12_FONT_ID
 #define SMALL_FONT_ID LEGACY_UI_8_FONT_ID
 #endif
@@ -38,6 +40,6 @@ static_assert(NOTOSANS_12_FONT_ID != 0, "Font ID collision with sentinel");
 static_assert(NOTOSANS_14_FONT_ID != 0, "Font ID collision with sentinel");
 static_assert(NOTOSANS_16_FONT_ID != 0, "Font ID collision with sentinel");
 static_assert(NOTOSANS_18_FONT_ID != 0, "Font ID collision with sentinel");
-static_assert(UI_10_FONT_ID != 0, "Font ID collision with sentinel");
+static_assert(UI_11_FONT_ID != 0, "Font ID collision with sentinel");
 static_assert(UI_12_FONT_ID != 0, "Font ID collision with sentinel");
 static_assert(SMALL_FONT_ID != 0, "Font ID collision with sentinel");

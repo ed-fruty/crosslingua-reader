@@ -120,17 +120,17 @@ void ClockSyncActivity::render(RenderLock&&) {
       if (syncedTime[0] != '\0') {
         char line[32];
         snprintf(line, sizeof(line), "%s %s", tr(STR_CURRENT_TIME), syncedTime);
-        renderer.drawCenteredText(UI_10_FONT_ID, midY + 10, line);
+        renderer.drawCenteredText(UI_11_FONT_ID, midY + 10, line);
       }
       break;
     }
     case NO_WIFI:
       renderer.drawCenteredText(UI_12_FONT_ID, midY - 20, tr(STR_CLOCK_SYNC_NO_WIFI), true, EpdFontFamily::BOLD);
-      renderer.drawCenteredText(UI_10_FONT_ID, midY + 10, tr(STR_CLOCK_SYNC_NO_WIFI_HINT));
+      renderer.drawCenteredText(UI_11_FONT_ID, midY + 10, tr(STR_CLOCK_SYNC_NO_WIFI_HINT));
       break;
     case FAILED:
       renderer.drawCenteredText(UI_12_FONT_ID, midY - 20, tr(STR_CLOCK_SYNC_FAIL), true, EpdFontFamily::BOLD);
-      renderer.drawCenteredText(UI_10_FONT_ID, midY + 10, tr(STR_CHECK_SERIAL_OUTPUT));
+      renderer.drawCenteredText(UI_11_FONT_ID, midY + 10, tr(STR_CHECK_SERIAL_OUTPUT));
       break;
   }
 

@@ -146,7 +146,7 @@ void LanguagePickerActivity::render(RenderLock&&) {
     const bool sel = (idx == selectedIndex);
 
     if (sel) renderer.fillRect(0, y, pageWidth - 1, LINE_H, true);
-    renderer.drawText(UI_10_FONT_ID, 20, y, itemName(idx), !sel);
+    renderer.drawText(UI_11_FONT_ID, 20, y, itemName(idx), !sel);
   }
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
