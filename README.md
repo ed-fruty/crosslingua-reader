@@ -415,6 +415,17 @@ For more details on the internal file structures, see the [file formats document
 
 ---
 
+## Support the project
+
+If CrossLingua is useful to you and you would like to support further development, testing, and maintenance, you can leave a donation here:
+
+[![Support on Ko-fi](https://img.shields.io/badge/Support_on_Ko--fi-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/edfruty)
+[![Support on Donatello](https://img.shields.io/badge/Support_on_Donatello-F9C80E?style=for-the-badge&logo=buymeacoffee&logoColor=111111)](https://donatello.to/EdFruty)
+
+Donations are optional. Bug reports, testing results, and suggestions are valuable contributions too.
+
+---
+
 ## Contributing
 
 Contributions are welcome. If you're new to the codebase, start with the
