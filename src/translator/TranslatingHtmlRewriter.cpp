@@ -81,7 +81,7 @@ bool TranslatingHtmlRewriter::shouldRetryAfterFailure(int httpCode) {
   // Rate limiting: retry, but trip a fast abort after too many in a row.
   if (httpCode == 429) {
     consecutive429++;
-    if (consecutive429 >= MAX_CONSECUTIVE_429) {
+    if (consecutive429 >= enginePolicy->maxConsecutiveRateLimits) {
       LOG_ERR("HtmlRW", "Aborting: %d consecutive 429s", consecutive429);
       abortedOnErrors = true;
       return false;
@@ -95,18 +95,6 @@ bool TranslatingHtmlRewriter::shouldRetryAfterFailure(int httpCode) {
   }
   // Transient: 5xx, 0 (no response), negative (connect/DNS/timeout), or unclassified.
   return true;
-}
-
-int TranslatingHtmlRewriter::backoffDelayMs(int httpCode, int attempt) {
-  if (httpCode == 429) return 1500;
-  // First transient retry already waits (matches the previous flat 500 ms spacing); later
-  // retries back off further. The retry loops run few attempts, so index 0 must be non-zero
-  // or transient retries would hammer with no spacing.
-  static constexpr int kTransientDelaysMs[] = {500, 1500, 3000};
-  static constexpr int kNumDelays = static_cast<int>(sizeof(kTransientDelaysMs) / sizeof(kTransientDelaysMs[0]));
-  if (attempt < 0) attempt = 0;
-  if (attempt >= kNumDelays) attempt = kNumDelays - 1;
-  return kTransientDelaysMs[attempt];
 }
 
 std::string TranslatingHtmlRewriter::makeOpenTag(const XML_Char* name, const XML_Char** atts) {
@@ -187,6 +175,18 @@ void TranslatingHtmlRewriter::flushBlock(const char* endTagName) {
     return collapsed;
   }();
 
+  // Native-array providers must stay on their native batch path. Flush before
+  // adding an item that would exceed the policy boundary; otherwise the generic
+  // oversized-batch fallback would turn one array request into a burst of
+  // request-per-paragraph calls.
+  if (enginePolicy->requiresBoundedBatch() && !trimmed.empty() &&
+      trimmed.size() <= enginePolicy->maxMergedTextBytes && batchTextBytes > 0) {
+    constexpr size_t separatorBytes = 2;
+    if (batchTextBytes + separatorBytes + trimmed.size() > enginePolicy->batchTargetBytes) {
+      flushBatch();
+    }
+  }
+
   // Create batch entry: move pendingHtml into htmlBefore, store trimmedText
   BatchEntry entry;
   entry.htmlBefore = std::move(pendingHtml);
@@ -203,7 +203,7 @@ void TranslatingHtmlRewriter::flushBlock(const char* endTagName) {
           (unsigned)batch.size(), (unsigned)batchTextBytes);
 
   // Flush batch if we've accumulated enough text
-  if (batchTextBytes >= BATCH_TARGET_BYTES) {
+  if (batchTextBytes >= enginePolicy->batchTargetBytes) {
     flushBatch();
   }
 
@@ -244,8 +244,7 @@ void TranslatingHtmlRewriter::flushBatch() {
   //  - the LLM engines are *asked* to preserve the separators (best-effort, model-dependent);
   //  - Azure splits the merged text into a native array of text items and gets one result
   //    object per item in input order, which is an API guarantee rather than a request.
-  bool canBatchMerge = engine == CrossPointSettings::ENGINE_OPENAI || engine == CrossPointSettings::ENGINE_DEEPSEEK ||
-                       engine == CrossPointSettings::ENGINE_GEMINI || engine == CrossPointSettings::ENGINE_AZURE;
+  const bool canBatchMerge = enginePolicy->supportsBatching();
   std::vector<std::string> translations;
   if (!translatableIndices.empty()) {
     // ── Heap backpressure ──────────────────────────────────────────────────
@@ -275,13 +274,13 @@ void TranslatingHtmlRewriter::flushBatch() {
       }
       // Fall through untranslated: `translations` stays empty, so the write-out
       // loop below emits each entry's original HTML only.
-    } else if (canBatchMerge && mergedText.size() <= ParagraphTranslator::MAX_TEXT_BYTES) {
+    } else if (canBatchMerge && mergedText.size() <= enginePolicy->maxMergedTextBytes) {
       consecutiveHeapTimeouts = 0;  // heap healthy -> reset the low-memory streak
       // Single batched API call (LLM/DeepL engines that can handle merged text)
       std::string translated;
       bool ok = false;
-      for (int attempt = 0; attempt < 2 && !ok; attempt++) {
-        if (attempt > 0) delay(backoffDelayMs(HttpDownloader::lastHttpCode, attempt - 1));
+      for (int attempt = 0; attempt < enginePolicy->maxAttempts && !ok; attempt++) {
+        if (attempt > 0) delay(enginePolicy->retryDelayMs(HttpDownloader::lastHttpCode, attempt - 1));
         ok = ParagraphTranslator::translate(mergedText, sourceLang, targetLang, engine, apiKey, translated, &lastError,
                                             httpSession);
         if (ok) {
@@ -334,8 +333,8 @@ void TranslatingHtmlRewriter::flushBatch() {
         if (wasCancelled || abortedOnErrors || (cancelled && *cancelled)) break;
         std::string translated;
         bool ok = false;
-        for (int attempt = 0; attempt < 2 && !ok; attempt++) {
-          if (attempt > 0) delay(backoffDelayMs(HttpDownloader::lastHttpCode, attempt - 1));
+        for (int attempt = 0; attempt < enginePolicy->maxAttempts && !ok; attempt++) {
+          if (attempt > 0) delay(enginePolicy->retryDelayMs(HttpDownloader::lastHttpCode, attempt - 1));
           ok = ParagraphTranslator::translate(batch[translatableIndices[i]].trimmedText, sourceLang, targetLang, engine,
                                               apiKey, translated, &lastError, httpSession);
           if (ok) {
@@ -645,6 +644,7 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewrite(const char* inp
   sourceLang = srcLang;
   targetLang = tgtLang;
   engine = eng;
+  enginePolicy = &translationEnginePolicy(eng);
   apiKey = key;
   cancelled = cancelFlag;
   progressOut = progress;
@@ -730,6 +730,7 @@ TranslatingHtmlRewriter::Result TranslatingHtmlRewriter::rewriteFromFile(
   sourceLang = srcLang;
   targetLang = tgtLang;
   engine = eng;
+  enginePolicy = &translationEnginePolicy(eng);
   apiKey = key;
   cancelled = cancelFlag;
   progressOut = progress;

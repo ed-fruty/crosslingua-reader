@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "TranslationEnginePolicy.h"
+
 class TranslationHttpSession;  // network/HttpDownloader.h — reusable keep-alive connection
 
 /**
@@ -73,6 +75,7 @@ class TranslatingHtmlRewriter {
   const char* sourceLang = nullptr;
   const char* targetLang = nullptr;
   uint8_t engine = 0;
+  const TranslationEnginePolicy* enginePolicy = nullptr;
   const char* apiKey = nullptr;
   volatile const bool* cancelled = nullptr;
   volatile int* progressOut = nullptr;
@@ -125,17 +128,12 @@ class TranslatingHtmlRewriter {
 
   // ─── Network retry/backoff (see HttpDownloader::lastHttpCode) ───────────────
   int consecutive429 = 0;  // consecutive HTTP 429 responses; reset on any non-429 outcome
-  static constexpr int MAX_CONSECUTIVE_429 = 3;
 
   // Classify a failed translate attempt (httpCode = HttpDownloader::lastHttpCode captured
   // right after the failing call). Updates consecutive429 and, on a non-retryable outcome,
   // sets abortedOnErrors (auth failure or too many consecutive 429s).
   // Returns true if the attempt loop should retry.
   bool shouldRetryAfterFailure(int httpCode);
-
-  // Pure backoff delay (ms) for a given HTTP status code and 0-based retry attempt index.
-  // 429 gets a fixed ~1.5s spacing; other transient errors ramp {500, 1500, 3000} ms.
-  static int backoffDelayMs(int httpCode, int attempt);
 
   // ─── Batch buffering ─────────────────────────────────────────────────────
   struct BatchEntry {
@@ -147,7 +145,6 @@ class TranslatingHtmlRewriter {
   std::vector<BatchEntry> batch;
   std::string pendingHtml;                            // accumulates writeOut() calls between block flushes
   size_t batchTextBytes = 0;                          // running total of trimmedText bytes in current batch
-  static constexpr size_t BATCH_TARGET_BYTES = 1500;  // flush threshold (under MAX_TEXT_BYTES=1800)
 
   static const char* BLOCK_TAGS[];
   static const int NUM_BLOCK_TAGS;
