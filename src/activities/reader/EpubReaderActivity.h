@@ -39,17 +39,14 @@ class EpubReaderActivity final : public Activity {
   // never Section::pageCount, which for any chapter the reader has not read to its end is just the
   // windowed build's watermark (~currentPage + BUILD_WINDOW_AHEAD).
   int cachedChapterTotalPageCount = 0;
-  // Layout-INDEPENDENT reading anchor captured with the position: a 1-based index into the chapter's
-  // <p> elements (0 = none available -- see Section::paragraphAnchorForPage for when that happens,
-  // which is more often than the name suggests). Unlike a page number or a page ratio it means the
-  // same thing before and after a re-pagination, and it resolves as soon as the build reaches its
-  // paragraph -- so an anchored reposition needs neither the chapter's final page count nor a
-  // whole-chapter re-layout. Without it render() falls back to the page ratio.
-  uint16_t pendingRepositionParagraph = 0;
-  // The source HTML that anchor was measured over. The bilingual `.translated.html` sidecar adds a
-  // <p lang="xx"> per paragraph, so the count roughly doubles: an anchor is only comparable while
-  // the source is unchanged, and one measured across a flip must be discarded.
-  bool pendingRepositionTranslated = false;
+  std::optional<uint32_t> cachedVisibleTextOffset;
+  // Visible-codepoint offset of the page currently on screen, captured when the page is loaded
+  // (Page::visibleTextOffset). Lets saveProgress persist the offset without reopening section.bin.
+  std::optional<uint32_t> currentPageVisibleOffset;
+  // Explicit "land at this visible-codepoint offset in the target spine" request (bookmark open).
+  // Resolved in render() once the section is loaded/built far enough, then cleared. Unlike a
+  // settings-change reposition it always resolves by content, so it survives any re-pagination.
+  std::optional<uint32_t> pendingOffsetJump;
   unsigned long lastPageTurnTime = 0UL;
   unsigned long pageTurnDuration = 0UL;
   // Signals that the next render should reposition within the newly loaded section
@@ -269,21 +266,13 @@ class EpubReaderActivity final : public Activity {
   bool buildPopupPending = false;
   // Draw the indexing popup mid-build (parser image-probe callback and deadline backstop).
   void showBuildPopup();
-  // Capture the current reading position for a deliberate re-layout, then the caller drops the
-  // Section. Requires the RenderLock. render() consumes everything this arms within the single load
-  // that follows it -- see the reposition block there.
-  //
-  // A no-op without a live section, which is what makes it safe to call twice for one visit to the
-  // reader menu: openReaderMenu() applies a new orientation BEFORE dispatching the chosen row, so a
-  // visit that both rotated and opened Text Settings reaches the second caller with the Section
-  // already dropped. The first call's capture -- taken while the section was alive, and therefore
-  // the only one that could read a paragraph anchor at all -- is the one that must survive.
+  // Map the cached content position into the rebuilt section (used after a
+  // settings change re-paginates a chapter). Returns true if currentPage moved.
+  // No-op while the section is still building or when the pagination is unchanged (plain resume).
+  bool applyDeferredReposition();
+  void rememberCurrentContentOffset();
   void armReposition();
-  // Anchor for the page on screen, or 0 when this page cannot be anchored (page 0, a chapter with
-  // no <p>, or a page deep inside one paragraph -- see Section::paragraphAnchorForPage).
-  uint16_t currentParagraphAnchor() const;
-  bool saveProgress(int spineIndex, int currentPage, int pageCount, uint16_t paragraphAnchor = 0,
-                    bool translatedSource = false);
+  bool saveProgress(int spineIndex, int currentPage, int pageCount);
   // Jump to a percentage of the book (0-100), mapping it to spine and page.
   void jumpToPercent(int percent);
   void onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action);

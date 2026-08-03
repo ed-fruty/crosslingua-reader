@@ -2,6 +2,7 @@
 
 #include <EpdFontFamily.h>
 
+#include <deque>
 #include <functional>
 #include <memory>
 #include <string>
@@ -36,12 +37,23 @@ class ParsedText {
   };
 
  private:
-  std::vector<std::string> words;
+  std::deque<std::string> words;
   std::vector<EpdFontFamily::Style> wordStyles;
   std::vector<bool> wordContinues;      // true = word attaches to previous with no break
   std::vector<bool> wordNoSpaceBefore;  // true = may break before token, but no synthetic space when joined
   std::vector<bool> wordIsFocusSuffix;  // true = token is the regular tail of a focus bold-prefix split
-  std::vector<std::string> rubyTexts;
+  // Zero-based visible Unicode-codepoint offsets in the spine body, stored as
+  // uint16_t deltas from a shared base to keep this layout-only metadata small.
+  // Pathological spans wider than uint16_t use sparse rebases; rendered
+  // TextBlocks do not carry any of this metadata.
+  struct VisibleOffsetRebase {
+    size_t wordIndex;
+    uint32_t base;
+  };
+  std::vector<uint16_t> wordVisibleOffsetDeltas;
+  uint32_t visibleOffsetBase = 0;
+  std::vector<VisibleOffsetRebase> visibleOffsetRebases;
+  std::deque<std::string> rubyTexts;
   BlockStyle blockStyle;
   bool extraParagraphSpacing;
   bool hyphenationEnabled;
@@ -65,6 +77,11 @@ class ParsedText {
   // knows the x, and it is four frames down.
   std::vector<TrackedWordPos>* trackedOut = nullptr;
 
+  uint32_t visibleOffsetBaseAt(size_t wordIndex) const;
+  uint32_t visibleOffsetAt(size_t wordIndex) const;
+  void pushVisibleOffset(uint32_t offset);
+  void insertVisibleOffset(size_t wordIndex, uint32_t offset);
+  void eraseVisibleOffsetPrefix(size_t count);
   int resolveFirstLineIndent(bool isFirstLine, const GfxRenderer& renderer, int fontId) const;
   // Everything that must be settled before the first word is measured: the paragraph's base
   // direction, whether its alignment is the natural one for that direction, and (for an SD-card
@@ -88,8 +105,8 @@ class ParsedText {
   bool extractLine(size_t breakIndex, size_t emittedOrdinal, int pageWidth, const std::vector<uint16_t>& wordWidths,
                    const std::vector<bool>& continuesVec, const std::vector<bool>& noSpaceBeforeVec,
                    const std::vector<size_t>& lineBreakIndices,
-                   const std::function<void(std::shared_ptr<TextBlock>)>& processLine, const GfxRenderer& renderer,
-                   int fontId);
+                   const std::function<void(std::shared_ptr<TextBlock>, uint32_t)>& processLine,
+                   const GfxRenderer& renderer, int fontId);
   std::vector<uint16_t> calculateWordWidths(const GfxRenderer& renderer, int fontId);
 
  public:
@@ -111,7 +128,8 @@ class ParsedText {
   // no stylesheet of their own, in a font that may differ from the body's.
   static int defaultFirstLineIndent(const GfxRenderer& renderer, int fontId, bool extraParagraphSpacing);
 
-  void addWord(std::string word, EpdFontFamily::Style fontStyle, bool underline = false, bool attachToPrevious = false);
+  void addWord(std::string word, EpdFontFamily::Style fontStyle, bool underline = false,
+               bool attachToPrevious = false, uint32_t visibleTextOffset = 0);
   // Grow all five parallel token vectors (and rubyTexts, when it is in use) to hold `additionalTokens`
   // more entries in ONE step, instead of letting each double independently from zero. addWord uses it
   // on its multi-token paths; call it directly before any external push loop whose length is known
@@ -184,8 +202,17 @@ class ParsedText {
   // correspondence is what lets renderInterlinear map annotation k to a line and an x, so nothing is
   // ever deduplicated or dropped from it.
   void layoutAndExtractLines(const GfxRenderer& renderer, int fontId, uint16_t viewportWidth,
-                             const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
+                             const std::function<void(std::shared_ptr<TextBlock>, uint32_t)>& processLine,
                              bool includeLastLine = true, std::vector<TrackedWordPos>* trackedOutParam = nullptr);
+  void layoutAndExtractLines(const GfxRenderer& renderer, int fontId, uint16_t viewportWidth,
+                             const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
+                             bool includeLastLine = true, std::vector<TrackedWordPos>* trackedOutParam = nullptr) {
+    layoutAndExtractLines(renderer, fontId, viewportWidth,
+                          [&processLine](std::shared_ptr<TextBlock> line, uint32_t) {
+                            processLine(std::move(line));
+                          },
+                          includeLastLine, trackedOutParam);
+  }
   // Lay out exactly ONE line at `width` and consume only that line's words, leaving the rest of the
   // block for a later call — at a DIFFERENT width if the caller wants one.
   //
