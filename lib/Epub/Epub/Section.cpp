@@ -179,7 +179,9 @@ namespace {
 // v45: Internal EPUB links preserve CSS superscript/subscript positioning.
 // v46: Lingua Interlinear carries an annotation tail into the following strips, and finishes a
 //      paragraph whose translation outruns them all with source-less tail strips, instead of cutting.
-constexpr uint8_t SECTION_FILE_VERSION = 45;
+// v47: Lingua paragraph indices: the paragraph after a table and an image's alt-text line each claim
+//      their own index instead of inheriting the previous paragraph's.
+constexpr uint8_t SECTION_FILE_VERSION = 47;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects

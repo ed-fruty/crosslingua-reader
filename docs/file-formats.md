@@ -126,6 +126,13 @@ truncated record stream would otherwise read as a complete but shorter chapter.
 
 ## `section.bin`
 
+### Version 47
+
+Version 47 keeps the version 46 serialized layout unchanged. It was bumped
+because the Lingua paragraph index stamped on each line changed: the first
+paragraph after a table and an image's alt-text line now claim an index of their
+own instead of sharing the previous paragraph's.
+
 ### Version 46
 
 Version 46 keeps the version 45 serialized layout unchanged. It was bumped
