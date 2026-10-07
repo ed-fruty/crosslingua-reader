@@ -65,3 +65,61 @@ void ChapterHtmlSlimParser::flushBufferedOriginal() {
 // keyed to the content — the footnote drain, the block style, the paragraph index — follows the
 // SOURCE stream by name; only sourceColX / transColX are physical. A future column-order setting
 // then only has to swap those two x values.
+
+void ChapterHtmlSlimParser::flushPendingFootnotesToCurrentPage() {
+  if (pendingFootnotes.empty()) return;
+  if (currentPage) {
+    for (const auto& [idx, fn] : pendingFootnotes) {
+      currentPage->addFootnote(fn.number, fn.href);
+    }
+  }
+  // Cleared either way. An entry left behind here would be drained against the NEXT block's word base,
+  // which is precisely the misattribution this net exists to prevent. Every caller has a live
+  // currentPage by construction — makePages and both custom emitters create one before laying a single
+  // line — so the undelivered case is unreachable in practice.
+  pendingFootnotes.clear();
+}
+
+ChapterHtmlSlimParser::FootnoteLedger ChapterHtmlSlimParser::adoptBufferedFootnoteLedger() {
+  FootnoteLedger parked;
+  parked.wordBase = wordsExtractedInBlock;
+  // Swaps, never copies: an entry lives in exactly one ledger at every instant, so nothing can be
+  // delivered twice or lost in transit. Both swaps are O(1) and recycle the two buffers between the
+  // ledgers instead of allocating, so a chapter of footnoted paragraphs allocates once.
+  parked.pending.swap(pendingFootnotes);
+  pendingFootnotes.swap(bufferedOriginalFootnotes);
+  wordsExtractedInBlock = bufferedOriginalWordsExtracted;
+  return parked;
+}
+
+void ChapterHtmlSlimParser::releaseFootnoteLedger(FootnoteLedger& parked) {
+  // Anything still pending belongs to the buffered block and had no line of its own to land on (its
+  // layout produced fewer lines than its anchors need, or bailed out before emitting any), so give it
+  // the same best-effort page the end-of-block net gives every such entry rather than letting it cross
+  // into the in-flight block's ledger. Normally a no-op: makePages and both custom emitters run that
+  // net themselves before returning.
+  flushPendingFootnotesToCurrentPage();
+  bufferedOriginalFootnotes.swap(pendingFootnotes);
+  bufferedOriginalWordsExtracted = 0;
+  pendingFootnotes.swap(parked.pending);
+  wordsExtractedInBlock = parked.wordBase;
+}
+
+void ChapterHtmlSlimParser::makePagesForTrailingBlock() {
+  // Flush the trailing outermost block through the pairing builder that owns this layout. A trailing
+  // original is buffered (not laid out) there, so drain any block still buffered -- the last original
+  // of the chapter -- full-width via flushBufferedOriginal (which appends the italic "not translated"
+  // marker under SideBySide only; Interlinear just shows the source).
+  if (linguaLayout != LinguaLayout::SideBySide && linguaLayout != LinguaLayout::Interlinear) {
+    makePages();
+    return;
+  }
+  if (linguaLayout == LinguaLayout::SideBySide) {
+    makePagesTableMode();
+  } else {
+    makePagesInterlinearMode();
+  }
+  if (bufferedOriginalBlock) {
+    flushBufferedOriginal();
+  }
+}

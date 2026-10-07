@@ -21,6 +21,7 @@
 #include "modules/lingua/modes/interlinear/InterlinearAnnotation.h"
 
 class Page;
+class PageLine;
 class GfxRenderer;
 class Epub;
 
@@ -53,6 +54,9 @@ class ChapterHtmlSlimParser {
   int fontId;
   float lineCompression;
   bool extraParagraphSpacing;
+  uint8_t paragraphIndentSpaces = 2;
+  int8_t characterSpacing = 0;
+  uint8_t wordSpacingPercent = 100;
   uint8_t paragraphAlignment;
   uint16_t viewportWidth;
   uint16_t viewportHeight;
@@ -166,9 +170,23 @@ class ChapterHtmlSlimParser {
   uint16_t tableRowsSpannedRemaining = 0;
   size_t tableCellTextBytes = 0;
   std::vector<std::unique_ptr<ParsedText>> tableRowCells;
-  std::array<std::vector<std::shared_ptr<TextBlock>>, MAX_GRID_TABLE_COLUMNS> tableCellLines;
+  std::array<std::vector<std::unique_ptr<TextBlock>>, MAX_GRID_TABLE_COLUMNS> tableCellLines;
   std::vector<uint32_t> tableLineVisibleOffsets;
   bool listItemBulletOnly = false;  // true when currentTextBlock has only the <li> bullet
+
+  // Tracks the innermost open <ul>/<ol> so <li> knows whether to number itself,
+  // bullet itself, or (list-style-type: none) emit no marker at all. Pushed on
+  // <ul>/<ol> open, popped on close, so nested lists restart their own counter
+  // without disturbing the parent list's.
+  struct ListContext {
+    bool ordered = false;    // true for <ol>, false for <ul>
+    bool styleNone = false;  // true when list-style-type: none is set on this list
+    int counter = 0;         // incremented before each direct <li>; used as its number when ordered
+    int depth = 0;           // parser depth at open time; matches the depth seen in endElement
+                             // for the same tag, so a hidden nested list's close can't pop
+                             // an outer list's context
+  };
+  std::vector<ListContext> listStack;
 
   // Anchor-to-page mapping: tracks which page each HTML id attribute lands on
   int completedPageCount = 0;
@@ -203,6 +221,10 @@ class ChapterHtmlSlimParser {
   // bufferedOriginalFootnotes below exists to prevent.
   std::vector<std::pair<int, FootnoteEntry>> pendingFootnotes;  // <wordIndex, entry>
   int wordsExtractedInBlock = 0;
+  // Latched when a ParsedText could not be created (OOM). Together with
+  // ParsedText::hadDroppedWords() this turns layout OOM into ParseStatus::Error
+  // so the section build fails readably instead of emitting pages with holes.
+  bool layoutOom = false;
 
   // Resumable parse state. The one-shot parseAndBuildPages() drives these
   // internally; the incremental section builder drives them across render ticks
@@ -267,12 +289,18 @@ class ChapterHtmlSlimParser {
   // restore the parked in-flight ledger. Leaves bufferedOriginalFootnotes empty (and its capacity
   // recycled), which is the precondition the next buffered block relies on.
   void releaseFootnoteLedger(FootnoteLedger& parked);
+  // Lingua: finishParse's trailing flush -- makePages(), or under a pairing layout the pairing
+  // builder plus the drain of a still-buffered original.
+  void makePagesForTrailingBlock();
+  // Lingua: stamp a main-flow PageLine with the open block's paragraph index and its font role, and
+  // extend the page's paragraph range.
+  void stampLinguaLine(PageLine& line, LineFontRole role);
   void fallbackTableRowToStacked();
   void closeTableCell();
   void finishTableRow();
   void addTableRowSeparator();
   void setCurrentPageVisibleOffset(uint32_t offset);
-  void makePages();
+  void makePages(bool includeLastLine = true);
   // Lingua (LinguaLayout::SideBySide): two-column table layout. makePagesTableMode routes an
   // outermost block to either buffering (an original, held in bufferedOriginalBlock) or pairing
   // (a translation, laid beside the buffered original). renderSideBySide lays a buffered original
@@ -303,7 +331,7 @@ class ChapterHtmlSlimParser {
   // one of these; it carries two when a source line holds the tail of one sentence and the head of
   // the next, which is still ONE strip and one y advance.
   struct InterlinearRun {
-    std::shared_ptr<TextBlock> row;  // null is legal: the strip is reserved and nothing is drawn
+    std::unique_ptr<TextBlock> row;  // null is legal: the strip is reserved and nothing is drawn
     int16_t x = 0;                   // EXTRA offset added to the block's left inset at placement
     // Right edge of this run's INK, in the same measure-relative space as x. What the next run on
     // the same strip must clear, so two sentence runs sharing a line can never overprint.
@@ -318,7 +346,7 @@ class ChapterHtmlSlimParser {
   struct InterlinearBands {
     // The paragraph's source lines. Rows firstLine..firstLine+slots-1 must still be live — the
     // caller releases a line only once it has been emitted, which is strictly after this is read.
-    const std::vector<std::shared_ptr<TextBlock>>* srcLines = nullptr;
+    const std::vector<std::unique_ptr<TextBlock>>* srcLines = nullptr;
     size_t firstLine = 0;  // index of the sentence's first source line in *srcLines
     size_t slots = 0;      // source lines the sentence occupies, i.e. rows available to it
     int16_t headX = 0;     // x its source sentence starts at: where row 0 wants to start
@@ -346,7 +374,7 @@ class ChapterHtmlSlimParser {
                            std::vector<InterlinearRun>& runs, ParsedText& stream);
   // Place one already-laid-out row at an absolute y. No page-break test and no y advance -- both
   // belong to the pair, not to a row (see emitInterlinearPair).
-  void placeInterlinearRow(const std::shared_ptr<TextBlock>& row, int16_t xPos, int16_t yPos, LineFontRole role);
+  void placeInterlinearRow(std::unique_ptr<TextBlock> row, int16_t xPos, int16_t yPos, LineFontRole role);
   // Emit ONE annotation strip plus ONE source line as an atomic, fixed-height group: the strip is
   // reserved whether or not anything is drawn on it, so the page keeps a dead-even
   // annotation/source/annotation/source pitch and no source line ever follows another directly.
@@ -355,8 +383,8 @@ class ChapterHtmlSlimParser {
   // only, and it releases no footnote (it carries no source words). That is how a translation too
   // long for every strip above its paragraph is still drawn instead of being cut -- see the tail
   // drain at the end of renderInterlinear. srcRowHeight is ignored in that case.
-  void emitInterlinearPair(const std::vector<InterlinearRun>& runs, const std::shared_ptr<TextBlock>& srcLine,
-                           int stripHeight, int srcRowHeight, int16_t leftInset, uint32_t sourceOffset);
+  void emitInterlinearPair(std::vector<InterlinearRun>& runs, std::unique_ptr<TextBlock> srcLine, int stripHeight,
+                           int srcRowHeight, int16_t leftInset, uint32_t sourceOffset);
   static EpdFontFamily::Style fontStyleForTextDecoration(CssTextDecoration decoration);
   static void applyDirectionToEntry(StyleStackEntry& entry, const CssStyle& css);
   static void applyTextDecorationToEntry(StyleStackEntry& entry, const CssStyle& css);
@@ -410,6 +438,11 @@ class ChapterHtmlSlimParser {
         tocAnchors(std::move(tocAnchors)) {}
 
   ~ChapterHtmlSlimParser();
+  void setTextSpacing(const int8_t character, const uint8_t wordPercent) {
+    characterSpacing = character;
+    wordSpacingPercent = wordPercent;
+  }
+  void setParagraphIndentSpaces(const uint8_t spaces) { paragraphIndentSpaces = spaces; }
 
   // One-shot parse: builds every page before returning (begin + step* + finish).
   bool parseAndBuildPages();
@@ -425,10 +458,9 @@ class ChapterHtmlSlimParser {
   bool finishParse();  // flush the trailing page and tear down; returns true
   void abortParse();   // tear down without flushing (error / abandon)
 
-  // `role` is the role the caller MEASURED this line with (see makePages): it decides both the
-  // vertical advance here and the byte stamped on the emitted PageLine, so measurement, pitch and
-  // drawing can never be resolved from three different fonts.
-  void addLineToPage(std::shared_ptr<TextBlock> line, LineFontRole role, uint32_t visibleOffset);
+  // Lingua: `role` is the role the caller MEASURED this line with (see makePages); it decides both
+  // the vertical advance and the byte stamped on the emitted PageLine.
+  void addLineToPage(std::unique_ptr<TextBlock> line, uint32_t visibleOffset, LineFontRole role = LineFontRole::Body);
   const std::vector<std::pair<std::string, uint16_t>>& getAnchors() const { return anchorData; }
 
   // Byte progress of the in-flight parse, used to estimate a still-building section's total page

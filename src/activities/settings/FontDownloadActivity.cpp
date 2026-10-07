@@ -577,14 +577,13 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
         [this](size_t downloaded, size_t total) {
           fileProgress_ = downloaded;
           fileTotal_ = total;
-          mappedInput.update();
+          mappedInput.update(true);
           if (mappedInput.isPressed(MappedInputManager::Button::Back) ||
               mappedInput.wasPressed(MappedInputManager::Button::Back)) {
             cancelRequested_ = true;
           }
-          // This update() consumes the one-shot home event before the central
-          // ActivityManager dispatch can see it, so honor it here: abort the
-          // download, then exit to home once the abort unwinds.
+          // Home cancels immediately; other configured actions are deferred to
+          // the next main-loop pass by the transfer input pump.
           if (mappedInput.wasHomeGesture()) {
             cancelRequested_ = true;
             goHomeRequested_ = true;
@@ -595,7 +594,7 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
         // HTTP: the CRC check below (manifest fetched over TLS) covers
         // integrity, and skipping the second TLS session keeps the C3 heap out
         // of MEMORY_E territory.
-        &cancelRequested_, "", "", /*downgradeRedirectsToHttp=*/true);
+        &cancelRequested_, "", "", /*headers=*/{}, /*downgradeRedirectsToHttp=*/true);
 
     if (result == HttpDownloader::ABORTED) {
       fontInstaller_.deleteFamily(str(family.name));
@@ -777,7 +776,7 @@ void FontDownloadActivity::buildScreen(UiScreen& screen) {
   props.action = ACTION_ROW;
   props.inputMask = fui::InputTouch;  // physical buttons stay in loop()
   props.valueInset = 8;               // air between the status and the row edge
-  syncListViewport(screen, props, /*hasSubtitle=*/state_ == FAMILY_LIST);
+  syncListViewport(screen, props);
   screen.list(props);
 }
 
@@ -943,7 +942,6 @@ void FontDownloadActivity::render(RenderLock&&) {
                  headerSubtitle);
 
   const auto lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
-  const auto contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   const auto centerY = (pageHeight - lineHeight) / 2;
 
   if (state_ == LOADING_MANIFEST) {

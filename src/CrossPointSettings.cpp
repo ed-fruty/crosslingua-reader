@@ -17,6 +17,7 @@
 #include "modules/lingua/activities/LanguagePickerActivity.h"
 #include "modules/lingua/modes/LinguaModeRegistry.h"
 #include "modules/lingua/modes/interlinear/InterlinearPairing.h"
+#include "util/ParagraphIndentMigration.h"
 
 namespace {
 
@@ -88,7 +89,7 @@ uint8_t CrossPointSettings::sleepTimeoutEnumToMinutes(const uint8_t legacyValue)
 void CrossPointSettings::toJson(JsonDocument& doc) const {
   const CrossPointSettings& s = *this;
 
-  for (const auto& info : getSettingsList()) {
+  for (const auto& info : getSettingsList(nullptr, nullptr, /*forPersistence=*/true)) {
     if (!info.key) continue;
     // Dynamic entries (KOReader etc.) are stored in their own files — skip.
     if (!info.valuePtr && !info.stringOffset) continue;
@@ -168,7 +169,7 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
 
   auto clamp = [](uint8_t val, uint8_t maxVal, uint8_t def) -> uint8_t { return val < maxVal ? val : def; };
 
-  for (const auto& info : getSettingsList()) {
+  for (const auto& info : getSettingsList(nullptr, nullptr, /*forPersistence=*/true)) {
     if (!info.key) continue;
     // Dynamic entries (KOReader etc.) are stored in their own files — skip.
     if (!info.valuePtr && !info.stringOffset) continue;
@@ -216,7 +217,7 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
       const uint8_t fieldDefault = s.*(info.valuePtr);  // struct-initializer default, read before we overwrite it
       uint8_t v = doc[info.key] | fieldDefault;
       if (info.type == SettingType::ENUM) {
-        v = clamp(v, (uint8_t)info.enumValues.size(), fieldDefault);
+        v = clamp(v, (uint8_t)info.enumLabels().size(), fieldDefault);
       } else if (info.type == SettingType::TOGGLE) {
         v = clamp(v, (uint8_t)2, fieldDefault);
       } else if (info.type == SettingType::VALUE) {
@@ -226,6 +227,27 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
           v = info.valueRange.max;
       }
       s.*(info.valuePtr) = v;
+    }
+  }
+
+  const auto indentSpaces = doc["paragraphIndentSpaces"];
+  const bool hasSavedWidth = indentSpaces.is<int>();
+  const int savedWidth = hasSavedWidth ? indentSpaces.as<int>() : 0;
+  paragraphIndentSpaces = migrateParagraphIndentSpaces(hasSavedWidth, savedWidth, extraParagraphSpacing != 0);
+  if (!hasSavedWidth || savedWidth < 0 || savedWidth > 5) needsResave = true;
+
+  // Older files stored one combined touch mode under "touchReaderControls":
+  // 0=off, 1=tap, 2=swipe, 3=inverted tap. Split it into the master toggle
+  // plus the per-direction gesture pair (the generic loop above already folded
+  // out-of-range toggle values back to the On default).
+  if (doc["pageTurnGesture"].isNull() && doc["previousPageGesture"].isNull() &&
+      doc["touchReaderControls"].is<uint8_t>()) {
+    const uint8_t mode = doc["touchReaderControls"].as<uint8_t>();
+    if (mode >= 1 && mode <= 3) {
+      touchReaderControls = TOUCH_READER_ON;
+      pageTurnGesture = mode == 1 ? TAP_ONLY : mode == 2 ? SWIPE_ONLY : INVERTED_TAP;
+      previousPageGesture = pageTurnGesture;
+      needsResave = true;
     }
   }
 
@@ -260,6 +282,17 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   // honoured, so an existing user's choice survives the upgrade untouched.
   const uint8_t storedFontFamily = doc["fontFamily"] | fontFamily;
   fontFamily = clamp(storedFontFamily, BUILTIN_FONT_COUNT, EDSLAB);
+  if (BoardConfig::hasHomeKey() && doc["homeButtonLongPressAction"].isNull() &&
+      !doc["longPressMenuFunction"].isNull()) {
+    static constexpr HomeButtonAction LEGACY[] = {HomeButtonAction::Sync, HomeButtonAction::Ignore,
+                                                  HomeButtonAction::Bookmark, HomeButtonAction::Dictionary,
+                                                  HomeButtonAction::ReaderMenu};
+    if (s.longPressMenuFunction < sizeof(LEGACY) / sizeof(LEGACY[0])) {
+      s.homeButtonLongPressAction = static_cast<uint8_t>(LEGACY[s.longPressMenuFunction]);
+      needsResave = true;
+    }
+  }
+
   // SD card font family name — not in SettingsList, load manually
   const char* sfn = doc["sdFontFamilyName"] | "";
   strncpy(sdFontFamilyName, sfn, sizeof(sdFontFamilyName) - 1);
@@ -381,7 +414,6 @@ CrossPointSettings::StatusBarSpec CrossPointSettings::statusBarSpec() const {
   spec.showBatteryPercent = hideBatteryPercentage == HIDE_NEVER;
   spec.clockMode = statusBarClock;
   spec.clock12h = clockFormat == 1;
-  spec.clockUtcOffsetQ = clockUtcOffsetQ;
   spec.progressBarMode = statusBarProgressBar;
   spec.progressBarHeightPx =
       statusBarProgressBar != HIDE_PROGRESS ? static_cast<uint8_t>((statusBarProgressBarThickness + 1) * 2) : 0;
@@ -491,7 +523,10 @@ ReaderRenderSpec CrossPointSettings::readerRenderSpec(const uint16_t viewportWid
   ReaderRenderSpec spec;
   spec.fontId = getReaderFontId();
   spec.lineCompression = getReaderLineCompression();
+  spec.characterSpacing = getCharacterSpacing();
+  spec.wordSpacingPercent = wordSpacing;
   spec.extraParagraphSpacing = extraParagraphSpacing != 0;
+  spec.paragraphIndentSpaces = paragraphIndentSpaces;
   spec.paragraphAlignment = paragraphAlignment;
   spec.viewportWidth = viewportWidth;
   spec.viewportHeight = viewportHeight;
@@ -518,7 +553,11 @@ ReaderRenderSpec CrossPointSettings::readerRenderSpec(const uint16_t viewportWid
 }
 
 float CrossPointSettings::getReaderLineCompression() const {
-  // SD card fonts use same compression as Bookerly (the most neutral values)
+  // SD card and vector fonts get a wider scale than the built-ins: their
+  // faces carry their own (often generous) natural line height, so the old
+  // Bookerly-tuned 1.1/1.2 steps were visually near-indistinguishable. At
+  // 12pt in portrait (~760px viewport) this scale spans ~26/24/19/15 lines
+  // per page — each step reads as a clearly different density.
   if (sdFontFamilyName[0] != '\0') {
     switch (lineSpacing) {
       case TIGHT:
@@ -527,9 +566,9 @@ float CrossPointSettings::getReaderLineCompression() const {
       default:
         return 1.0f;
       case WIDE:
-        return 1.1f;
+        return 1.3f;
       case EXTRA_WIDE:
-        return 1.2f;
+        return 1.6f;
     }
   }
 

@@ -1,5 +1,5 @@
 #pragma once
 
-#include "network/HttpDownloader.h"
+#include "modules/lingua/services/TranslatorHttp.h"
 
 using TranslationHttpSession = ReusableHttpSession;

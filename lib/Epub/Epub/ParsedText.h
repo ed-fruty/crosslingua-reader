@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "WordStore.h"
 #include "blocks/BlockStyle.h"
 #include "blocks/TextBlock.h"
 
@@ -37,7 +38,20 @@ class ParsedText {
   };
 
  private:
-  std::deque<std::string> words;
+  // Word text lives in wordStore (chunked bump arena, NUL-terminated entries);
+  // words holds 8-byte handles into it. This replaces the former
+  // std::deque<std::string>: per-word string objects, their SSO spills, and
+  // every hyphenation/NFC temporary were the layout path's dominant
+  // small-allocation churn, and any failed implicit allocation abort()s under
+  // -fno-exceptions. Handles stay in a std::deque for the #2814 reason: no
+  // large contiguous reallocation at CJK token counts (deque grows in fixed
+  // ~512 B nodes). On arena OOM the word is dropped and hadDroppedWords()
+  // latches so the section build can fail readably instead of aborting.
+  // rubyTexts stays a deque of strings: ruby is rare and per-block small.
+  // The per-token parallel arrays below stay vectors: 1 byte / 1 bit each,
+  // they never approach the contiguous-block ceiling.
+  WordStore wordStore;
+  std::deque<WordStore::StoredWord> words;
   std::vector<EpdFontFamily::Style> wordStyles;
   // Boundary flags use all four combinations:
   //   continues=false, noSpace=false: ordinary breakable word gap
@@ -68,11 +82,14 @@ class ParsedText {
   std::vector<VisibleOffsetRebase> visibleOffsetRebases;
   std::deque<std::string> rubyTexts;
   BlockStyle blockStyle;
-  bool extraParagraphSpacing;
+  uint8_t wordSpacingPercent = 100;
+  uint8_t paragraphIndentSpaces;
   bool hyphenationEnabled;
   bool focusReadingEnabled;
   bool isNaturalAlign;
   bool hasRtlWord;
+  bool droppedWords = false;
+  bool firstLineConsumed = false;
   std::vector<std::string> reorderedWordsScratch;
   std::vector<EpdFontFamily::Style> reorderedStylesScratch;
   std::vector<uint16_t> reorderedWidthsScratch;
@@ -80,16 +97,9 @@ class ParsedText {
   std::vector<bool> reorderedNoSpaceBeforeScratch;
   std::vector<uint8_t> reorderedFocusBoundaryScratch;
   std::vector<uint16_t> visualOrderScratch;
-  // Word indices (in the CURRENT layout call's PRE-layout index space) whose final resting place the
-  // caller wants reported back. Ascending, at most INTERLINEAR_MAX_ANNOTATIONS entries. Empty for
-  // every layout but LinguaLayout::Interlinear, and every path below short-circuits on empty, so an
-  // untouched block breaks and costs byte-for-byte what it did before this member existed.
-  std::vector<uint16_t> trackedWords;
-  // Destination for those reports, borrowed for the duration of one layoutAndExtractLines call and
-  // null at every other moment. A member rather than a parameter chain because only extractLine
-  // knows the x, and it is four frames down.
-  std::vector<TrackedWordPos>* trackedOut = nullptr;
 
+  std::string_view wordAt(const size_t i) const { return wordStore.view(words[i]); }
+  bool storeWord(std::string_view text, WordStore::StoredWord& out);
   uint32_t visibleOffsetBaseAt(size_t wordIndex) const;
   uint32_t visibleOffsetAt(size_t wordIndex) const;
   void pushVisibleOffset(uint32_t offset);
@@ -99,13 +109,6 @@ class ParsedText {
   int calculateRubyExtraEndOffset(size_t lineStartIdx, size_t lineBreakIdx, const GfxRenderer& renderer,
                                   int fontId) const;
   int resolveFirstLineIndent(bool isFirstLine, const GfxRenderer& renderer, int fontId) const;
-  // Everything that must be settled before the first word is measured: the paragraph's base
-  // direction, whether its alignment is the natural one for that direction, and (for an SD-card
-  // face) the glyph advances this block needs. Idempotent, so the per-line entry point can repeat
-  // it on every call without changing what a whole-block layout would have decided.
-  void prepareForLayout(const GfxRenderer& renderer, int fontId);
-  // Drop the first `consumed` tokens from every parallel vector once their line is out.
-  void consumeWords(size_t consumed);
   std::vector<size_t> computeLineBreaks(const GfxRenderer& renderer, int fontId, int pageWidth,
                                         std::vector<uint16_t>& wordWidths, std::vector<bool>& continuesVec,
                                         std::vector<bool>& noSpaceBeforeVec);
@@ -121,37 +124,23 @@ class ParsedText {
   bool extractLine(size_t breakIndex, size_t emittedOrdinal, int pageWidth, const std::vector<uint16_t>& wordWidths,
                    const std::vector<bool>& continuesVec, const std::vector<bool>& noSpaceBeforeVec,
                    const std::vector<size_t>& lineBreakIndices,
-                   const std::function<void(std::shared_ptr<TextBlock>, uint32_t)>& processLine,
+                   const std::function<void(std::unique_ptr<TextBlock>, uint32_t)>& processLine,
                    const GfxRenderer& renderer, int fontId);
   std::vector<uint16_t> calculateWordWidths(const GfxRenderer& renderer, int fontId);
 
  public:
-  explicit ParsedText(const bool extraParagraphSpacing, const bool hyphenationEnabled = false,
-                      const bool focusReadingEnabled = false, const BlockStyle& blockStyle = BlockStyle())
+  explicit ParsedText(const bool hyphenationEnabled = false, const bool focusReadingEnabled = false,
+                      const BlockStyle& blockStyle = BlockStyle(), const uint8_t paragraphIndentSpaces = 2)
       : blockStyle(blockStyle),
-        extraParagraphSpacing(extraParagraphSpacing),
+        paragraphIndentSpaces(paragraphIndentSpaces),
         hyphenationEnabled(hyphenationEnabled),
         focusReadingEnabled(focusReadingEnabled),
         isNaturalAlign(false),
         hasRtlWord(false) {}
   ~ParsedText() = default;
 
-  // The reader's STYLE-FREE first-line paragraph indent, in `fontId`'s own metrics: three space
-  // widths when Extra Paragraph Spacing is OFF (the setting trades a gap for an indent), none when
-  // it is ON. This is exactly the branch resolveFirstLineIndent() takes for a block that declares no
-  // CSS text-indent, lifted out so text that carries NO CSS at all can indent by the same rule
-  // instead of re-deriving it — the Page Translation overlay draws translated paragraphs that have
-  // no stylesheet of their own, in a font that may differ from the body's.
-  static int defaultFirstLineIndent(const GfxRenderer& renderer, int fontId, bool extraParagraphSpacing);
-
   void addWord(std::string word, EpdFontFamily::Style fontStyle, bool underline = false, bool attachToPrevious = false,
                uint32_t visibleTextOffset = 0, uint8_t linkId = 0);
-  // Grow all five parallel token vectors (and rubyTexts, when it is in use) to hold `additionalTokens`
-  // more entries in ONE step, instead of letting each double independently from zero. addWord uses it
-  // on its multi-token paths; call it directly before any external push loop whose length is known
-  // (LinguaLayout::Interlinear re-emitting one sentence span into an annotation row). A caller that
-  // under-estimates is still correct — the vectors simply fall back to doubling.
-  void reserveAdditionalWords(size_t additionalTokens);
   uint8_t addLinkTarget(const char* href);
   bool linkTargetMatches(uint8_t linkId, const char* href) const;
   void setRubyForWordAt(size_t index, const std::string& ruby);
@@ -159,16 +148,50 @@ class ParsedText {
   EpdFontFamily::Style getWordStyleAt(size_t index) const {
     return index < wordStyles.size() ? wordStyles[index] : EpdFontFamily::REGULAR;
   }
+  std::string getRubyTextAt(size_t index) const { return index < rubyTexts.size() ? rubyTexts[index] : std::string(); }
+  void ensureRubyCapacity();
+  void setBlockStyle(const BlockStyle& blockStyle) { this->blockStyle = blockStyle; }
+  BlockStyle& getBlockStyle() { return blockStyle; }
+  size_t size() const { return words.size(); }
+  bool isEmpty() const { return words.empty(); }
+  // True once any word was dropped because the text arena could not allocate.
+  // Callers must treat the block as incomplete and fail the section build.
+  bool hadDroppedWords() const { return droppedWords; }
+  // Lingua: trackedOutParam reports tracked word positions (see setTrackedWords below).
+  void layoutAndExtractLines(const GfxRenderer& renderer, int fontId, uint16_t viewportWidth,
+                             const std::function<void(std::unique_ptr<TextBlock>, uint32_t)>& processLine,
+                             bool includeLastLine = true, int8_t characterSpacing = 0, uint8_t wordSpacingPercent = 100,
+                             std::vector<TrackedWordPos>* trackedOutParam = nullptr);
+
+  // ── Lingua (CrossLingua fork) ───────────────────────────────────────────────────────────────────
+  // Fork-only API, kept in one block so upstream changes to this class merge cleanly. Definitions
+  // live in src/modules/lingua/layout/ParsedTextLingua.cpp unless they are inline here.
+
+  // The reader's STYLE-FREE first-line paragraph indent, in `fontId`'s own metrics:
+  // `paragraphIndentSpaces` space widths, scaled by the word-spacing setting; 0 means no indent.
+  // This is exactly the branch resolveFirstLineIndent() takes for a block without a negative CSS
+  // text-indent, lifted out so text that carries NO CSS at all can indent by the same rule instead
+  // of re-deriving it — the Page Translation overlay draws translated paragraphs that have no
+  // stylesheet of their own, in a font that may differ from the body's.
+  static int defaultFirstLineIndent(const GfxRenderer& renderer, int fontId, uint8_t paragraphIndentSpaces,
+                                    uint8_t wordSpacingPercent = 100);
+  // Grow the parallel per-token vectors to hold `additionalTokens` more entries in ONE step, instead
+  // of letting each double independently from zero. Call it before any external push loop whose
+  // length is known (LinguaLayout::Interlinear re-emitting one sentence span into an annotation row).
+  // A caller that under-estimates is still correct — the vectors simply fall back to doubling.
+  void reserveAdditionalWords(size_t additionalTokens);
   // Read-only access to a word still in LOGICAL order, i.e. before layoutAndExtractLines consumes
   // the block (which also hyphenates and BiDi-reorders). LinguaLayout::Interlinear reads the buffered
   // TRANSLATION block this way: it is never laid out as a paragraph of its own, only re-emitted word
   // by word into the small annotation rows, so its words must be readable without laying it out.
-  // Out-of-range yields the empty string rather than undefined behaviour.
-  const std::string& wordAt(const size_t index) const {
-    static const std::string kEmpty;
-    return index < words.size() ? words[index] : kEmpty;
+  // Out-of-range yields an empty view rather than undefined behaviour. The view points into the
+  // block's word arena and stays valid until the word is consumed by layout.
+  std::string_view wordViewAt(const size_t index) const {
+    return index < words.size() ? wordStore.view(words[index]) : std::string_view{};
   }
-  // Companion to wordAt, and mandatory for any caller that RE-EMITS a span of this block into
+  // NUL-terminated form of wordViewAt, for C APIs such as getTextAdvanceX ("" when out of range).
+  const char* wordCStrAt(const size_t index) const { return index < words.size() ? wordStore.cstr(words[index]) : ""; }
+  // Companion to wordViewAt, and mandatory for any caller that RE-EMITS a span of this block into
   // another ParsedText: the token stream is not one token per visual word. Focus reading splits every
   // word into a bold prefix plus a regular suffix, an NBSP / U+202F run splits mid-word, so does the
   // MAX_WORD_SIZE part-buffer overflow and an inline tag closing mid-word. Each of those boundaries
@@ -198,12 +221,6 @@ class ParsedText {
   // so an LTR paragraph carrying an inline Hebrew/Arabic run leaves isRtl false and still gets that
   // line BiDi-permuted into visual order.
   bool containsRtlWord() const { return hasRtlWord; }
-  std::string getRubyTextAt(size_t index) const { return index < rubyTexts.size() ? rubyTexts[index] : std::string(); }
-  void ensureRubyCapacity();
-  void setBlockStyle(const BlockStyle& blockStyle) { this->blockStyle = blockStyle; }
-  BlockStyle& getBlockStyle() { return blockStyle; }
-  size_t size() const { return words.size(); }
-  bool isEmpty() const { return words.empty(); }
   // Ask layout to REPORT where each listed word ends up. It constrains nothing — the block breaks
   // exactly as it would with an empty list, which is the whole point: LinguaLayout::Interlinear needs
   // its source to flow like any other paragraph and still needs to know which line each sentence
@@ -217,22 +234,21 @@ class ParsedText {
   // Scoped to ONE layout call: a caller that lays a block out in parts (includeLastLine = false)
   // must set the list again for the next part, since the consumed words are erased and the surviving
   // indices shift down. No caller does that today.
+  //
+  // layoutAndExtractLines' `trackedOutParam`, when non-null, is filled with ONE entry per index
+  // passed here, in the same order. An index whose line was dropped (TextBlock arena OOM), or that
+  // was never reached because this was a partial layout, keeps TrackedWordPos::NOT_PLACED. The
+  // strict 1:1 correspondence is what lets renderInterlinear map annotation k to a line and an x,
+  // so nothing is ever deduplicated or dropped from it.
   void setTrackedWords(std::vector<uint16_t> wordIndices) { trackedWords = std::move(wordIndices); }
-  // `trackedOutParam`, when non-null, is filled with ONE entry per index passed to setTrackedWords,
-  // in the same order. An index whose line was dropped (TextBlock arena OOM), or that was never
-  // reached because this was a partial layout, keeps TrackedWordPos::NOT_PLACED. The strict 1:1
-  // correspondence is what lets renderInterlinear map annotation k to a line and an x, so nothing is
-  // ever deduplicated or dropped from it.
   void layoutAndExtractLines(const GfxRenderer& renderer, int fontId, uint16_t viewportWidth,
-                             const std::function<void(std::shared_ptr<TextBlock>, uint32_t)>& processLine,
-                             bool includeLastLine = true, std::vector<TrackedWordPos>* trackedOutParam = nullptr);
-  void layoutAndExtractLines(const GfxRenderer& renderer, int fontId, uint16_t viewportWidth,
-                             const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
-                             bool includeLastLine = true, std::vector<TrackedWordPos>* trackedOutParam = nullptr) {
+                             const std::function<void(std::unique_ptr<TextBlock>)>& processLine,
+                             bool includeLastLine = true, int8_t characterSpacing = 0, uint8_t wordSpacingPercent = 100,
+                             std::vector<TrackedWordPos>* trackedOutParam = nullptr) {
     layoutAndExtractLines(
         renderer, fontId, viewportWidth,
-        [&processLine](std::shared_ptr<TextBlock> line, uint32_t) { processLine(std::move(line)); }, includeLastLine,
-        trackedOutParam);
+        [&processLine](std::unique_ptr<TextBlock> line, uint32_t) { processLine(std::move(line)); }, includeLastLine,
+        characterSpacing, wordSpacingPercent, trackedOutParam);
   }
   // Lay out exactly ONE line at `width` and consume only that line's words, leaving the rest of the
   // block for a later call — at a DIFFERENT width if the caller wants one.
@@ -243,14 +259,33 @@ class ParsedText {
   // starts at, the last by the x the NEXT source sentence starts at). So the rows of one sentence
   // are wrapped at several different widths, one call each.
   //
-  // The line is always treated as a FIRST line — resolveFirstLineIndent sees breakIndex 0 on every
-  // call — so a caller that wants an indent on the opening row only must clear blockStyle.textIndent
-  // itself before the second call. Interlinear sets it to zero throughout and positions each row by
-  // placing its whole box, which is also what puts an RTL row's right edge on its band's right edge.
+  // Only the block's first line can take a first-line indent: once any line has been consumed, later
+  // calls lay out continuation lines. Interlinear builds its annotation stream with
+  // paragraphIndentSpaces = 0, so no row is indented and each row is positioned by placing its whole
+  // box, which is also what puts an RTL row's right edge on its band's right edge.
   //
   // Returns true when a line reached `processLine`, false when the block is empty or the line was
   // dropped (TextBlock arena OOM). The words are consumed either way, so a loop on size() always
   // terminates. Tracked words are NOT reported: the report is 1:1 with one whole-block layout.
   bool extractNextLine(const GfxRenderer& renderer, int fontId, uint16_t width,
-                       const std::function<void(std::shared_ptr<TextBlock>)>& processLine);
+                       const std::function<void(std::unique_ptr<TextBlock>)>& processLine, int8_t characterSpacing = 0,
+                       uint8_t wordSpacingPercent = 100);
+
+ private:
+  // Word indices (in the CURRENT layout call's PRE-layout index space) whose final resting place the
+  // caller wants reported back. Ascending, at most INTERLINEAR_MAX_ANNOTATIONS entries. Empty for
+  // every layout but LinguaLayout::Interlinear, and every path below short-circuits on empty, so an
+  // untouched block breaks and costs byte-for-byte what it did before this member existed.
+  std::vector<uint16_t> trackedWords;
+  // Destination for those reports, borrowed for the duration of one layoutAndExtractLines call and
+  // null at every other moment. A member rather than a parameter chain because only extractLine
+  // knows the x, and it is four frames down.
+  std::vector<TrackedWordPos>* trackedOut = nullptr;
+  // Everything that must be settled before the first word is measured: the paragraph's base
+  // direction, whether its alignment is the natural one for that direction, and (for an SD-card
+  // face) the glyph advances this block needs. Idempotent, so the per-line entry point can repeat
+  // it on every call without changing what a whole-block layout would have decided.
+  void prepareForLayout(const GfxRenderer& renderer, int fontId);
+  // Drop the first `consumed` tokens from every parallel vector once their line is out.
+  void consumeWords(size_t consumed);
 };

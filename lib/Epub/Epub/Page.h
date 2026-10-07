@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -35,32 +36,36 @@ class PageElement {
 
 // a line from a block element
 class PageLine final : public PageElement {
-  std::shared_ptr<TextBlock> block;
+  std::unique_ptr<TextBlock> block;
 
  public:
-  // Lingua: index of the original paragraph this line belongs to (for the Page Translation
-  // display mode's line->paragraph mapping). -1 = unset.
-  int16_t paragraphIdx = -1;
-  // Which font this line draws in, resolved against the page's PageFontSet at render time. Set at
-  // layout time (the measurement used the same role), so a cached page always redraws in the font
-  // it was measured with. Every line the layout engine emits today is Body.
-  LineFontRole fontRole = LineFontRole::Body;
-
-  PageLine(std::shared_ptr<TextBlock> block, const int16_t xPos, const int16_t yPos)
+  PageLine(std::unique_ptr<TextBlock> block, const int16_t xPos, const int16_t yPos)
       : PageElement(xPos, yPos), block(std::move(block)) {}
-  const std::shared_ptr<TextBlock>& getBlock() const { return block; }
+  const TextBlock* getBlock() const { return block.get(); }
   void render(GfxRenderer& renderer, const PageFontSet& fonts, int xOffset, int yOffset) override;
   bool serialize(HalFile& file) override;
   PageElementTag getTag() const override { return TAG_PageLine; }
   static std::unique_ptr<PageLine> deserialize(HalFile& file);
+
+  // ── Lingua ──
+  // Index of the original paragraph this line belongs to (for the Page Translation display mode's
+  // line->paragraph mapping). -1 = unset.
+  int16_t paragraphIdx = -1;
+  // Which font this line draws in, resolved against the page's PageFontSet at render time. Set at
+  // layout time (the measurement used the same role), so a cached page always redraws in the font
+  // it was measured with.
+  LineFontRole fontRole = LineFontRole::Body;
+  // The two fields above, written after the TextBlock.
+  bool serializeLinguaFields(HalFile& file) const;
+  void deserializeLinguaFields(HalFile& file);
 };
 
 // New PageImage class
 class PageImage final : public PageElement {
-  std::shared_ptr<ImageBlock> imageBlock;
+  std::unique_ptr<ImageBlock> imageBlock;
 
  public:
-  PageImage(std::shared_ptr<ImageBlock> block, const int16_t xPos, const int16_t yPos)
+  PageImage(std::unique_ptr<ImageBlock> block, const int16_t xPos, const int16_t yPos)
       : PageElement(xPos, yPos), imageBlock(std::move(block)) {}
   void render(GfxRenderer& renderer, const PageFontSet& fonts, int xOffset, int yOffset) override;
   void renderPlaceholder(GfxRenderer& renderer, int xOffset, int yOffset) const;
@@ -87,7 +92,7 @@ class PageHorizontalRule final : public PageElement {
 class Page {
  public:
   // the list of block index and line numbers on this page
-  std::vector<std::shared_ptr<PageElement>> elements;
+  std::vector<std::unique_ptr<PageElement>> elements;
   std::vector<FootnoteEntry> footnotes;
   static constexpr uint16_t MAX_FOOTNOTES_PER_PAGE = 16;
   // Lingua: range of original paragraph indices contributing to this page (for
@@ -140,11 +145,11 @@ class Page {
   // Check if page contains any images (used to force full refresh)
   bool hasImages() const {
     return std::any_of(elements.begin(), elements.end(),
-                       [](const std::shared_ptr<PageElement>& el) { return el->getTag() == TAG_PageImage; });
+                       [](const std::unique_ptr<PageElement>& el) { return el->getTag() == TAG_PageImage; });
   }
 
   bool hasImagesNeedingDecode() const {
-    return std::any_of(elements.begin(), elements.end(), [](const std::shared_ptr<PageElement>& element) {
+    return std::any_of(elements.begin(), elements.end(), [](const std::unique_ptr<PageElement>& element) {
       return element->getTag() == TAG_PageImage &&
              static_cast<const PageImage&>(*element).getImageBlock().needsDecode();
     });

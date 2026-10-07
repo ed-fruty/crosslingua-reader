@@ -12,6 +12,7 @@
 
 #include "CrossPointSettings.h"
 #include "DictionaryDefinitionActivity.h"
+#include "HapticFeedback.h"
 #include "components/UITheme.h"
 #include "modules/lingua/reader/LinguaReaderIntegration.h"
 
@@ -82,7 +83,7 @@ void DictionaryWordSelectActivity::extractWords() {
     // look up the wrong language. Scoped to Annotation only — Translation rows are real chapter text
     // under the Both layout (Interleaved) and stay selectable.
     if (line->fontRole == LineFontRole::Annotation) continue;
-    const auto& block = line->getBlock();
+    const auto* block = line->getBlock();
     if (!block || !block->valid()) continue;
 
     bool rowHasWords = false;
@@ -275,6 +276,7 @@ void DictionaryWordSelectActivity::loop() {
   if (mappedInput.wasScreenTapped(tx, ty)) {
     const int hit = wordAt(tx, ty);
     if (hit >= 0) {
+      haptic_feedback::touchAction();
       selected = hit;
       performLookup();
     }

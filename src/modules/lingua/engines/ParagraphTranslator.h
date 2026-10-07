@@ -16,7 +16,7 @@ class ParagraphTranslator {
   // Returns true and populates `result` on success.
   // `session`: optional reusable connection. When non-null, the engine's HTTP
   // request(s) go through it (one kept-alive TLS session across many calls);
-  // when null (the default), each call uses the stateless HttpDownloader
+  // when null (the default), each call uses the stateless TranslatorHttp
   // statics — the original per-call behavior, kept for tests and other callers.
   static bool translate(const std::string& text, const char* sourceLang, const char* targetLang, uint8_t engine,
                         const char* apiKey, std::string& result, std::string* errorOut = nullptr,
@@ -76,7 +76,7 @@ class ParagraphTranslator {
   // in the middle of a chapter, while the chapter's TranslationHttpSession socket and
   // wolfSSL context are live. That refresh goes through the STATIC GET path (deliberately
   // — see primeAzureToken above), which stands up its own SecureHttpClient behind
-  // insufficientHeapForTls(): 45 KB free plus a 20 KB contiguous block, a bar the heap
+  // insufficientHeapForTls(): MIN_FREE_HEAP_FOR_TLS free plus a 20 KB contiguous block, a bar the heap
   // usually cannot clear with a session already open. So the refresh is moved to the
   // between-batch moment, where the batch's HTTP transients are freed and (for the
   // activity callers) the framebuffer is still released.

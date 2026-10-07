@@ -18,6 +18,9 @@ struct ReaderRenderSpec {
   int fontId = 0;
   float lineCompression = 1.0f;
   bool extraParagraphSpacing = false;
+  uint8_t paragraphIndentSpaces = 2;
+  int8_t characterSpacing = 0;
+  uint8_t wordSpacingPercent = 100;
   uint8_t paragraphAlignment = 0;
   uint16_t viewportWidth = 0;
   uint16_t viewportHeight = 0;
@@ -70,7 +73,9 @@ struct ReaderRenderSpec {
   // pages measured with the wrong font.
   bool layoutEquals(const ReaderRenderSpec& other) const {
     return fontId == other.fontId && lineCompression == other.lineCompression &&
-           extraParagraphSpacing == other.extraParagraphSpacing && paragraphAlignment == other.paragraphAlignment &&
+           extraParagraphSpacing == other.extraParagraphSpacing &&
+           paragraphIndentSpaces == other.paragraphIndentSpaces && characterSpacing == other.characterSpacing &&
+           wordSpacingPercent == other.wordSpacingPercent && paragraphAlignment == other.paragraphAlignment &&
            viewportWidth == other.viewportWidth && viewportHeight == other.viewportHeight &&
            hyphenationEnabled == other.hyphenationEnabled && embeddedStyle == other.embeddedStyle &&
            imageRendering == other.imageRendering && focusReadingEnabled == other.focusReadingEnabled &&

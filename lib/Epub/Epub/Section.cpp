@@ -1,13 +1,18 @@
 #include "Section.h"
 
+#include <FontCacheManager.h>
+#include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <Logging.h>
 #include <Memory.h>
 #include <Serialization.h>
 
+#include <algorithm>
+
 #include "Epub/css/CssParser.h"
 #include "Page.h"
 #include "hyphenation/Hyphenator.h"
+#include "modules/lingua/services/LinguaCacheKey.h"
 #include "modules/lingua/services/TranslatedContentDetector.h"
 #include "parsers/ChapterHtmlSlimParser.h"
 
@@ -15,12 +20,12 @@ namespace {
 // SECTION FILE FORMAT VERSION
 //
 // READ THIS BEFORE COMPARING THE NUMBER TO ANYTHING OUTSIDE THIS FORK.
-// This fork's format at version 34 is NOT upstream develop's format at any version. Our header
+// This fork's format is NOT upstream develop's format at any version, whatever number both stamp. Our header
 // carries four fields upstream's does not have at all -- translationFontId, annotationFontId, the
 // LinguaLayout byte, and the translatedSource / embeddedTranslation pair -- so an upstream-written .bin
 // and one of ours are mutually unreadable whatever number either stamps. The version byte is
 // therefore only meaningful WITHIN this fork: it is a cache key for our own files, never a
-// compatibility claim against upstream. Nothing may treat "34" as a portable format identifier, and
+// compatibility claim against upstream. Nothing may treat the number as a portable format identifier, and
 // no cross-fork cache sharing is possible or intended. (The .crosspoint cache is device-local and
 // rebuilt on demand, so this costs a re-layout, not correctness -- but only as long as nobody tries
 // to make the number mean more than it does.)
@@ -38,15 +43,17 @@ namespace {
 // rewrite would appear to have done nothing.
 //
 // ---------------------------------------------------------------------------------------------
-// THE FORMAT AT 34
+// THE FORMAT
 //
 // The header, in write order (see writeSectionFileHeader; loadSectionFile reads it back in exactly
 // this order, and HEADER_SIZE below is the sum):
-//   version:uint8, fontId:int, translationFontId:int, annotationFontId:int, lineCompression:float,
-//   extraParagraphSpacing:bool, paragraphAlignment:uint8, viewportWidth:uint16,
-//   viewportHeight:uint16, hyphenationEnabled:bool, embeddedStyle:bool, linguaLayout:uint8,
-//   translatedSource:bool, embeddedTranslation:bool, imageRendering:uint8,
-//   focusReadingEnabled:bool, pageCount:uint16, then four uint32 LUT offsets.
+//   the upstream fields (version:uint8, fontId:int, lineCompression:float, extraParagraphSpacing:bool,
+//   paragraphIndentSpaces:uint8, paragraphAlignment:uint8, viewportWidth:uint16, viewportHeight:uint16,
+//   hyphenationEnabled:bool, embeddedStyle:bool, imageRendering:uint8, focusReadingEnabled:bool,
+//   characterSpacing:int8, wordSpacingPercent:uint8), then the Lingua fields (translationFontId:int,
+//   annotationFontId:int, linguaLayout:uint8, translatedSource:bool, embeddedTranslation:bool), then
+//   pageCount:uint16 and five uint32 LUT offsets. The Lingua fields sit in one block so the upstream
+//   header code stays verbatim and an upstream header change merges as an insertion.
 // Every field except embeddedTranslation is part of the cache key.
 //
 // The substantive properties this format has accumulated, and why each one is load-bearing:
@@ -177,11 +184,23 @@ namespace {
 // v43: Paragraph base direction excludes direction changes from inline elements.
 // v44: Persist internal-link rectangles with each page for touch navigation.
 // v45: Internal EPUB links preserve CSS superscript/subscript positioning.
-// v46: Lingua Interlinear carries an annotation tail into the following strips, and finishes a
-//      paragraph whose translation outruns them all with source-less tail strips, instead of cutting.
-// v47: Lingua paragraph indices: the paragraph after a table and an image's alt-text line each claim
-//      their own index instead of inheriting the previous paragraph's.
-constexpr uint8_t SECTION_FILE_VERSION = 47;
+// v46: Ordered lists number their items, list-style-type: none suppresses markers,
+//      and <ul>/<ol> containers contribute their own margins/padding to child insets.
+// v47: Word and character spacing in the header (cache validation); cached BlockStyle stores only character spacing.
+// v48: Hangul words wrap at spaces; with hyphenation on they may also split at a line end.
+//      Justification no longer stretches between syllables.
+// v49 was used by pre-release builds with a different header layout.
+// v50: Paragraph indentation width in the header for cache validation.
+// v51: Preserve paragraph continuity and top spacing across soft flushes.
+// v52: Missing full-block and black-square symbols now have visible widths.
+// (CrossLingua) v46 and v47 were also used by this fork, with its own header layout: v46 for the
+//      Interlinear annotation carry/tail strips, v47 for the Lingua paragraph-index fix after tables
+//      and image alt text. Both are superseded by v53.
+// v53: CrossLingua merge of upstream v52. The header is upstream's v52 header with the fork's
+//      translationFontId, annotationFontId, linguaLayout, translatedSource and embeddedTranslation
+//      inserted as one block before pageCount; PageLine carries paragraphIdx and fontRole; <ul>/<ol>
+//      are layout blocks. A later upstream merge takes max(ours, upstream) + 1.
+constexpr uint8_t SECTION_FILE_VERSION = 53;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
@@ -197,66 +216,28 @@ constexpr uint8_t SECTION_FILE_INCOMPLETE_VERSION = 0;
 // MUST change in lockstep with SECTION_FILE_VERSION: the sentinel IS the partial's
 // format version, so a stale-format partial otherwise passes the header check and
 // only fails (noisily, via the block-decode error path) when a page is loaded.
-// Derived so the pairing can't be forgotten: 0xFE for v28, 0xFD for v29, ... 0xF8 for v34.
-// The derivation walks DOWN as the version walks up, so rewinding the version walks it back up:
+// Derived so the pairing can't be forgotten: 0xFE for v28, 0xFD for v29, ...
+// (CrossLingua) The derivation walks DOWN as the version walks up, so rewinding the version walks it back up:
 // the 33 -> 41 iterations put it at 0xF1, collapsing back to 33 returned it to 0xF9, 34 took it to
 // 0xF8 and the former v35 to 0xF7. A partial left on a card by any of those builds carries a sentinel this
 // firmware does not recognise, so it is rejected as an unknown version and rebuilt -- the same
 // one-off invalidation a version bump costs finalized files.
 constexpr uint8_t SECTION_FILE_PARTIAL_VERSION = 0xFE - (SECTION_FILE_VERSION - 28);
 // The derivation only stays a distinct sentinel while the two ranges have not met; assert it rather
-// than trusting a future bump to notice. At 34 the sentinel is 0xF8 (248): comfortably above the
-// version, and nothing but a version past 0xF8-28 = 220 could ever close the gap.
+// than trusting a future bump to notice. At 53 the sentinel is 0xE5 (229) = 0xFE - (53 - 28):
+// comfortably above the version, and only a version past 140 could close the gap.
 static_assert(SECTION_FILE_PARTIAL_VERSION > SECTION_FILE_VERSION &&
                   SECTION_FILE_PARTIAL_VERSION != SECTION_FILE_INCOMPLETE_VERSION,
               "Partial sentinel collides with a real version");
-// The second sizeof(int) is the Lingua translationFontId and the third is the
-// annotationFontId; the extra sizeof(uint8_t) after the two bools is the Lingua LinguaLayout
-// byte, the sizeof(bool) right after it is the translated-source flag, and the sizeof(bool) after
-// THAT is the embedded-translation memo.
-constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) + sizeof(int) + sizeof(int) + sizeof(int) + sizeof(float) +
-                                 sizeof(bool) + sizeof(uint8_t) + sizeof(uint16_t) + sizeof(uint16_t) +
-                                 sizeof(uint16_t) + sizeof(bool) + sizeof(bool) + sizeof(uint8_t) + sizeof(bool) +
-                                 sizeof(bool) + sizeof(uint8_t) + sizeof(bool) + sizeof(uint32_t) + sizeof(uint32_t) +
-                                 sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t);
-
-// The translation font belongs in the cache key only where translated words are actually laid out IN
-// IT, which is the Both layout and only Both -- the one layout that flows the two languages inline,
-// so a second type size there re-breaks lines (see ChapterHtmlSlimParser::currentLineRole, which
-// tags a line for that font under exactly this layout and no other). Under OriginalOnly the
-// translated words are all dropped, and under TranslationOnly / SideBySide they are laid out in the
-// BODY font by design, so in all three no line was measured in the translation font and no value of
-// it can move a line break. Stamping the real id there would make a change to the Interleaved mode's
-// Translation Size invalidate every cached chapter of the book, including chapters of a mode that
-// lays out no differently-sized text at all. (The two modes that MAP to OriginalOnly, Tooltip and
-// Page Translation, own SEPARATE size settings which are composited at view time and by design never
-// reach a ReaderRenderSpec -- see CrossPointSettings::TRANSLATION_SIZE. This normalization covers the
-// id that does reach one.)
-//
-// Keyed off the EFFECTIVE (post-fallback) layout, not the requested one, and applied to the header
-// write, the lookup AND the id handed to the parser, so key and layout can never disagree: a chapter
-// with no committed translation is laid out as Both even in Tooltip mode (Section::effectiveLayout),
-// and keyedTranslationFontId keeps the real id for it exactly as it would for an actually-translated
-// chapter. That is NOT a don't-care: ChapterHtmlSlimParser::currentBlockIsTranslated is a lang=
-// mismatch against the book's primary language, not "this chapter has a committed Lingua" --
-// so the chapter's OWN original HTML can carry lang-tagged blocks (a foreign epigraph, a quoted
-// phrase) that currentLineRole() still tags LineFontRole::Translation under Both and lays out in this
-// font. Zeroing the id here for an untranslated chapter would let a later change to it (e.g. the
-// Interleaved mode's Smaller Translation Size) silently keep serving those blocks from a stale cache
-// at the wrong size instead of invalidating it.
-constexpr int keyedTranslationFontId(const int translationFontId, const LinguaLayout effectiveLayout) {
-  return effectiveLayout == LinguaLayout::Both ? translationFontId : 0;
-}
-
-// Same rule, same reasoning, for the annotation font: it only reaches a page under the ONE layout
-// that emits LineFontRole::Annotation rows (Interlinear), where it decides both the row's wrap and
-// its pitch. Under every other layout no line is measured in it, so stamping the real id there would
-// let a future annotation-size row invalidate every cached chapter of a mode that draws no
-// annotations at all. Applied in all three places the translation one is -- the header write, the
-// lookup compare and the id handed to the parser -- so the key and the layout can never disagree.
-constexpr int keyedAnnotationFontId(const int annotationFontId, const LinguaLayout effectiveLayout) {
-  return effectiveLayout == LinguaLayout::Interlinear ? annotationFontId : 0;
-}
+// Lingua: the fork's header fields, written between wordSpacingPercent and pageCount by
+// writeLinguaHeaderFields() (LinguaSectionSupport.cpp): translationFontId, annotationFontId,
+// linguaLayout, translatedSource, embeddedTranslation.
+constexpr uint32_t LINGUA_HEADER_SIZE = sizeof(int) + sizeof(int) + sizeof(uint8_t) + sizeof(bool) + sizeof(bool);
+constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) + sizeof(int) + sizeof(float) + sizeof(bool) + sizeof(uint8_t) +
+                                 sizeof(uint16_t) + sizeof(uint16_t) + sizeof(uint16_t) + sizeof(bool) + sizeof(bool) +
+                                 sizeof(uint8_t) + sizeof(bool) + sizeof(uint32_t) + sizeof(uint32_t) +
+                                 sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(int8_t) +
+                                 sizeof(uint8_t) + sizeof(uint8_t) + LINGUA_HEADER_SIZE;
 }  // namespace
 
 // Out-of-line so the unique_ptr<ChapterHtmlSlimParser> in BuildContext can be
@@ -300,47 +281,33 @@ void Section::writeSectionFileHeader(const ReaderRenderSpec& spec, const bool tr
     LOG_DBG("SCT", "File not open for writing header");
     return;
   }
-  static_assert(HEADER_SIZE == sizeof(SECTION_FILE_VERSION) + sizeof(spec.fontId) + sizeof(spec.translationFontId) +
-                                   sizeof(spec.annotationFontId) + sizeof(spec.lineCompression) +
-                                   sizeof(spec.extraParagraphSpacing) + sizeof(spec.paragraphAlignment) +
-                                   sizeof(spec.viewportWidth) + sizeof(spec.viewportHeight) + sizeof(pageCount) +
-                                   sizeof(spec.hyphenationEnabled) + sizeof(spec.embeddedStyle) +
-                                   sizeof(uint8_t) /* LinguaLayout */ + sizeof(translatedSource) +
-                                   sizeof(embeddedTranslation) + sizeof(spec.imageRendering) +
-                                   sizeof(spec.focusReadingEnabled) + sizeof(uint32_t) + sizeof(uint32_t) +
-                                   sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t),
+  static_assert(HEADER_SIZE ==
+                    sizeof(SECTION_FILE_VERSION) + sizeof(spec.fontId) + sizeof(spec.lineCompression) +
+                        sizeof(spec.extraParagraphSpacing) + sizeof(spec.paragraphIndentSpaces) +
+                        sizeof(spec.paragraphAlignment) + sizeof(spec.viewportWidth) + sizeof(spec.viewportHeight) +
+                        sizeof(pageCount) + sizeof(spec.hyphenationEnabled) + sizeof(spec.embeddedStyle) +
+                        sizeof(spec.imageRendering) + sizeof(spec.focusReadingEnabled) + sizeof(spec.characterSpacing) +
+                        sizeof(spec.wordSpacingPercent) + sizeof(uint32_t) + sizeof(uint32_t) +
+                        /* Lingua */ LINGUA_HEADER_SIZE + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t),
                 "Header size mismatch");
   // Written as the incomplete sentinel; finalizeBuild() patches it to
   // SECTION_FILE_VERSION as the last step, committing the file.
   serialization::writePod(file, SECTION_FILE_INCOMPLETE_VERSION);
   serialization::writePod(file, spec.fontId);
-  serialization::writePod(file, spec.translationFontId);  // Lingua translated-text font (cache key)
-  // Lingua annotation-row font (cache key). Non-zero only under LinguaLayout::Interlinear.
-  serialization::writePod(file, spec.annotationFontId);
   serialization::writePod(file, spec.lineCompression);
   serialization::writePod(file, spec.extraParagraphSpacing);
+  serialization::writePod(file, spec.paragraphIndentSpaces);
   serialization::writePod(file, spec.paragraphAlignment);
   serialization::writePod(file, spec.viewportWidth);
   serialization::writePod(file, spec.viewportHeight);
   serialization::writePod(file, spec.hyphenationEnabled);
   serialization::writePod(file, spec.embeddedStyle);
-  serialization::writePod(file, static_cast<uint8_t>(spec.linguaLayout));  // Lingua page layout (cache key)
-  // Whether the HTML these pages were laid out from contained translations (cache key). The layout
-  // byte cannot express it: Both is stamped both by an untranslated chapter and by one that simply
-  // requested Normal.
-  serialization::writePod(file, translatedSource);
-  // NOT a cache key -- a memo, so the next load can recompute translatedSource without
-  // re-scanning the chapter HTML. It records the half of the answer that is IMMUTABLE for a given
-  // book file: "the chapter's own XHTML embeds translated blocks". The other half (a sidecar) is one
-  // SD stat, so `translatedSource == hasTranslatedSidecar() || embeddedTranslation` costs a stat
-  // instead of a whole-file SAX scan on every chapter load -- including for the many readers who
-  // never enable a translation mode at all.
-  // Stamped false when this build read the SIDECAR (it never looked at the chapter HTML, so it does
-  // not know). That is the safe way to be wrong: it can only make a later load recompute a smaller
-  // translatedSource and rebuild, never serve the wrong pages.
-  serialization::writePod(file, embeddedTranslation);
   serialization::writePod(file, spec.imageRendering);
   serialization::writePod(file, spec.focusReadingEnabled);
+  serialization::writePod(file, spec.characterSpacing);
+  serialization::writePod(file, spec.wordSpacingPercent);
+  // Lingua: the fork's cache-key fields.
+  writeLinguaHeaderFields(spec, translatedSource, embeddedTranslation);
   serialization::writePod(file, pageCount);  // Placeholder for page count (will be initially 0, patched later)
   serialization::writePod(file, static_cast<uint32_t>(0));  // Placeholder for LUT offset (patched later)
   serialization::writePod(file, static_cast<uint32_t>(0));  // Placeholder for anchor map offset (patched later)
@@ -369,78 +336,48 @@ bool Section::loadSectionFile(const ReaderRenderSpec& spec) {
     filePartial = (version == SECTION_FILE_PARTIAL_VERSION);
 
     int fileFontId;
-    int fileTranslationFontId;
-    int fileAnnotationFontId;
     uint16_t fileViewportWidth, fileViewportHeight;
     float fileLineCompression;
     bool fileExtraParagraphSpacing;
+    uint8_t fileParagraphIndentSpaces;
     uint8_t fileParagraphAlignment;
     bool fileHyphenationEnabled;
     bool fileEmbeddedStyle;
-    uint8_t fileLinguaLayout;
-    bool fileTranslatedSource;
-    bool fileEmbeddedTranslation;
     uint8_t fileImageRendering;
     bool fileFocusReadingEnabled;
+    int8_t fileCharacterSpacing;
+    uint8_t fileWordSpacingPercent;
     serialization::readPod(file, fileFontId);
-    serialization::readPod(file, fileTranslationFontId);
-    serialization::readPod(file, fileAnnotationFontId);
     serialization::readPod(file, fileLineCompression);
     serialization::readPod(file, fileExtraParagraphSpacing);
+    serialization::readPod(file, fileParagraphIndentSpaces);
     serialization::readPod(file, fileParagraphAlignment);
     serialization::readPod(file, fileViewportWidth);
     serialization::readPod(file, fileViewportHeight);
     serialization::readPod(file, fileHyphenationEnabled);
     serialization::readPod(file, fileEmbeddedStyle);
-    serialization::readPod(file, fileLinguaLayout);
-    serialization::readPod(file, fileTranslatedSource);
-    serialization::readPod(file, fileEmbeddedTranslation);
     serialization::readPod(file, fileImageRendering);
     serialization::readPod(file, fileFocusReadingEnabled);
+    serialization::readPod(file, fileCharacterSpacing);
+    serialization::readPod(file, fileWordSpacingPercent);
+    // Lingua: the fork's cache-key fields.
+    const bool linguaKeyMatches = readLinguaHeaderFields(spec);
 
-    // Match on the EFFECTIVE (post-fallback) layout: an untranslated chapter is laid out and its
-    // header stamped with the Both layout by startBuild(), so it must also be looked up under Both
-    // -- otherwise a filtering layout never matches the Both-stamped cache and rebuilds on every
-    // visit. See effectiveLayout().
-    //
-    // The source flag is the other half of the Lingua key. Both is stamped by an
-    // untranslated chapter AND by a chapter that simply requested Normal, so without this compare a
-    // chapter laid out before its translation was downloaded would stay a cache HIT afterwards and
-    // serve untranslated pages in a bilingual mode (and, symmetrically, a translated cache would
-    // survive the translation being deleted). Resolved once per Section (memoized inside
-    // hasTranslation()) and shared with the layout resolution below.
-    // Recomputed from the two independent halves rather than by re-scanning the chapter HTML: the
-    // embedded half is immutable for a given book file, so the previous build's memo is still valid,
-    // and the sidecar half is one SD stat. That keeps every chapter load -- Normal mode included --
-    // at the single stat this check has always cost.
-    const bool hasSidecar = hasTranslatedSidecar();
-    const bool translatedSource = hasSidecar || fileEmbeddedTranslation;
-    // ...but only ADOPT it as the memoized answer when it is exact. A build that read the sidecar
-    // never looked at the chapter HTML, so it stamped embedded=false without knowing -- recognisable
-    // as "translatedSource stamped true while embedded stamped false". If that sidecar has since been
-    // deleted, `translatedSource` above understates the truth. It still forces the right outcome (a
-    // key MISS, hence a rebuild -- which is required anyway, the source file changed), but it must
-    // NOT be memoized, or the rebuild would trust it instead of scanning and would stamp a plugin-
-    // translated chapter as untranslated.
-    const bool embeddedIsKnown = fileEmbeddedTranslation || !fileTranslatedSource;
-    if (hasSidecar || embeddedIsKnown) {
-      translationPresence_ = translatedSource ? TranslationPresence::Yes : TranslationPresence::No;
-    }
-    // Record the source before the key check: on a HIT it is the source these pages came from, and
-    // on a MISS it is superseded by the rebuild below. Either way it is what a caller recording a
-    // reposition anchor needs, without a second SD stat.
-    translatedSource_ = translatedSource;
-    const LinguaLayout layout = effectiveLayout(spec.linguaLayout, translatedSource);
-    if (spec.fontId != fileFontId || keyedTranslationFontId(spec.translationFontId, layout) != fileTranslationFontId ||
-        keyedAnnotationFontId(spec.annotationFontId, layout) != fileAnnotationFontId ||
-        spec.lineCompression != fileLineCompression || spec.extraParagraphSpacing != fileExtraParagraphSpacing ||
-        spec.paragraphAlignment != fileParagraphAlignment || spec.viewportWidth != fileViewportWidth ||
-        spec.viewportHeight != fileViewportHeight || spec.hyphenationEnabled != fileHyphenationEnabled ||
-        spec.embeddedStyle != fileEmbeddedStyle || translatedSource != fileTranslatedSource ||
-        static_cast<uint8_t>(layout) != fileLinguaLayout || spec.imageRendering != fileImageRendering ||
-        spec.focusReadingEnabled != fileFocusReadingEnabled) {
+    if (spec.fontId != fileFontId || spec.lineCompression != fileLineCompression ||
+        spec.extraParagraphSpacing != fileExtraParagraphSpacing ||
+        spec.paragraphIndentSpaces != fileParagraphIndentSpaces || spec.paragraphAlignment != fileParagraphAlignment ||
+        spec.viewportWidth != fileViewportWidth || spec.viewportHeight != fileViewportHeight ||
+        spec.hyphenationEnabled != fileHyphenationEnabled || spec.embeddedStyle != fileEmbeddedStyle ||
+        spec.imageRendering != fileImageRendering || spec.focusReadingEnabled != fileFocusReadingEnabled ||
+        spec.characterSpacing != fileCharacterSpacing || spec.wordSpacingPercent != fileWordSpacingPercent) {
       file.close();
       LOG_ERR("SCT", "Deserialization failed: Parameters do not match");
+      clearCache();
+      return false;
+    }
+    if (!linguaKeyMatches) {
+      file.close();
+      LOG_ERR("SCT", "Deserialization failed: Lingua parameters do not match");
       clearCache();
       return false;
     }
@@ -603,6 +540,10 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
     LOG_ERR("SCT", "startBuild called while a build is already active");
     return false;
   }
+  // Reclaim rebuildable font caches before CSS and layout allocations.
+  if (auto* fontCache = renderer.getFontCacheManager()) {
+    fontCache->releaseSdFontCaches();
+  }
   buildComplete_ = false;
   builtPageCount_ = 0;
   // Pages from a loaded partial stay readable (from filePath) while this build writes
@@ -696,8 +637,8 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   effectiveSpec.linguaLayout = effectiveLinguaLayout;
   // ... and the translation font is only keyed where translated words reach the page; see
   // keyedTranslationFontId(). loadSectionFile() normalizes the lookup the same way.
-  effectiveSpec.translationFontId = keyedTranslationFontId(spec.translationFontId, effectiveLinguaLayout);
-  effectiveSpec.annotationFontId = keyedAnnotationFontId(spec.annotationFontId, effectiveLinguaLayout);
+  effectiveSpec.translationFontId = lingua::keyedTranslationFontId(spec.translationFontId, effectiveLinguaLayout);
+  effectiveSpec.annotationFontId = lingua::keyedAnnotationFontId(spec.annotationFontId, effectiveLinguaLayout);
 
   if (!Storage.openFileForWrite("SCT", binTmpPath(), file)) {
     if (!reusedHtml) Storage.remove(tmpHtmlPath.c_str());
@@ -790,6 +731,8 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
     return false;
   }
 
+  ctx->parser->setTextSpacing(spec.characterSpacing, spec.wordSpacingPercent);
+  ctx->parser->setParagraphIndentSpaces(spec.paragraphIndentSpaces);
   Hyphenator::setPreferredLanguage(epub->getLanguage());
   // Clear any translated-language slot left by a previous build; the slim parser repopulates it
   // from each translated block's lang= as it parses, so it never leaks across books/sections.
@@ -985,7 +928,13 @@ bool Section::commitBuildFile(const uint8_t version, const uint32_t bytesConsume
 
 bool Section::finalizeBuild() {
   // Flush the trailing page (emits the last page via the completePageFn into the LUT).
-  build_->parser->finishParse();
+  // A false return means layout dropped content (OOM); committing would persist a
+  // section cache with holes in the text, so abandon the build instead.
+  if (!build_->parser->finishParse()) {
+    LOG_ERR("SCT", "Parse finalize failed; abandoning section build");
+    abandonBuild();
+    return false;
+  }
 
   if (!build_->reusedHtml) {
     // Parse succeeded: promote the freshly unzipped HTML to the persistent cache so future
@@ -1440,18 +1389,27 @@ std::optional<uint16_t> Section::getPageForVisibleTextOffset(const uint32_t offs
     return std::nullopt;
   }
 
-  f.seek(visibleLutOffset);
+  if (!f.seek(visibleLutOffset)) {
+    LOG_ERR("SCT", "Failed to seek visible-text LUT");
+    return std::nullopt;
+  }
   uint16_t result = 0;
   uint32_t lastPageStart = 0;
-  for (uint16_t page = 0; page < count; page++) {
-    uint32_t pageStart;
-    serialization::readPod(f, pageStart);
-    lastPageStart = pageStart;
-    if (preferFirstAtOffset && pageStart == offset) {
-      return page;
+  constexpr uint32_t BATCH_PAGE_COUNT = 32;
+  uint32_t starts[BATCH_PAGE_COUNT];  // 128-byte stack buffer; offsets stay in file order for ties.
+  for (uint32_t base = 0; base < count; base += BATCH_PAGE_COUNT) {
+    const uint32_t batch = std::min<uint32_t>(BATCH_PAGE_COUNT, count - base);
+    const size_t bytes = batch * sizeof(uint32_t);
+    if (f.read(starts, bytes) != static_cast<int>(bytes)) {
+      LOG_ERR("SCT", "Failed to read visible-text LUT batch");
+      return std::nullopt;
     }
-    if (pageStart > offset) break;
-    result = page;
+    for (uint32_t i = 0; i < batch; ++i) {
+      lastPageStart = starts[i];
+      if (lastPageStart > offset) return result;
+      result = static_cast<uint16_t>(base + i);
+      if (preferFirstAtOffset && lastPageStart == offset) return result;
+    }
   }
   if (partial && offset > lastPageStart) {
     return std::nullopt;

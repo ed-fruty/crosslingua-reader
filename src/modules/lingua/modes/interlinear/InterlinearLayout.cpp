@@ -4,6 +4,7 @@
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <Logging.h>
+#include <Memory.h>
 #include <Utf8.h>
 #include <XmlParserUtils.h>
 #include <expat.h>
@@ -91,7 +92,7 @@ void buildMergedWordStream(const ParsedText& block, MergedWordStream& out) {
   size_t suffixTokens = 0;
   size_t textBytes = 0;
   for (size_t w = 0; w < tokenCount; w++) {
-    textBytes += block.wordAt(w).size();
+    textBytes += block.wordViewAt(w).size();
     if (block.wordIsFocusSuffixAt(w)) suffixTokens++;
   }
 
@@ -100,7 +101,7 @@ void buildMergedWordStream(const ParsedText& block, MergedWordStream& out) {
   // every reader who has not turned the setting on, i.e. the default.
   if (suffixTokens == 0) {
     out.ptrs.reserve(tokenCount);
-    for (size_t w = 0; w < tokenCount; w++) out.ptrs.push_back(block.wordAt(w).c_str());
+    for (size_t w = 0; w < tokenCount; w++) out.ptrs.push_back(block.wordCStrAt(w));
     return;
   }
 
@@ -118,13 +119,13 @@ void buildMergedWordStream(const ParsedText& block, MergedWordStream& out) {
   for (size_t w = 0; w < tokenCount; w++) {
     if (block.wordIsFocusSuffixAt(w) && !offsets.empty()) {
       out.arena.pop_back();  // drop the terminator: this token continues the word before it
-      out.arena += block.wordAt(w);
+      out.arena += block.wordViewAt(w);
       out.arena.push_back('\0');
       continue;
     }
     offsets.push_back(static_cast<uint32_t>(out.arena.size()));
     out.toToken.push_back(static_cast<uint16_t>(w));
-    out.arena += block.wordAt(w);
+    out.arena += block.wordViewAt(w);
     out.arena.push_back('\0');
   }
   for (const uint32_t offset : offsets) out.ptrs.push_back(out.arena.data() + offset);
@@ -157,7 +158,7 @@ void appendAnnotationSpan(const InterlinearAnnotation& annotation, const ParsedT
     // this row for it to attach to, so a span that happens to start mid-run does not open with a
     // stray glue.
     const bool attach = w > annotation.transStartWord && transBlock.wordAttachesToPrevious(w);
-    stream.addWord(transBlock.wordAt(w), EpdFontFamily::REGULAR, /*underline=*/false, attach);
+    stream.addWord(std::string(transBlock.wordViewAt(w)), EpdFontFamily::REGULAR, /*underline=*/false, attach);
   }
 }
 }  // namespace
@@ -188,7 +189,7 @@ void ChapterHtmlSlimParser::buildAnnotationRuns(const InterlinearAnnotation& ann
   int widestToken = 0;
   for (size_t w = 0; w < annotationText.size(); w++) {
     const int advance =
-        renderer.getTextAdvanceX(annotationFont, annotationText.wordAt(w).c_str(), annotationText.getWordStyleAt(w));
+        renderer.getTextAdvanceX(annotationFont, annotationText.wordCStrAt(w), annotationText.getWordStyleAt(w));
     remaining += advance;
     if (w > 0 && !annotationText.wordAttachesToPrevious(w)) remaining += gap;
     if (advance > widestToken) widestToken = advance;
@@ -201,7 +202,7 @@ void ChapterHtmlSlimParser::buildAnnotationRuns(const InterlinearAnnotation& ann
     if (bands.srcLines == nullptr) return 0;
     const size_t index = bands.firstLine + slot;
     if (index >= bands.srcLines->size()) return 0;
-    const std::shared_ptr<TextBlock>& line = (*bands.srcLines)[index];
+    const std::unique_ptr<TextBlock>& line = (*bands.srcLines)[index];
     if (!line || line->wordCount() == 0) return 0;
     return std::max<int>(0, line->wordXpos(0));
   };
@@ -268,9 +269,9 @@ void ChapterHtmlSlimParser::buildAnnotationRuns(const InterlinearAnnotation& ann
     // same skip would have lost it.
     if (hardRoom < widestToken) continue;
 
-    std::shared_ptr<TextBlock> row;
+    std::unique_ptr<TextBlock> row;
     annotationText.extractNextLine(renderer, annotationFont, static_cast<uint16_t>(width),
-                                   [&row](const std::shared_ptr<TextBlock>& line) { row = line; });
+                                   [&row](std::unique_ptr<TextBlock> line) { row = std::move(line); });
     if (!row || row->wordCount() == 0) {
       // Only a TextBlock arena OOM reaches here, and the words are already consumed, so this IS a
       // loss -- logged rather than left to look like an empty slot.
@@ -335,9 +336,13 @@ void ChapterHtmlSlimParser::buildAnnotationRuns(const InterlinearAnnotation& ann
   // further strip exists.
 }
 
-void ChapterHtmlSlimParser::placeInterlinearRow(const std::shared_ptr<TextBlock>& row, const int16_t xPos,
-                                                const int16_t yPos, const LineFontRole role) {
-  auto pageLine = std::make_shared<PageLine>(row, xPos, yPos);
+void ChapterHtmlSlimParser::placeInterlinearRow(std::unique_ptr<TextBlock> row, const int16_t xPos, const int16_t yPos,
+                                                const LineFontRole role) {
+  auto pageLine = makeUniqueNoThrow<PageLine>(std::move(row), xPos, yPos);
+  if (!pageLine) {
+    LOG_ERR("ILN", "OOM: PageLine");
+    return;
+  }
   // Both the source lines and the annotation strips carry the ORIGINAL paragraph's index, so the
   // line->paragraph mapping the overlays and the reader rely on still resolves (same as
   // renderSideBySide: currentBlockParagraphIdx has already advanced past the pair by now).
@@ -352,9 +357,8 @@ void ChapterHtmlSlimParser::placeInterlinearRow(const std::shared_ptr<TextBlock>
   currentPage->elements.push_back(std::move(pageLine));
 }
 
-void ChapterHtmlSlimParser::emitInterlinearPair(const std::vector<InterlinearRun>& runs,
-                                                const std::shared_ptr<TextBlock>& srcLine, const int stripHeight,
-                                                const int srcRowHeight, const int16_t leftInset,
+void ChapterHtmlSlimParser::emitInterlinearPair(std::vector<InterlinearRun>& runs, std::unique_ptr<TextBlock> srcLine,
+                                                const int stripHeight, const int srcRowHeight, const int16_t leftInset,
                                                 const uint32_t sourceOffset) {
   // ATOMIC FIT, over a FIXED group: one strip plus one source line, every time -- except for a TAIL
   // strip, where srcLine is null because the paragraph's source is already fully emitted and only
@@ -364,6 +368,9 @@ void ChapterHtmlSlimParser::emitInterlinearPair(const std::vector<InterlinearRun
   // the anti-loop guard: an empty page never breaks, so a group taller than the whole viewport still
   // lands instead of spinning.
   const int groupHeight = stripHeight + (srcLine ? srcRowHeight : 0);
+  // Read before the line moves into the page: it drives the footnote drain below.
+  const bool hasSource = srcLine != nullptr;
+  const uint16_t srcWordCount = hasSource ? srcLine->wordCount() : 0;
   if (!currentPage->elements.empty() && currentPageNextY + groupHeight > viewportHeight) {
     setCurrentPageVisibleOffset(sourceOffset);
     completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex, currentPageVisibleOffset);
@@ -380,14 +387,15 @@ void ChapterHtmlSlimParser::emitInterlinearPair(const std::vector<InterlinearRun
   // becoming adjacent. Two runs at ONE y is the shape renderSideBySide already writes for its two
   // columns, and it is still one visual annotation line.
   const int16_t stripY = static_cast<int16_t>(currentPageNextY);
-  for (const InterlinearRun& run : runs) {
+  for (InterlinearRun& run : runs) {
     if (run.row)
-      placeInterlinearRow(run.row, static_cast<int16_t>(leftInset + run.x), stripY, LineFontRole::Annotation);
+      placeInterlinearRow(std::move(run.row), static_cast<int16_t>(leftInset + run.x), stripY,
+                          LineFontRole::Annotation);
   }
   currentPageNextY += stripHeight;
 
-  if (srcLine) {
-    placeInterlinearRow(srcLine, leftInset, static_cast<int16_t>(currentPageNextY), LineFontRole::Body);
+  if (hasSource) {
+    placeInterlinearRow(std::move(srcLine), leftInset, static_cast<int16_t>(currentPageNextY), LineFontRole::Body);
     currentPageNextY += srcRowHeight;
   }
 
@@ -414,8 +422,8 @@ void ChapterHtmlSlimParser::emitInterlinearPair(const std::vector<InterlinearRun
   // it" reasoning was not sound. The pre-layout anchor index vs post-layout wordCount() mismatch is
   // addLineToPage's own approximation, kept identical here.
   // A tail strip carries no source words, so it advances no footnote counter and can release none.
-  if (!srcLine) return;
-  wordsExtractedInBlock += srcLine->wordCount();
+  if (!hasSource) return;
+  wordsExtractedInBlock += srcWordCount;
   auto footnoteIt = pendingFootnotes.begin();
   while (footnoteIt != pendingFootnotes.end() && footnoteIt->first <= wordsExtractedInBlock) {
     currentPage->addFootnote(footnoteIt->second.number, footnoteIt->second.href);
@@ -583,17 +591,21 @@ void ChapterHtmlSlimParser::renderInterlinear(std::unique_ptr<ParsedText> origBl
 
   // STEP 1 — lay the SOURCE out, completely unconstrained. This is byte-for-byte the layout
   // LinguaLayout::OriginalOnly would produce for the same paragraph; the tracked words only ride along.
-  std::vector<std::shared_ptr<TextBlock>> srcLines;
+  std::vector<std::unique_ptr<TextBlock>> srcLines;
   srcLines.reserve(8);
   std::vector<uint32_t> sourceOffsets;
   sourceOffsets.reserve(8);
+  // Words dropped to an arena OOM while either block was buffered: the parser's own latch only sees
+  // currentTextBlock, so the paired blocks are checked here, before and after the source layout.
+  if (origBlock->hadDroppedWords() || transBlock->hadDroppedWords()) layoutOom = true;
   origBlock->layoutAndExtractLines(
       renderer, fontId, effectiveWidth,
-      [&srcLines, &sourceOffsets](const std::shared_ptr<TextBlock>& line, const uint32_t offset) {
-        srcLines.push_back(line);
+      [&srcLines, &sourceOffsets](std::unique_ptr<TextBlock> line, const uint32_t offset) {
+        srcLines.push_back(std::move(line));
         sourceOffsets.push_back(offset);
       },
-      /*includeLastLine=*/true, &sentencePos);
+      /*includeLastLine=*/true, characterSpacing, wordSpacingPercent, &sentencePos);
+  if (origBlock->hadDroppedWords()) layoutOom = true;
   if (srcLines.empty()) return;
 
   // The out-param is 1:1 with the tracked list by construction; if it somehow is not, drop the
@@ -603,9 +615,8 @@ void ChapterHtmlSlimParser::renderInterlinear(std::unique_ptr<ParsedText> origBl
   }
 
   // Release the SOURCE block now. layoutAndExtractLines erases the consumed words but `erase` never
-  // shrinks capacity, so its five parallel token vectors — including one std::string header per word,
-  // 24 B each before any long word's own heap block — would otherwise stay pinned through every page
-  // this paragraph serializes. Nothing below reads it: the block style was copied by value above and
+  // shrinks capacity, so its parallel token vectors and word-handle deque would otherwise stay pinned
+  // through every page this paragraph serializes. Nothing below reads it: the block style was copied by value above and
   // all remaining geometry comes from srcLines and sentencePos.
   origBlock.reset();
 
@@ -649,15 +660,15 @@ void ChapterHtmlSlimParser::renderInterlinear(std::unique_ptr<ParsedText> origBl
       // Unchanged source pitch, ruby shift included, so furigana headroom survives on annotated
       // lines. Annotation blocks carry no ruby, so a strip's pitch is just the small line height.
       const int srcRowHeight = bodyLineHeight + srcLines[nextLine]->getRubyShift(bodyAscender);
-      emitInterlinearPair(pending, srcLines[nextLine], stripHeight, srcRowHeight, leftInset, sourceOffsets[nextLine]);
+      // The line moves into the page, so the paragraph's lines are not pinned until the call returns.
+      // Nothing below reads an earlier line. That keeps the makePages peak -- one page's worth of
+      // TextBlocks, freed as onPageComplete serializes each page -- for a paragraph long enough to span
+      // several pages, which is exactly the shape this layout produces most of (see the page-cost
+      // estimate in LinguaLayout.h).
+      emitInterlinearPair(pending, std::move(srcLines[nextLine]), stripHeight, srcRowHeight, leftInset,
+                          sourceOffsets[nextLine]);
       pending.clear();
       pendingRightEdge = 0;
-      // The page owns this line now, so release our reference instead of pinning every line of the
-      // paragraph until the call returns. Nothing below reads an earlier line. That restores the
-      // makePages peak -- one page's worth of TextBlocks, freed as onPageComplete serializes each
-      // page -- for a paragraph long enough to span several pages, which is exactly the shape this
-      // layout produces most of (see the page-cost estimate in LinguaLayout.h).
-      srcLines[nextLine].reset();
       nextLine++;
     }
   };
@@ -679,20 +690,18 @@ void ChapterHtmlSlimParser::renderInterlinear(std::unique_ptr<ParsedText> origBl
   // refuses to annotate one.
   //
   // NO first-line indent. Sentence sync is the whole-box placement at the band start, not an indent:
-  // that is direction-agnostic and gives every row a band of its own. textIndentDefined MUST stay
-  // true — with it false and extraParagraphSpacing false, resolveFirstLineIndent falls through to its
-  // three-space default and every row is inset.
+  // that is direction-agnostic and gives every row a band of its own. paragraphIndentSpaces MUST be
+  // 0 -- resolveFirstLineIndent only honours a negative CSS text-indent, so any other value would
+  // inset the stream's first row by that many spaces.
   //
-  // extraParagraphSpacing=false keeps resolveFirstLineIndent on the branch that returns the explicit
-  // value verbatim rather than the paragraph-gap branch. hyphenationEnabled=false keeps a long
-  // compound wrapping early instead of being broken at 8pt, and focusReading is a body-text
-  // affordance that has no business in an annotation.
+  // hyphenationEnabled=false keeps a long compound wrapping early instead of being broken at 8pt, and
+  // focusReading is a body-text affordance that has no business in an annotation. The rows keep the
+  // default character/word spacing: buildAnnotationRuns measures tokens without it, and its width
+  // floor (widestToken) is only sound when the layout measures them the same way.
   BlockStyle annStyle;
   annStyle.alignment = CssTextAlign::Left;
-  annStyle.textIndent = 0;
-  annStyle.textIndentDefined = true;
-  ParsedText annotationStream(/*extraParagraphSpacing=*/false, /*hyphenationEnabled=*/false,
-                              /*focusReadingEnabled=*/false, annStyle);
+  ParsedText annotationStream(/*hyphenationEnabled=*/false, /*focusReadingEnabled=*/false, annStyle,
+                              /*paragraphIndentSpaces=*/0);
 
   // STEP 2 — per sentence, read its band geometry off the SOURCE, then flow its translation through
   // the strips above its own source lines, one row per line. A sentence that cannot fit its text
@@ -778,9 +787,9 @@ void ChapterHtmlSlimParser::renderInterlinear(std::unique_ptr<ParsedText> origBl
   sentenceRuns.clear();
   sentenceRuns.resize(1);
   while (!annotationStream.isEmpty()) {
-    std::shared_ptr<TextBlock> row;
+    std::unique_ptr<TextBlock> row;
     annotationStream.extractNextLine(renderer, annotationFont, effectiveWidth,
-                                     [&row](const std::shared_ptr<TextBlock>& line) { row = line; });
+                                     [&row](std::unique_ptr<TextBlock> line) { row = std::move(line); });
     if (!row || row->wordCount() == 0) {
       // extractNextLine made no progress, which only a TextBlock arena OOM can cause. Stop rather
       // than spin on a stream that can never drain.

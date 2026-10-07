@@ -127,3 +127,24 @@ LineFontRole ChapterHtmlSlimParser::currentLineRole() const {
   }
   return LineFontRole::Body;
 }
+
+// Stamp a main-flow line (addLineToPage) with its originating paragraph index, so the renderer and
+// the Page Translation overlay can map rendered lines back to original paragraphs, and with the
+// role it was measured and advanced with, which is the whole of what the renderer needs to draw it
+// in the same font (PageLine::render -> PageFontSet::forRole). The pitch addLineToPage advances by
+// comes from the same role: yPos is the top of the line box and TextBlock::render puts the baseline
+// at yPos + rubyShift + ascender(drawing font), so advancing by the line's own advanceY tiles boxes
+// of different type sizes edge to edge.
+void ChapterHtmlSlimParser::stampLinguaLine(PageLine& line, const LineFontRole role) {
+  line.paragraphIdx = currentBlockParagraphIdx;
+  line.fontRole = role;
+  // Track which original paragraph indices contribute to this page. Translated blocks share their
+  // original's index (via the pairing logic in startElement), so the range still represents original
+  // paragraphs.
+  if (currentBlockParagraphIdx >= 0) {
+    if (currentPage->firstParagraphIdx < 0) {
+      currentPage->firstParagraphIdx = currentBlockParagraphIdx;
+    }
+    currentPage->lastParagraphIdx = currentBlockParagraphIdx;
+  }
+}

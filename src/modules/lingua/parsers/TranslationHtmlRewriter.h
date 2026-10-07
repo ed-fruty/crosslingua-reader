@@ -86,7 +86,7 @@ class TranslationHtmlRewriter {
   // instead of one per paragraph. Owned as a local in rewriteFromFile(); this is
   // a non-owning pointer, valid only for that call's duration. Null on the
   // buffer rewrite() path and whenever no session was set up (each translate()
-  // then falls back to the stateless HttpDownloader statics — prior behavior).
+  // then falls back to the stateless TranslatorHttp statics — prior behavior).
   TranslationHttpSession* httpSession = nullptr;
 
   int depth = 0;
@@ -125,10 +125,10 @@ class TranslationHtmlRewriter {
   static constexpr int MAX_CONSECUTIVE_HEAP_TIMEOUTS = 3;
   static constexpr uint32_t HEAP_WAIT_TIMEOUT_MS = 12000;  // ~12 s per exhausted wait
 
-  // ─── Network retry/backoff (see HttpDownloader::lastHttpCode) ───────────────
+  // ─── Network retry/backoff (see TranslatorHttp::lastHttpCode) ───────────────
   int consecutive429 = 0;  // consecutive HTTP 429 responses; reset on any non-429 outcome
 
-  // Classify a failed translate attempt (httpCode = HttpDownloader::lastHttpCode captured
+  // Classify a failed translate attempt (httpCode = TranslatorHttp::lastHttpCode captured
   // right after the failing call). Updates consecutive429 and, on a non-retryable outcome,
   // sets abortedOnErrors (auth failure or too many consecutive 429s).
   // Returns true if the attempt loop should retry.

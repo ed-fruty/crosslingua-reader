@@ -59,9 +59,10 @@ inline bool isContainerBlockTag(const char* name) {
 // in place and the next text starts a new paragraph inside the same element.
 inline bool isHardBreak(const char* name) { return strcmp(name, "br") == 0; }
 
-// The full set of tags that delimit a paragraph boundary in the layout parser:
-// every container block tag plus <br/>. This is the union that
-// ChapterHtmlSlimParser historically computed as HEADER_TAGS ∪ BLOCK_TAGS.
+// Every container block tag plus <br/>. ChapterHtmlSlimParser keeps upstream's own
+// HEADER_TAGS ∪ BLOCK_TAGS, which additionally opens a block for the <ul>/<ol> list
+// containers; their text block stays empty, so the first <li> inherits the index it
+// claimed and the paragraph count is unchanged.
 inline bool isParagraphBlockTag(const char* name) { return isContainerBlockTag(name) || isHardBreak(name); }
 
 }  // namespace paraboundary

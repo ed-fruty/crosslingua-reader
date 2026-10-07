@@ -20,7 +20,7 @@
 #include "modules/lingua/LinguaModeCatalog.h"
 #include "modules/lingua/activities/LanguagePickerActivity.h"
 #include "modules/lingua/services/HeapBackpressure.h"
-#include "network/HttpDownloader.h"
+#include "modules/lingua/services/TranslatorHttp.h"
 
 // Sentinel value LanguagePickerActivity returns for the synthetic "Auto-detect" entry.
 // Matches CrossPointSettings::sourceTranslationLanguage's 0xFF sentinel.
@@ -412,7 +412,7 @@ void BookTranslationActivity::runTranslation() {
     // backpressure inside the rewriter is the finer gate and owns the low-memory abort.
     // Services cancelFlag so onExit() never blocks; nothing is open yet, so a cancel here
     // just breaks with no cleanup.
-    heapbp::waitForHeap(HttpDownloader::MIN_FREE_HEAP_FOR_TLS, HttpDownloader::MIN_MAX_ALLOC_FOR_TLS,
+    heapbp::waitForHeap(TranslatorHttp::MIN_FREE_HEAP_FOR_TLS, TranslatorHttp::MIN_MAX_ALLOC_FOR_TLS,
                         CHAPTER_START_HEAP_WAIT_MS, &cancelFlag, "BKT", "chapter-start TLS heap");
     if (cancelFlag) break;
 

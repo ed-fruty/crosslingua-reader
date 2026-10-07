@@ -4,6 +4,7 @@
 #include <Memory.h>
 #include <Serialization.h>
 
+#include "modules/lingua/services/LinguaCacheKey.h"
 #include "modules/lingua/services/TranslatedContentDetector.h"
 std::string Section::getTranslatedHtmlPath() const {
   return epub->getCachePath() + "/sections/" + std::to_string(spineIndex) + ".translated.html";
@@ -103,4 +104,76 @@ LinguaLayout Section::effectiveLayout(const LinguaLayout requested, const bool t
   // source the pages came from and why the caller pairs this with the translatedSource flag in the
   // cache key. See the declaration comment in Section.h.
   return translatedSource ? requested : LinguaLayout::Both;
+}
+
+void Section::writeLinguaHeaderFields(const ReaderRenderSpec& spec, const bool translatedSource,
+                                      const bool embeddedTranslation) {
+  serialization::writePod(file, spec.translationFontId);  // translated-text font (cache key)
+  // Annotation-row font (cache key). Non-zero only under LinguaLayout::Interlinear.
+  serialization::writePod(file, spec.annotationFontId);
+  serialization::writePod(file, static_cast<uint8_t>(spec.linguaLayout));  // page layout (cache key)
+  // Whether the HTML these pages were laid out from contained translations (cache key). The layout
+  // byte cannot express it: Both is stamped both by an untranslated chapter and by one that simply
+  // requested Normal.
+  serialization::writePod(file, translatedSource);
+  // NOT a cache key -- a memo, so the next load can recompute translatedSource without
+  // re-scanning the chapter HTML. It records the half of the answer that is IMMUTABLE for a given
+  // book file: "the chapter's own XHTML embeds translated blocks". The other half (a sidecar) is one
+  // SD stat, so `translatedSource == hasTranslatedSidecar() || embeddedTranslation` costs a stat
+  // instead of a whole-file SAX scan on every chapter load -- including for the many readers who
+  // never enable a translation mode at all.
+  // Stamped false when this build read the SIDECAR (it never looked at the chapter HTML, so it does
+  // not know). That is the safe way to be wrong: it can only make a later load recompute a smaller
+  // translatedSource and rebuild, never serve the wrong pages.
+  serialization::writePod(file, embeddedTranslation);
+}
+
+bool Section::readLinguaHeaderFields(const ReaderRenderSpec& spec) {
+  int fileTranslationFontId;
+  int fileAnnotationFontId;
+  uint8_t fileLinguaLayout;
+  bool fileTranslatedSource;
+  bool fileEmbeddedTranslation;
+  serialization::readPod(file, fileTranslationFontId);
+  serialization::readPod(file, fileAnnotationFontId);
+  serialization::readPod(file, fileLinguaLayout);
+  serialization::readPod(file, fileTranslatedSource);
+  serialization::readPod(file, fileEmbeddedTranslation);
+
+  // Match on the EFFECTIVE (post-fallback) layout: an untranslated chapter is laid out and its
+  // header stamped with the Both layout by startBuild(), so it must also be looked up under Both
+  // -- otherwise a filtering layout never matches the Both-stamped cache and rebuilds on every
+  // visit. See effectiveLayout().
+  //
+  // The source flag is the other half of the Lingua key. Both is stamped by an
+  // untranslated chapter AND by a chapter that simply requested Normal, so without this compare a
+  // chapter laid out before its translation was downloaded would stay a cache HIT afterwards and
+  // serve untranslated pages in a bilingual mode (and, symmetrically, a translated cache would
+  // survive the translation being deleted). Resolved once per Section (memoized inside
+  // hasTranslation()) and shared with the layout resolution below.
+  // Recomputed from the two independent halves rather than by re-scanning the chapter HTML: the
+  // embedded half is immutable for a given book file, so the previous build's memo is still valid,
+  // and the sidecar half is one SD stat. That keeps every chapter load -- Normal mode included --
+  // at the single stat this check has always cost.
+  const bool hasSidecar = hasTranslatedSidecar();
+  const bool translatedSource = hasSidecar || fileEmbeddedTranslation;
+  // ...but only ADOPT it as the memoized answer when it is exact. A build that read the sidecar
+  // never looked at the chapter HTML, so it stamped embedded=false without knowing -- recognisable
+  // as "translatedSource stamped true while embedded stamped false". If that sidecar has since been
+  // deleted, `translatedSource` above understates the truth. It still forces the right outcome (a
+  // key MISS, hence a rebuild -- which is required anyway, the source file changed), but it must
+  // NOT be memoized, or the rebuild would trust it instead of scanning and would stamp a plugin-
+  // translated chapter as untranslated.
+  const bool embeddedIsKnown = fileEmbeddedTranslation || !fileTranslatedSource;
+  if (hasSidecar || embeddedIsKnown) {
+    translationPresence_ = translatedSource ? TranslationPresence::Yes : TranslationPresence::No;
+  }
+  // Record the source before the key check: on a HIT it is the source these pages came from, and
+  // on a MISS it is superseded by the rebuild below. Either way it is what a caller recording a
+  // reposition anchor needs, without a second SD stat.
+  translatedSource_ = translatedSource;
+  const LinguaLayout layout = effectiveLayout(spec.linguaLayout, translatedSource);
+  return lingua::keyedTranslationFontId(spec.translationFontId, layout) == fileTranslationFontId &&
+         lingua::keyedAnnotationFontId(spec.annotationFontId, layout) == fileAnnotationFontId &&
+         translatedSource == fileTranslatedSource && static_cast<uint8_t>(layout) == fileLinguaLayout;
 }

@@ -17,6 +17,14 @@ namespace {
 // once per load.
 constexpr size_t SCAN_CHUNK = 512;
 
+bool hasHiddenAttribute(const XML_Char** atts) {
+  if (atts == nullptr) return false;
+  for (int i = 0; atts[i]; i += 2) {
+    if (strcmp(atts[i], "hidden") == 0) return true;
+  }
+  return false;
+}
+
 struct ScanState {
   const char* bookPrimaryLang = nullptr;
   bool found = false;
@@ -29,8 +37,11 @@ struct ScanState {
 void XMLCALL onStartElement(void* ud, const XML_Char* name, const XML_Char** atts) {
   auto* state = static_cast<ScanState*>(ud);
   if (strcmp(name, "body") == 0) state->inBody = true;
-  if (state->ignoredDepth || strcmp(name, "script") == 0 || strcmp(name, "style") == 0) {
+  // An element with the HTML `hidden` attribute is laid out as display:none by the parser, so
+  // neither its text nor a lang= inside it can reach a page.
+  if (state->ignoredDepth || strcmp(name, "script") == 0 || strcmp(name, "style") == 0 || hasHiddenAttribute(atts)) {
     ++state->ignoredDepth;
+    return;
   }
   if (paraboundary::isHardBreak(name)) state->afterBreak = true;
   const bool block = paraboundary::isContainerBlockTag(name);

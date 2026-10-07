@@ -8,7 +8,7 @@
 
 #include "CrossPointSettings.h"
 #include "modules/lingua/engines/ParagraphTranslator.h"
-#include "network/HttpDownloader.h"
+#include "modules/lingua/services/TranslatorHttp.h"
 
 static constexpr size_t PARSE_CHUNK = 1024;
 
@@ -280,12 +280,12 @@ void TranslationHtmlRewriter::flushBatch() {
       std::string translated;
       bool ok = false;
       for (int attempt = 0; attempt < enginePolicy->maxAttempts && !ok; attempt++) {
-        if (attempt > 0) delay(enginePolicy->retryDelayMs(HttpDownloader::lastHttpCode, attempt - 1));
+        if (attempt > 0) delay(enginePolicy->retryDelayMs(TranslatorHttp::lastHttpCode, attempt - 1));
         ok = ParagraphTranslator::translate(mergedText, sourceLang, targetLang, engine, apiKey, translated, &lastError,
                                             httpSession);
         if (ok) {
           consecutive429 = 0;
-        } else if (!shouldRetryAfterFailure(HttpDownloader::lastHttpCode)) {
+        } else if (!shouldRetryAfterFailure(TranslatorHttp::lastHttpCode)) {
           break;
         }
       }
@@ -334,12 +334,12 @@ void TranslationHtmlRewriter::flushBatch() {
         std::string translated;
         bool ok = false;
         for (int attempt = 0; attempt < enginePolicy->maxAttempts && !ok; attempt++) {
-          if (attempt > 0) delay(enginePolicy->retryDelayMs(HttpDownloader::lastHttpCode, attempt - 1));
+          if (attempt > 0) delay(enginePolicy->retryDelayMs(TranslatorHttp::lastHttpCode, attempt - 1));
           ok = ParagraphTranslator::translate(batch[translatableIndices[i]].trimmedText, sourceLang, targetLang, engine,
                                               apiKey, translated, &lastError, httpSession);
           if (ok) {
             consecutive429 = 0;
-          } else if (!shouldRetryAfterFailure(HttpDownloader::lastHttpCode)) {
+          } else if (!shouldRetryAfterFailure(TranslatorHttp::lastHttpCode)) {
             break;
           }
         }

@@ -10,10 +10,10 @@ the device or prepare it with the
 then choose how much of each language you want to see.
 
 **Runs on:** Xteink [X3](https://www.xteink.com/products/xteink-x3),
-[X4](https://www.xteink.com/products/xteink-x4), X4 Pro, M5Stack Paper Mono,
-and Seeed Studio XIAO ePaper Display Board (Sticky). X4 Pro, Paper Mono, and
-Sticky use dedicated builds with their device-specific display, touch, key,
-power, and frontlight integrations.
+[X4](https://www.xteink.com/products/xteink-x4), X4 Pro, X4 Classic, M5Stack
+Paper Mono, Seeed Studio XIAO ePaper Display Board (Sticky), Metalio E-Ink 4,
+and EEGO Reader A4. Every device except X3/X4 uses a dedicated build with its
+device-specific display, touch, key, power, and frontlight integrations.
 
 <table>
   <tr>
@@ -166,7 +166,8 @@ bilingual EPUBs.
 
 ## Bookshelf with cover previews
 
-**Bookshelf** is a visual alternative to the file browser. It renders a 3×3
+**Bookshelf** is a visual alternative to the file browser and to CrossPoint's
+list-based **Library** (both stay on the home screen). It renders a 3×3
 grid, generates and caches EPUB cover thumbnails in the background, preserves
 folder navigation, and lets you open a book directly from its cover.
 
@@ -198,11 +199,12 @@ still be installed from the SD card. See
 ## Everything inherited from CrossPoint
 
 CrossLingua remains a full CrossPoint Reader fork, not a translation-only
-experiment. It includes EPUB 2/3 rendering, `.xtc/.xtch`, `.txt` and `.bmp`
+experiment. It includes the Library view (indexed title/author search,
+recent, alphabetical and per-author views), EPUB 2/3 rendering, `.xtc/.xtch`, `.txt` and `.bmp`
 support, images, embedded styles, hyphenation, kerning, footnotes, bookmarks,
 StarDict dictionaries, chapter navigation, go-to-percent, focus reading,
 auto page turn, orientation control, screenshots, custom fonts, themes,
-button remapping, KOReader progress sync, OPDS, WebDAV, Calibre wireless
+button remapping, KOReader progress sync, OPDS, SD-card plugins, WebDAV, Calibre wireless
 transfer, a web file manager and settings UI, EPUB optimization, OTA updates,
 24 UI languages and RTL support.
 
@@ -234,14 +236,25 @@ USB port or browser before assuming the device is locked. Only reach for the unl
 
 Each hardware family has its own release binary. Download the file that exactly
 matches your device from the
-[CrossLingua releases page](https://github.com/ed-fruty/crosslingua-reader/releases):
+[CrossLingua releases page](https://github.com/ed-fruty/crosslingua-reader/releases).
+`<version>` is the CrossLingua version of the release, e.g. `1.5.0` for the
+release tagged `v1.5.0+crosspoint.1.6.5`:
 
 | Device | Release file | Chip |
 | --- | --- | --- |
-| Xteink X3 / X4 | `firmware.bin` | ESP32-C3 |
-| Xteink X4 Pro | `firmware-x4pro.bin` | ESP32-S3 |
-| M5Stack Paper Mono | `firmware-papermono.bin` | ESP32-S3 |
-| Seeed Studio XIAO ePaper Display Board (Sticky) | `firmware-sticky.bin` | ESP32-S3 |
+| Xteink X3 / X4 | `crosslingua-<version>-x3-x4.bin` | ESP32-C3 |
+| Xteink X4 Pro | `crosslingua-<version>-x4pro.bin` | ESP32-S3 |
+| Xteink X4 Classic | `crosslingua-<version>-x4c.bin` | ESP32-S3 |
+| M5Stack Paper Mono | `crosslingua-<version>-papermono.bin` | ESP32-S3 |
+| Seeed Studio XIAO ePaper Display Board (Sticky) | `crosslingua-<version>-sticky.bin` | ESP32-S3 |
+| Metalio E-Ink 4 | `crosslingua-<version>-metalio_eink4.bin` | ESP32-S3 |
+| EEGO Reader A4 | `crosslingua-<version>-eego_a4.bin` | ESP32-S3 |
+
+Each release also carries the same binaries under their pre-1.5 names
+(`firmware.bin` for X3/X4, `firmware-<board>.bin` for the others, e.g.
+`firmware-x4pro.bin`). They exist so devices still running CrossLingua 1.4 or
+older can find the update over the air; for a manual install, either name
+works.
 
 > [!WARNING]
 > Never flash a binary intended for another device. CrossLingua validates the
@@ -253,7 +266,8 @@ matches your device from the
 Connect the device to Wi-Fi, then open **Settings → System → Check for
 updates**. The built-in OTA updater checks the latest CrossLingua release and
 automatically selects the correct file for the detected hardware, so you do
-not need to download or choose a `.bin` manually. Confirm the update when
+not need to download or choose a `.bin` manually. Devices on CrossLingua 1.4
+or older update the same way. Confirm the update when
 prompted, keep the device powered while it is installing, and wait for it to
 restart.
 
@@ -266,26 +280,26 @@ To update from an SD card instead:
 4. Confirm the update and keep the device powered until it restarts.
 
 The SD-card picker accepts any `.bin` filename, so files such as
-`firmware-x4pro.bin` do **not** need to be renamed to `firmware.bin`.
+`crosslingua-<version>-x4pro.bin` do **not** need to be renamed.
 
 ### Web installer — Xteink X3 / X4
 
 The web-flasher procedure below is for Xteink X3 and X4 only. Do not select an
-X3/X4 profile for X4 Pro, Paper Mono, or Sticky.
+X3/X4 profile for any other device.
 
 1. Connect your device to your computer via USB-C and wake/unlock the device
-2. Download `firmware.bin` from the
+2. Download `crosslingua-<version>-x3-x4.bin` from the
    [CrossLingua releases page](https://github.com/ed-fruty/crosslingua-reader/releases).
 3. Open https://crosspointreader.com/#flash-tools, select X3 or X4, choose
    **Custom .bin**, and upload the downloaded firmware.
 
-To install a specific version, download `firmware.bin` from that version's
+To install a specific version, download the X3/X4 file from that version's
 release instead of the latest release and follow the same steps.
 
 Some Xteink devices purchased from third-party stores must be unlocked first;
 see [USB-locked devices](#usb-locked-devices-xteink-unlocker).
 
-### First installation on X4 Pro, Paper Mono, or Sticky
+### First installation on other devices
 
 The X3/X4 web-flasher and ESP32-C3 command below are not compatible with these
 ESP32-S3 devices. If CrossPoint or CrossLingua is already installed, use its
@@ -293,9 +307,12 @@ SD-card firmware updater with the matching release file. For development or a
 first installation from source, use the corresponding PlatformIO environment:
 
 ```bash
-pio run -e x4pro -t upload       # Xteink X4 Pro
-pio run -e papermono -t upload   # M5Stack Paper Mono
-pio run -e sticky -t upload      # Seeed Sticky
+pio run -e x4pro -t upload          # Xteink X4 Pro
+pio run -e x4c -t upload            # Xteink X4 Classic
+pio run -e papermono -t upload      # M5Stack Paper Mono
+pio run -e sticky -t upload         # Seeed Sticky
+pio run -e metalio_eink4 -t upload  # Metalio E-Ink 4
+pio run -e eego_a4 -t upload        # EEGO Reader A4
 ```
 
 Connect only the target device while uploading. Board-specific USB boot mode,
@@ -309,7 +326,7 @@ To revert to the official firmware, you can also flash the latest official firmw
 ### Command line — Xteink X3 / X4 only
 
 This command writes the shared X3/X4 ESP32-C3 application image. Do not use it
-for X4 Pro, Paper Mono, or Sticky.
+for any other device.
 
 1. Install [`esptool`](https://github.com/espressif/esptool):
 
@@ -317,7 +334,7 @@ for X4 Pro, Paper Mono, or Sticky.
 pip install esptool
 ```
 
-2. Download the X3/X4 `firmware.bin` from the
+2. Download `crosslingua-<version>-x3-x4.bin` from the
    [CrossLingua releases page](https://github.com/ed-fruty/crosslingua-reader/releases).
 3. Connect your device via USB-C.
 4. Find the device port. On Linux, run `dmesg` after connecting. On macOS:
@@ -329,7 +346,7 @@ log stream --predicate 'subsystem == "com.apple.iokit"' --info
 5. Flash:
 
 ```bash
-esptool.py --chip esp32c3 --port /dev/ttyACM0 --baud 921600 write_flash 0x10000 /path/to/firmware.bin
+esptool.py --chip esp32c3 --port /dev/ttyACM0 --baud 921600 write_flash 0x10000 /path/to/crosslingua-<version>-x3-x4.bin
 ```
 
 Adjust `/dev/ttyACM0` to match your system.
@@ -342,7 +359,11 @@ See [Development quick start](#development-quick-start) below.
 
 ## Custom SD-card fonts
 
-Convert your own TTF/OTF files into `.cpfont` files that load from the SD card. No firmware reflash is needed.
+On devices with external RAM enabled in CrossPoint, copy `.ttf`, `.otf`, or `.ttc` files to the SD card and select them as reader fonts. Put one file in `/fonts/` or `/.fonts/`, or put one family's files in a subfolder. See the [SD card font guide](./docs/sd-card-fonts.md) for the folder layout and styles.
+
+On other devices, convert the font to `.cpfont` first. `.cpfont` files also work on devices with external RAM enabled and have better performance. No firmware reflash is needed to add fonts.
+
+To make `.cpfont` files:
 
 1. Go to https://crosspointreader.com/fonts and open the "SD-card font builder" form.
 2. Upload up to four styles (regular, bold, italic, bold-italic), set the family name, point sizes, and Unicode range.

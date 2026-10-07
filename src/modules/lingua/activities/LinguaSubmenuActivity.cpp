@@ -705,8 +705,7 @@ void LinguaSubmenuActivity::syncRowItems() {
     }
   }
   // Keep the cursor inside the (potentially shorter) list after a delete or a mode change.
-  nav.selected = std::min(nav.selected, static_cast<int>(menuItems.size()) - 1);
-  nav.selected = std::max(nav.selected, 0);
+  nav.selected = std::max(std::min(nav.selected.load(), static_cast<int>(menuItems.size()) - 1), 0);
 }
 
 const char* LinguaSubmenuActivity::rowValue(const int index) {

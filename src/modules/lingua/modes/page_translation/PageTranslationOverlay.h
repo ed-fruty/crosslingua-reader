@@ -41,8 +41,8 @@ class PageTranslationOverlay {
   // page's own SOURCE text (Option C fallback), in which case render() appends a
   // short dim STR_NO_TRANSLATION marker so the gap is visible but unobtrusive.
   // No per-paragraph indent VALUE is stored: the overlay's first-line indent is the same for every
-  // paragraph that begins here, because it is a pure function of the Extra Paragraph Spacing setting
-  // (ParsedText::defaultFirstLineIndent) and the overlay's own font. render() computes it once and
+  // paragraph that begins here, because it is a pure function of the Paragraph Indent and Word Spacing
+  // settings (ParsedText::defaultFirstLineIndent) and the overlay's own font. render() computes it once and
   // gates it on `startsHere`.
   struct DisplayPara {
     std::string text;

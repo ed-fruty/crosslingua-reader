@@ -6,26 +6,26 @@
 #include <cstring>
 
 #include "CrossPointSettings.h"
-#include "network/HttpDownloader.h"
+#include "modules/lingua/services/TranslatorHttp.h"
 
 namespace {
 // Route an engine's HTTP call through the caller-provided reusable session when
 // one is given (one kept-alive TLS connection across many paragraphs), else
-// through the stateless HttpDownloader statics (a fresh connection per call —
+// through the stateless TranslatorHttp statics (a fresh connection per call —
 // the original behavior, preserved for tests and other callers). The static and
 // session methods share identical contracts (status handling, lastHttpCode
 // semantics), so these are exact drop-ins for the previous direct static calls.
 bool httpFetch(TranslationHttpSession* session, const std::string& url, std::string& out) {
-  return session ? session->fetchUrl(url, out) : HttpDownloader::fetchUrl(url, out);
+  return session ? session->fetchUrl(url, out) : TranslatorHttp::fetchUrl(url, out);
 }
 bool httpPost(TranslationHttpSession* session, const std::string& url, const std::string& body, const char* contentType,
               const char* extraHeaderName, const char* extraHeaderValue, std::string& out) {
   return session ? session->post(url, body, contentType, extraHeaderName, extraHeaderValue, out)
-                 : HttpDownloader::post(url, body, contentType, extraHeaderName, extraHeaderValue, out);
+                 : TranslatorHttp::post(url, body, contentType, extraHeaderName, extraHeaderValue, out);
 }
 bool httpPostJson(TranslationHttpSession* session, const std::string& url, const std::string& body,
                   const std::string& authHeader, std::string& out) {
-  return session ? session->postJson(url, body, authHeader, out) : HttpDownloader::postJson(url, body, authHeader, out);
+  return session ? session->postJson(url, body, authHeader, out) : TranslatorHttp::postJson(url, body, authHeader, out);
 }
 }  // namespace
 
@@ -534,7 +534,7 @@ void azureInvalidateToken() {
 
 // Fetch (or reuse) the anonymous bearer token.
 //
-// Deliberately uses the STATIC HttpDownloader::fetchUrl rather than the caller's
+// Deliberately uses the STATIC TranslatorHttp::fetchUrl rather than the caller's
 // TranslationHttpSession: the token host differs from the translate host, so
 // routing it through the session would bounce the kept-alive socket between two
 // origins (two extra handshakes per chapter) and, worse, would set the session's
@@ -553,7 +553,7 @@ bool azureAuthToken(std::string& out) {
   }
 
   std::string jwt;
-  const bool fetched = HttpDownloader::fetchUrl(kAzureAuthUrl, jwt, "", "", kAzureAuthUserAgent);
+  const bool fetched = TranslatorHttp::fetchUrl(kAzureAuthUrl, jwt, "", "", kAzureAuthUserAgent);
   if (fetched) {
     // The endpoint returns the raw JWT as text/plain; strip any trailing newline so
     // it cannot corrupt the Authorization header.
@@ -563,15 +563,15 @@ bool azureAuthToken(std::string& out) {
   }
   if (!fetched || jwt.empty()) {
     // Give this GET its own status. The GET path never touches lastHttpCode (see
-    // HttpDownloader.h and TranslationHttpSession::fetchUrl), so without this the
+    // TranslatorHttp.h and TranslationHttpSession::fetchUrl), so without this the
     // caller would classify a TOKEN failure using whatever the last POST left behind
     // — and with the in-place 401 recovery in translateAzure() that stale value is a
     // 401, i.e. a transient token refusal (typically the heap guard declining the
     // handshake) would be misread as a real auth failure and abort the entire run.
-    // -1 is HttpDownloader's own encoding for a connection-level failure, which is all
+    // -1 is TranslatorHttp's own encoding for a connection-level failure, which is all
     // we can observe here: fetchUrl collapses the GET to a bool, so no HTTP status is
     // available to thread out. It classifies as transient -> retry with backoff.
-    HttpDownloader::lastHttpCode = -1;
+    TranslatorHttp::lastHttpCode = -1;
     LOG_ERR("Translator", "Azure: auth token %s", fetched ? "empty" : "fetch failed");
     return false;
   }
@@ -750,7 +750,7 @@ bool ParagraphTranslator::translateAzure(const std::string& text, const char* so
   std::string response;
   bool posted = httpPostJson(session, url, body, auth, response);
   if (!posted) {
-    const int code = HttpDownloader::lastHttpCode;
+    const int code = TranslatorHttp::lastHttpCode;
     if (code == 401 || code == 403) {
       // The cached token was rejected — expired early, or revoked. Recover HERE rather
       // than dropping the cache and returning false: the caller classifies 401/403 as
@@ -772,7 +772,7 @@ bool ParagraphTranslator::translateAzure(const std::string& text, const char* so
       // than killing the run over what is usually a heap-refused handshake.
     }
     if (!posted) {
-      LOG_ERR("Translator", "Azure HTTP POST failed (code %d)", HttpDownloader::lastHttpCode);
+      LOG_ERR("Translator", "Azure HTTP POST failed (code %d)", TranslatorHttp::lastHttpCode);
       return false;
     }
   }
@@ -803,7 +803,7 @@ bool ParagraphTranslator::translate(const std::string& text, const char* sourceL
   LOG_DBG("Translator", "Engine=%d, text=%u bytes, src=%s, tgt=%s", engine, (unsigned)text.size(), sourceLang,
           targetLang);
 
-  HttpDownloader::lastHttpCode = 0;
+  TranslatorHttp::lastHttpCode = 0;
   bool ok = false;
   switch (engine) {
     case CrossPointSettings::ENGINE_GOOGLE_FREE:
@@ -847,7 +847,7 @@ bool ParagraphTranslator::translate(const std::string& text, const char* sourceL
     LOG_DBG("Translator", "Translation OK, result=%u bytes", (unsigned)result.size());
   } else if (errorOut) {
     // Format error from HTTP code
-    int code = HttpDownloader::lastHttpCode;
+    int code = TranslatorHttp::lastHttpCode;
     char buf[64];
     if (code == 0) {
       snprintf(buf, sizeof(buf), "HTTP request failed");

@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "modules/lingua/parsers/TranslationPairWalker.h"
+#include "modules/lingua/services/TranslatedContentDetector.h"
 
 namespace {
 
@@ -222,6 +223,34 @@ TEST_F(WalkerFixture, IgnoresScriptAndStyleContent) {
   EXPECT_EQ(pairs[0].translation, "Справжній текст.");
 }
 
+// An element carrying the HTML `hidden` attribute is laid out as display:none, so its text is on no
+// page. A hidden original must not pair with the visible translation after it, and a hidden
+// translation must not be offered for a visible original.
+TEST_F(WalkerFixture, SkipsElementsWithTheHiddenAttribute) {
+  const auto pairs = walk(
+      "<html><body>"
+      "<p hidden=\"hidden\">Hidden original.</p>"
+      "<p>Shown original.</p><p lang=\"uk\" hidden=\"\">Прихований переклад.</p>"
+      "<p lang=\"uk\">Показаний переклад.</p>"
+      "<div hidden=\"\"><p>Nested hidden.</p><p lang=\"uk\">Вкладений.</p></div>"
+      "</body></html>");
+
+  ASSERT_EQ(pairs.size(), 1u);
+  EXPECT_EQ(pairs[0].original, "Shown original.");
+  EXPECT_EQ(pairs[0].translation, "Показаний переклад.");
+}
+
+// A hidden inline element inside a paragraph contributes no text either.
+TEST_F(WalkerFixture, SkipsHiddenInlineText) {
+  const auto pairs = walk(
+      "<html><body>"
+      "<p>Before <span hidden=\"\">[HIDDEN]</span> after.</p><p lang=\"uk\">До після.</p>"
+      "</body></html>");
+
+  ASSERT_EQ(pairs.size(), 1u);
+  EXPECT_EQ(pairs[0].original, "Before after.");
+}
+
 // The sink can stop the walk as soon as it has what the page needs, so a page early in a long
 // chapter never pays for the rest of it.
 TEST_F(WalkerFixture, SinkCanStopTheWalkEarly) {
@@ -377,6 +406,38 @@ TEST_F(MatchFixture, StripsTheListBulletFromTheVisibleText) {
   ASSERT_EQ(out.size(), 1u);
   EXPECT_TRUE(out[0].matched);
   EXPECT_EQ(out[0].translation, "Текст пункту.");
+}
+
+// Inside <ol> the layout numbers each <li> with an "N." word instead of the bullet; the HTML has no
+// such text, so the marker must not defeat the match either.
+TEST_F(MatchFixture, StripsTheOrderedListNumberFromTheVisibleText) {
+  const auto out = match(
+      "<html><body><ol>"
+      "<li><p>First item text.</p><p lang=\"uk\">Перший пункт.</p></li>"
+      "<li><p>Second item text.</p><p lang=\"uk\">Другий пункт.</p></li>"
+      "</ol></body></html>",
+      {"1. First item text.", "12. Second item text."});
+
+  ASSERT_EQ(out.size(), 2u);
+  EXPECT_TRUE(out[0].matched);
+  EXPECT_EQ(out[0].matchOffset, 0u);
+  EXPECT_EQ(out[0].translation, "Перший пункт.");
+  EXPECT_TRUE(out[1].matched);
+  EXPECT_EQ(out[1].translation, "Другий пункт.");
+}
+
+// A paragraph that genuinely opens with a number keeps matching: the cut needle is still a
+// substring of its original.
+TEST_F(MatchFixture, ALeadingNumberInTheTextStillMatches) {
+  const auto out = match(
+      "<html><body>"
+      "<p>1984. The year it began.</p><p lang=\"uk\">1984. Рік, коли все почалося.</p>"
+      "</body></html>",
+      {"1984. The year it began."});
+
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_TRUE(out[0].matched);
+  EXPECT_EQ(out[0].translation, "1984. Рік, коли все почалося.");
 }
 
 // A word split across a line end reaches the visible text as "prefix- remainder", which the
@@ -636,6 +697,29 @@ TEST_F(CacheFixture, StopsCleanlyOnATruncatedCache) {
 TEST_F(CacheFixture, DoesNotWriteACacheForAMissingSource) {
   EXPECT_FALSE(lingua::writeTranslationPairCache("/tmp/crosspoint_tpw_missing.xhtml", "en", cachePath()));
   EXPECT_FALSE(lingua::hasTranslationPairCache(cachePath()));
+}
+
+// ── TranslatedContentDetector ────────────────────────────────────────────────
+
+class DetectorFixture : public WalkerFixture {
+ protected:
+  bool detect(const std::string& html, const std::string& bookLang = "en") {
+    {
+      std::ofstream(path()) << html;
+    }
+    return lingua::content::htmlHasTranslatedBlock(path(), bookLang, nullptr);
+  }
+};
+
+TEST_F(DetectorFixture, FindsAVisibleTranslatedBlock) {
+  EXPECT_TRUE(detect("<html><body><p>Text.</p><p lang=\"uk\">Текст.</p></body></html>"));
+}
+
+// A lang-tagged block the parser never lays out (HTML `hidden`) must not mark the chapter as
+// translated: the bilingual layouts would then find nothing to pair.
+TEST_F(DetectorFixture, IgnoresAHiddenTranslatedBlock) {
+  EXPECT_FALSE(detect("<html><body><p>Text.</p><p lang=\"uk\" hidden=\"\">Текст.</p></body></html>"));
+  EXPECT_FALSE(detect("<html><body><div hidden=\"\"><p lang=\"uk\">Текст.</p></div><p>Text.</p></body></html>"));
 }
 
 }  // namespace

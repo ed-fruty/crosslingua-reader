@@ -5,6 +5,7 @@
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <Memory.h>
 #include <Utf8.h>
 #include <XmlParserUtils.h>
 #include <expat.h>
@@ -94,8 +95,8 @@ void ChapterHtmlSlimParser::renderSideBySide(std::unique_ptr<ParsedText> sourceB
 
   // Lay each column out at half width into its own line vector. Paragraphs are short (one block
   // each), so a small reserve avoids the first few reallocs without over-committing DRAM.
-  std::vector<std::shared_ptr<TextBlock>> sourceLines;
-  std::vector<std::shared_ptr<TextBlock>> transLines;
+  std::vector<std::unique_ptr<TextBlock>> sourceLines;
+  std::vector<std::unique_ptr<TextBlock>> transLines;
   sourceLines.reserve(8);
   transLines.reserve(8);
   // Each source line's own offset into the chapter's visible text, kept 1:1 with sourceLines. This
@@ -104,15 +105,21 @@ void ChapterHtmlSlimParser::renderSideBySide(std::unique_ptr<ParsedText> sourceB
   // a fixed stack array cannot serve it, since a paragraph's line count is unbounded.
   std::vector<uint32_t> sourceOffsets;
   sourceOffsets.reserve(8);
+  // Words dropped to an arena OOM while either block was buffered: the parser's own latch only sees
+  // currentTextBlock, so the paired blocks are checked here, before and after their layout.
+  if (sourceBlock->hadDroppedWords() || transBlock->hadDroppedWords()) layoutOom = true;
   sourceBlock->layoutAndExtractLines(
       renderer, fontId, colWidth,
-      [&sourceLines, &sourceOffsets](const std::shared_ptr<TextBlock>& line, const uint32_t offset) {
-        sourceLines.push_back(line);
+      [&sourceLines, &sourceOffsets](std::unique_ptr<TextBlock> line, const uint32_t offset) {
+        sourceLines.push_back(std::move(line));
         sourceOffsets.push_back(offset);
-      });
-  transBlock->layoutAndExtractLines(renderer, fontId, colWidth, [&transLines](const std::shared_ptr<TextBlock>& line) {
-    transLines.push_back(line);
-  });
+      },
+      /*includeLastLine=*/true, characterSpacing, wordSpacingPercent);
+  transBlock->layoutAndExtractLines(
+      renderer, fontId, colWidth,
+      [&transLines](std::unique_ptr<TextBlock> line) { transLines.push_back(std::move(line)); },
+      /*includeLastLine=*/true, characterSpacing, wordSpacingPercent);
+  if (sourceBlock->hadDroppedWords() || transBlock->hadDroppedWords()) layoutOom = true;
 
   // Top spacing comes from the SOURCE block (vertical, so order-invariant).
   const BlockStyle& bs = sourceBlock->getBlockStyle();
@@ -170,33 +177,31 @@ void ChapterHtmlSlimParser::renderSideBySide(std::unique_ptr<ParsedText> sourceB
       }
       pendingFootnotes.erase(pendingFootnotes.begin(), footnoteIt);
 
-      auto sourceLine = std::make_shared<PageLine>(sourceLines[i], sourceColX, currentPageNextY);
-      sourceLine->paragraphIdx = bufferedOriginalParagraphIdx;
-      // fontRole stays Body: this is the book's own text, and it must never take the translation
-      // colour.
-      currentPage->elements.push_back(std::move(sourceLine));
-      // The page owns this line now (PageLine's ctor takes the shared_ptr BY VALUE and moves it into
-      // its member, so the copy made above is the page's own reference), so release ours instead of
-      // pinning every line of BOTH columns until the call returns. Nothing below reads an earlier
-      // line: this loop only ever touches the CURRENT index of each column, and the sizes it compares
-      // against are unaffected by a reset. That restores the makePages peak -- one page's worth of
-      // TextBlocks, freed as onPageComplete serializes each page -- for a pair long enough to span
-      // several pages, instead of holding object + arena + control block for every line of both
-      // columns at once on top of the page being built.
-      sourceLines[i].reset();
+      // Moving the line into the page releases it from sourceLines, so a pair long enough to span
+      // several pages keeps the makePages peak -- one page's worth of TextBlocks, freed as
+      // onPageComplete serializes each page -- instead of pinning every line of both columns.
+      auto sourceLine = makeUniqueNoThrow<PageLine>(std::move(sourceLines[i]), sourceColX, currentPageNextY);
+      if (!sourceLine) {
+        LOG_ERR("EHP", "OOM: PageLine");
+      } else {
+        sourceLine->paragraphIdx = bufferedOriginalParagraphIdx;
+        // fontRole stays Body: this is the book's own text, and it must never take the translation
+        // colour.
+        currentPage->elements.push_back(std::move(sourceLine));
+      }
     }
     if (i < transLines.size()) {
-      auto transLine = std::make_shared<PageLine>(transLines[i], transColX, currentPageNextY);
-      transLine->paragraphIdx = bufferedOriginalParagraphIdx;
-      // THE colour hook for this mode. The role resolves to the body font (see above), so this is
-      // purely "which stream is this line", read back at draw time by PageFontSet::inkForRole to
-      // colour the translation column and nothing else. It is written into the page (one byte per
-      // PageLine), so a section cached by a build that predates this line keeps Body and draws the
-      // column black until it is rebuilt for some other reason -- deliberate: a colour must not be
-      // worth a cache invalidation.
-      transLine->fontRole = LineFontRole::Translation;
-      currentPage->elements.push_back(std::move(transLine));
-      transLines[i].reset();  // same handoff as the source column above
+      auto transLine = makeUniqueNoThrow<PageLine>(std::move(transLines[i]), transColX, currentPageNextY);
+      if (!transLine) {
+        LOG_ERR("EHP", "OOM: PageLine");
+      } else {
+        transLine->paragraphIdx = bufferedOriginalParagraphIdx;
+        // THE colour hook for this mode. The role resolves to the body font (see above), so this is
+        // purely "which stream is this line", read back at draw time by PageFontSet::inkForRole to
+        // colour the translation column and nothing else.
+        transLine->fontRole = LineFontRole::Translation;
+        currentPage->elements.push_back(std::move(transLine));
+      }
     }
 
     // Both columns belong to the same original paragraph; keep the page's paragraph range current

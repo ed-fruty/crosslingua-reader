@@ -28,6 +28,11 @@ class Section {
   // own XHTML embeds translations"), stamped purely so the next load can recombine it with one
   // sidecar stat instead of re-scanning the chapter HTML. Not a cache key.
   void writeSectionFileHeader(const ReaderRenderSpec& spec, bool translatedSource, bool embeddedTranslation);
+  // Lingua header fields (LinguaSectionSupport.cpp), between wordSpacingPercent and pageCount. The
+  // reader resolves translatedSource / translationPresence_ as a side effect and returns whether the
+  // stored Lingua key matches `spec`.
+  void writeLinguaHeaderFields(const ReaderRenderSpec& spec, bool translatedSource, bool embeddedTranslation);
+  bool readLinguaHeaderFields(const ReaderRenderSpec& spec);
   uint32_t onPageComplete(std::unique_ptr<Page> page);
 
   // Lingua per-chapter fallback: a filtering/pairing layout on a chapter with no committed

@@ -464,24 +464,22 @@ void PageTranslationOverlay::render(GfxRenderer& renderer, const Page& page, int
   // size smaller. Half of a smaller line height reads as a seam rather than a paragraph break, so
   // matching the page's number here does not reproduce the page's appearance.
   const int paraSpacing = SETTINGS.extraParagraphSpacing ? lh : 0;
-  // The other half of the same setting, and the ONLY source of the overlay's paragraph indent: the
-  // reader's style-free rule (ParsedText::defaultFirstLineIndent — three space widths when the
-  // spacing is off, none when it is on), measured in the font the overlay actually draws with.
+  // The ONLY source of the overlay's paragraph indent: the reader's style-free rule
+  // (ParsedText::defaultFirstLineIndent — the Paragraph Indent setting's space count, scaled by Word
+  // Spacing), measured in the font the overlay actually draws with.
   //
   // It is deliberately NOT the indent the page layout baked into this paragraph's first line. That
-  // number is resolveFirstLineIndent()'s output, which mixes in the SOURCE paragraph's CSS
-  // text-indent: on a book that declares `text-indent` (most of them) it reproduces the stylesheet
-  // — 1.5em here, 0 there, per class — and with Extra Paragraph Spacing ON it is 0 for every
-  // paragraph, so the overlay could never show an indent at all. The text on screen here is a
-  // TRANSLATION: it carries no stylesheet, so the setting is the only thing that may decide.
+  // number is resolveFirstLineIndent()'s output, which mixes in the SOURCE paragraph's negative CSS
+  // text-indent (a hanging indent). The text on screen here is a TRANSLATION: it carries no
+  // stylesheet, so the setting is the only thing that may decide.
   //
   // One value for the whole page: it depends only on the setting and the overlay font, so every
   // paragraph that BEGINS here is indented identically — the source stylesheet cannot make one
   // paragraph indent and the next one not. The single exception is a paragraph that flowed in from
   // the previous page, which is not a paragraph start at all and renders flush (DisplayPara::
   // startsHere), exactly as the body's continuation lines do.
-  int paraIndent =
-      ParsedText::defaultFirstLineIndent(renderer, pageTranslationFontId, SETTINGS.extraParagraphSpacing != 0);
+  int paraIndent = ParsedText::defaultFirstLineIndent(renderer, pageTranslationFontId, SETTINGS.paragraphIndentSpaces,
+                                                      SETTINGS.wordSpacing);
   if (paraIndent > maxTextW / 2) paraIndent = maxTextW / 2;  // sanity net; never leaves line 0 unusable
 
   // Honor the reader's hyphenation toggle + paragraph alignment. The overlay shows the *translated*

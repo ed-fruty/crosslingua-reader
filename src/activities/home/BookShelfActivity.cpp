@@ -510,7 +510,7 @@ void BookShelfActivity::loop() {
   const int listSize = static_cast<int>(entries.size());
   const int oldPage = getPageOffset();
 
-  buttonNavigator.onNextRelease([this, listSize] {
+  buttonNavigator.onRelease(ButtonNavigator::getNextButtons(), [this, listSize] {
     selectorIndex = ButtonNavigator::nextIndex(static_cast<int>(selectorIndex), listSize);
     requestUpdate();
   });

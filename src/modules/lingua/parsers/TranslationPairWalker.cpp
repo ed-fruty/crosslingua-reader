@@ -24,6 +24,16 @@ constexpr size_t MAX_RUN_BYTES = 8192;
 // Content we must not read text out of at all.
 bool isNonTextTag(const char* name) { return strcmp(name, "script") == 0 || strcmp(name, "style") == 0; }
 
+// The HTML `hidden` attribute: ChapterHtmlSlimParser lays nothing out for such an element (it maps it
+// to display:none), so its text can neither be on a page nor pair with one.
+bool hasHiddenAttribute(const XML_Char** atts) {
+  if (atts == nullptr) return false;
+  for (int i = 0; atts[i]; i += 2) {
+    if (strcmp(atts[i], "hidden") == 0) return true;
+  }
+  return false;
+}
+
 struct WalkCtx {
   const char* bookPrimaryLang = "";
   void* sinkCtx = nullptr;
@@ -127,7 +137,7 @@ void XMLCALL onStart(void* ud, const XML_Char* name, const XML_Char** atts) {
   auto* ctx = static_cast<WalkCtx*>(ud);
   ctx->depth++;
   if (ctx->depth > ctx->skipFromDepth) return;
-  if (isNonTextTag(name)) {
+  if (isNonTextTag(name) || hasHiddenAttribute(atts)) {
     ctx->skipFromDepth = ctx->depth;
     return;
   }
@@ -242,10 +252,24 @@ namespace {
 // (foldForNeedle / foldForMatchNoSpaces): spaces ignored on both sides so an inline-tag word split
 // cannot defeat the match, and the needle cut before a line-break hyphenation artifact. See
 // TextNormalize.h for why each of those is required.
+//
+// The layout prepends a list marker to every <li> as a real page word -- U+2022 in <ul>, "N." in
+// <ol> -- which the HTML does not contain, so it is cut from the needle. Cutting a genuine leading
+// "12." is harmless: the shorter needle is still a substring of the original.
+size_t listMarkerLength(const std::string& visibleText) {
+  if (visibleText.compare(0, 3, "\xe2\x80\xa2") == 0) return 3;  // U+2022 <ul> bullet
+  size_t digits = 0;
+  while (digits < visibleText.size() && digits < 5 && visibleText[digits] >= '0' && visibleText[digits] <= '9') {
+    digits++;
+  }
+  const bool ordinal = digits >= 1 && digits <= 4 && digits < visibleText.size() && visibleText[digits] == '.' &&
+                       (digits + 1 == visibleText.size() || visibleText[digits + 1] == ' ');
+  return ordinal ? digits + 1 : 0;  // "N." <ol> marker
+}
+
 std::string buildNeedle(const std::string& visibleText) {
-  size_t begin = 0;
-  if (visibleText.compare(0, 3, "\xe2\x80\xa2") == 0) {  // U+2022 <li> bullet, a real page word
-    begin = 3;
+  size_t begin = listMarkerLength(visibleText);
+  if (begin > 0) {
     while (begin < visibleText.size() && visibleText[begin] == ' ') begin++;
   }
   return textnorm::foldForNeedle(visibleText.substr(begin), 48);
