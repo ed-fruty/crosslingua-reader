@@ -54,6 +54,7 @@ add_subdirectory(token_boundary)
 add_subdirectory(font_cache_manager)
 add_subdirectory(css_parser)
 add_subdirectory(chapter_html_slim_parser)
+add_subdirectory(translation_pair_walker)
 add_subdirectory(ligature_guard)
 add_subdirectory(page_link)
 

@@ -249,10 +249,26 @@ std::string trimToLastSentences(const std::string& text, int maxSentences) {
 
 int countSentencesBefore(const std::string& origText, const std::string& visibleStart) {
   if (visibleStart.empty() || origText.empty()) return 0;
-  const std::string needle = textnorm::foldForMatch(visibleStart, 40);
-  if (needle.size() < 3) return 0;
   const std::string foldedOrig = textnorm::foldForMatch(origText);
-  const auto pos = foldedOrig.find(needle);
-  if (pos == std::string::npos) return 0;
-  return countSentencesRaw(foldedOrig.substr(0, pos));
+
+  // Page-to-source matching, by the shared rule (textnorm::foldForNeedle): spaces ignored on both
+  // sides and the needle cut before a line-break hyphenation artifact. Without it a paragraph
+  // carried over from the previous page reported zero preceding sentences, and Page Translation
+  // showed its translation from the paragraph's start instead of from the part on screen.
+  const std::string needle = textnorm::foldForNeedle(visibleStart, 40);
+  if (needle.size() < 3) return 0;
+  const std::string despacedOrig = textnorm::foldForMatchNoSpaces(origText);
+  const auto despacedPos = despacedOrig.find(needle);
+  if (despacedPos == std::string::npos) return 0;
+
+  // Sentence detection DOES depend on spaces (a terminator is recognized by what follows it), so the
+  // match position is mapped back onto the spaced fold before counting: advance through foldedOrig
+  // until as many non-space bytes have been passed as the de-spaced match skipped.
+  size_t offset = 0;
+  size_t nonSpaceSeen = 0;
+  while (offset < foldedOrig.size() && nonSpaceSeen < despacedPos) {
+    if (foldedOrig[offset] != ' ') nonSpaceSeen++;
+    offset++;
+  }
+  return countSentencesRaw(foldedOrig.substr(0, offset));
 }

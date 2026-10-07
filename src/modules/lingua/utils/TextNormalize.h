@@ -51,6 +51,30 @@ std::string foldForMatch(const std::string& text, int limit = -1);
 // foldForMatch(); prefer this when the caller already owns a mutable buffer.
 void foldForMatchInPlace(std::string& s, int limit = -1);
 
+// ── Needle building for page-to-source matching ──────────────────────────────
+//
+// Locating the text a PAGE shows inside the SOURCE it came from has two artifacts to survive, and
+// both bite in more than one place (the Lingua pair matcher and countSentencesBefore), so the rule
+// lives here rather than in each caller:
+//
+//   1. WORD GLUE. A serialized page carries no "this word continues the previous one" flag, so a
+//      word split by an inline tag ("<i>lately</i>-unless") arrives as two words that the caller
+//      joins with a space the source does not contain. Collapsing whitespace is not enough; the
+//      space has to be GONE on both sides. Hence the No-Spaces pair below.
+//   2. LINE-BREAK HYPHENATION. Layout splits a word at a line end into "prefix-" + "remainder", so
+//      the page carries a "prefix- remainder" the unsplit source lacks. It is recognizable as a '-'
+//      glued to the preceding character and followed by a space -- a real spaced dash has spaces on
+//      BOTH sides -- and the needle simply stops there. The kept prefix always covers at least the
+//      first word, since a line-end split never lands on the first token.
+
+// foldForMatch() with every space removed: the HAYSTACK side of such a match.
+std::string foldForMatchNoSpaces(const std::string& text, int limit = -1);
+
+// The NEEDLE side: folded, truncated before the first hyphenation artifact, then de-spaced. Compare
+// it against foldForMatchNoSpaces() output. May come back shorter than `limit` -- a caller that
+// needs a discriminating needle should reject a very short result.
+std::string foldForNeedle(const std::string& text, int limit = -1);
+
 // Length in bytes of a canonical sentence terminator starting at `text[i]`, or
 // 0 if `text[i]` does not begin one. Recognizes ASCII '.', '!', '?', the
 // ellipsis sentinel (all 1 byte), and the CJK terminators 。(U+3002),

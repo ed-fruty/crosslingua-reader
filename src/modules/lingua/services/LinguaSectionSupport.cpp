@@ -9,6 +9,18 @@ std::string Section::getTranslatedHtmlPath() const {
   return epub->getCachePath() + "/sections/" + std::to_string(spineIndex) + ".translated.html";
 }
 
+std::string Section::getTranslationPairCachePath() const {
+  return epub->getCachePath() + "/sections/" + std::to_string(spineIndex) + ".pairs";
+}
+
+std::string Section::getTranslationSourcePath() const {
+  // The file that actually CONTAINS this chapter's translation. A reader-translated chapter has a
+  // committed sidecar; a plugin-translated (Calibre) book has none and carries its translation inside
+  // the chapter's own XHTML. The overlays used to be handed the sidecar path unconditionally, so on
+  // an embedded-translation book they opened nothing and silently showed no translations at all.
+  return hasTranslatedSidecar() ? getTranslatedHtmlPath() : getCachedHtmlPath();
+}
+
 std::string Section::getCachedHtmlPath() const {
   return epub->getCachePath() + "/html/" + std::to_string(spineIndex) + ".html";
 }

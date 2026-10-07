@@ -31,7 +31,14 @@ class LinguaReaderIntegration {
   bool prepareSection(Section& section);
   void drawFallbackDialog(GfxRenderer& renderer, const MappedInputManager& input);
   void onPageChanged();
-  void onSectionChanged(const std::string& translatedHtmlPath);
+  // Call when the user picked a different Lingua display mode. Required even when the page layout is
+  // unchanged: the previous mode's overlay stays active otherwise.
+  void onDisplayModeChanged();
+  void onSectionChanged(const std::string& translationSourcePath, const std::string& pairCachePath,
+                        const std::string& bookPrimaryLang);
+  // Builds this chapter's pair cache if it has none. Called from the reader's background tick, never
+  // from a render: a page whose cache is missing simply walks the HTML instead.
+  void buildPairCacheIfNeeded();
   void onReaderExit();
 
   bool pageTranslationActive() const { return modes_.pageTranslation().active(); }
@@ -53,7 +60,10 @@ class LinguaReaderIntegration {
   int overlayPrewarmFontId_ = -1;
   int overlayPrewarmOverlayFontId_ = -1;
   uint32_t overlayPrewarmGeneration_ = 0;
-  std::string translatedHtmlPath_;
+  std::string translationSourcePath_;
+  std::string pairCachePath_;
+  std::string bookPrimaryLang_;
+  bool pairCacheAttempted_ = false;
   bool fallbackDialogActive_ = false;
   bool fallbackDialogDrawn_ = false;
   bool showNoTranslationsToast_ = false;

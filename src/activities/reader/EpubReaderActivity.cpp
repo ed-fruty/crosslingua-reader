@@ -406,6 +406,13 @@ void EpubReaderActivity::loop() {
     }
   }
 
+  // Lingua: memoize this chapter's translation pairs once, off the render path. Gated on the same
+  // RenderLock and heap check as the section build above, and a no-op in every non-overlay mode.
+  if (section && !section->isBuilding() && !RenderLock::peek() && buildTickHeapGate()) {
+    RenderLock lock;
+    lingua.buildPairCacheIfNeeded();
+  }
+
   const bool atEndOfBook = currentSpineIndex > 0 && currentSpineIndex >= epub->getSpineItemsCount();
   clearEndOfBookOptionsIfNeeded();
 
@@ -931,9 +938,13 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
     }
     case EpubReaderMenuActivity::MenuAction::LINGUA: {
       const ReaderRenderSpec before = SETTINGS.readerRenderSpec(buildViewportWidth, buildViewportHeight);
+      // The display MODE is tracked separately from the render spec: two modes can share one layout
+      // (Tooltip and Page Translation do), so a mode change is invisible to layoutEquals() below and
+      // still has to clear the overlay the previous mode left on screen.
+      const uint8_t beforeMode = SETTINGS.translationDisplayMode;
       startActivityForResult(
           std::make_unique<LinguaSubmenuActivity>(renderer, mappedInput, epub, currentSpineIndex),
-          [this, before](const ActivityResult& result) {
+          [this, before, beforeMode](const ActivityResult& result) {
             LinguaResult translation = LinguaResult::NONE;
             if (const auto* menu = std::get_if<MenuResult>(&result.data)) {
               if (menu->action == static_cast<int>(LinguaResult::TRANSLATE_CHAPTER) ||
@@ -944,6 +955,9 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
             if (translation != LinguaResult::NONE) {
               launchTranslation(translation);
               return;
+            }
+            if (SETTINGS.translationDisplayMode != beforeMode) {
+              lingua.onDisplayModeChanged();
             }
             if (!SETTINGS.readerRenderSpec(buildViewportWidth, buildViewportHeight).layoutEquals(before)) {
               RenderLock lock;
@@ -1455,7 +1469,8 @@ void EpubReaderActivity::renderBook() {
   updateBookmarkFlag();
 
   {
-    lingua.onSectionChanged(section->getTranslatedHtmlPath());
+    lingua.onSectionChanged(section->getTranslationSourcePath(), section->getTranslationPairCachePath(),
+                            epub->getLanguage());
     auto p = section->loadPage(section->currentPage);
     if (!p) {
       LOG_ERR("ERS", "Failed to load page from SD - clearing section cache");

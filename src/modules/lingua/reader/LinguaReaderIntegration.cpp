@@ -8,6 +8,7 @@
 #include "components/UITheme.h"
 #include "components/WrappedPopup.h"
 #include "fontIds.h"
+#include "modules/lingua/parsers/TranslationPairWalker.h"
 
 LinguaReaderIntegration::InputAction LinguaReaderIntegration::handleInput(MappedInputManager& input,
                                                                           const bool hasSection) {
@@ -139,7 +140,12 @@ PageFontSet LinguaReaderIntegration::resolvePageFontSet(const bool annotationVis
 void LinguaReaderIntegration::renderOverlay(GfxRenderer& renderer, const Page& page, const int xOffset,
                                             const int yOffset, const int viewportWidth, const int viewportHeight) {
   const int bodyFont = SETTINGS.getReaderFontId();
-  if (modes_.pageTranslation().active()) {
+  // Each overlay draws on its OWN active flag, so it has to be gated on the mode it belongs to as
+  // well. Tooltip and Page Translation share one LinguaLayout, so switching between them is a cache
+  // hit with no re-layout -- without this gate the overlay left over from the previous mode keeps
+  // painting itself over the new one's page.
+  const auto displayMode = static_cast<CrossPointSettings::LINGUA_MODE>(SETTINGS.translationDisplayMode);
+  if (displayMode == CrossPointSettings::LINGUA_PAGE_TRANSLATION && modes_.pageTranslation().active()) {
     modes_.pageTranslation().render(renderer, page, bodyFont, getPageTranslationFontId(), xOffset, yOffset,
                                     viewportWidth, viewportHeight);
     if (!modes_.pageTranslation().active()) {
@@ -147,10 +153,19 @@ void LinguaReaderIntegration::renderOverlay(GfxRenderer& renderer, const Page& p
       noTranslationsToastTime_ = millis();
     }
   }
-  if (modes_.tooltip().active()) {
+  if (displayMode == CrossPointSettings::LINGUA_TOOLTIP && modes_.tooltip().active()) {
     modes_.tooltip().render(renderer, page, bodyFont, getTooltipFontId(), xOffset, yOffset, viewportWidth,
                             viewportHeight);
   }
+}
+
+void LinguaReaderIntegration::onDisplayModeChanged() {
+  // The display mode changed without the section being rebuilt (the two overlay modes share a
+  // layout, so their pages are byte-identical and the cache is a HIT). Nothing else clears the
+  // overlays, so an open tooltip or translation panel would survive into the new mode.
+  modes_.pageTranslation().onPageChanged();
+  modes_.tooltip().onPageChanged();
+  clearOverlayPrewarm();
 }
 
 bool LinguaReaderIntegration::prepareOverlayFonts(GfxRenderer& renderer, const Page& page, const PageFontSet& fonts,
@@ -239,21 +254,43 @@ void LinguaReaderIntegration::onPageChanged() {
   clearOverlayPrewarm();
 }
 
-void LinguaReaderIntegration::onSectionChanged(const std::string& translatedHtmlPath) {
-  if (translatedHtmlPath_ == translatedHtmlPath) return;
-  translatedHtmlPath_ = translatedHtmlPath;
-  modes_.pageTranslation().setTranslatedHtmlPath(translatedHtmlPath);
+void LinguaReaderIntegration::onSectionChanged(const std::string& translationSourcePath,
+                                               const std::string& pairCachePath, const std::string& bookPrimaryLang) {
+  if (translationSourcePath_ == translationSourcePath) return;
+  translationSourcePath_ = translationSourcePath;
+  pairCachePath_ = pairCachePath;
+  bookPrimaryLang_ = bookPrimaryLang;
+  pairCacheAttempted_ = false;
+  modes_.pageTranslation().setTranslationSource(translationSourcePath, pairCachePath, bookPrimaryLang);
   modes_.pageTranslation().onSectionChanged();
-  modes_.tooltip().setTranslatedHtmlPath(translatedHtmlPath);
+  modes_.tooltip().setTranslationSource(translationSourcePath, pairCachePath, bookPrimaryLang);
   modes_.tooltip().onPageChanged();
   clearOverlayPrewarm();
+}
+
+void LinguaReaderIntegration::buildPairCacheIfNeeded() {
+  // Pure optimisation, and deliberately off the render path: every page already works by walking the
+  // HTML, this only makes the ones after it cheaper. Attempted at most once per chapter -- a failure
+  // must not turn into a retry on every tick.
+  if (pairCacheAttempted_ || translationSourcePath_.empty() || pairCachePath_.empty()) return;
+  const auto mode = static_cast<CrossPointSettings::LINGUA_MODE>(SETTINGS.translationDisplayMode);
+  if (mode != CrossPointSettings::LINGUA_PAGE_TRANSLATION && mode != CrossPointSettings::LINGUA_TOOLTIP) return;
+
+  pairCacheAttempted_ = true;
+  if (lingua::hasTranslationPairCache(pairCachePath_)) return;
+  const uint32_t started = millis();
+  if (lingua::writeTranslationPairCache(translationSourcePath_, bookPrimaryLang_, pairCachePath_)) {
+    LOG_DBG("LNG", "Pair cache built in %lums", millis() - started);
+  }
 }
 
 void LinguaReaderIntegration::onReaderExit() {
   clearOverlayPrewarm();
   modes_.pageTranslation().onSectionChanged();
   modes_.tooltip().onPageChanged();
-  translatedHtmlPath_.clear();
+  translationSourcePath_.clear();
+  pairCachePath_.clear();
+  pairCacheAttempted_ = false;
 }
 
 void LinguaReaderIntegration::clearOverlayPrewarm() {

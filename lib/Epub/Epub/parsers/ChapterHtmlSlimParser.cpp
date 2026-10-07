@@ -327,6 +327,19 @@ void ChapterHtmlSlimParser::setCurrentPageVisibleOffset(const uint32_t offset) {
   currentPageVisibleOffsetSet = true;
 }
 
+// Lingua: the ONE paragraph-index rule. Every context that opens a content block routes through
+// here, so a change to the rule cannot land in one caller and miss another. See the header.
+void ChapterHtmlSlimParser::claimParagraphIndex(const bool isTranslated) {
+  currentBlockIsTranslated = isTranslated;
+  if (isTranslated) {
+    currentBlockParagraphIdx = static_cast<int16_t>(paragraphCounter - 1);
+  } else if (!currentBlockIndexAssigned) {
+    currentBlockParagraphIdx = paragraphCounter;
+    paragraphCounter++;
+    currentBlockIndexAssigned = true;
+  }
+}
+
 // flush the contents of partWordBuffer to currentTextBlock
 void ChapterHtmlSlimParser::flushPartWordBuffer() {
   // Lingua: a <br>-opened block carries no language of its own; its first word settles it.
@@ -866,6 +879,11 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       self->makePages();
       self->currentTextBlock.reset();
     }
+    // Lingua: dropping the block here bypasses startNewTextBlock, which is the only other place the
+    // paragraph-index latch is cleared. Left set, the first container AFTER the table would find it
+    // still true, claim no index of its own, and share the index of the paragraph BEFORE the table --
+    // two paragraphs under one index, which the overlays then group as one.
+    self->currentBlockIndexAssigned = false;
     self->flushPendingAnchor();
     self->pushTableTextStyleEntry(cssStyle);
     self->tableDepth = 1;
@@ -1271,6 +1289,10 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
         self->startNewTextBlock(self->blockStyleStack.back()
                                     .getCombinedBlockStyle(centeredBlockStyle, BlockStyle::CombineAxis::Horizontal)
                                     .withoutBottom());
+        // Lingua: the alt text is a paragraph of its own on the page, so it has to claim its own
+        // index. Without this it kept the PREVIOUS paragraph's index and the overlays grouped the
+        // "[Image: ...]" line together with the paragraph before it.
+        self->claimParagraphIndex(currentIsTranslated);
         self->italicUntilDepth = std::min(self->italicUntilDepth, self->depth);
         self->depth += 1;
         self->syntheticCharacterData = true;
@@ -1438,14 +1460,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     // takes the next index (currentBlockIndexAssigned latches so nested opens reusing the same empty
     // block inherit it instead of double-counting). A translated block never advances the counter;
     // it pairs with the most recent original paragraph (paragraphCounter - 1).
-    self->currentBlockIsTranslated = currentIsTranslated;
-    if (currentIsTranslated) {
-      self->currentBlockParagraphIdx = static_cast<int16_t>(self->paragraphCounter - 1);
-    } else if (!self->currentBlockIndexAssigned) {
-      self->currentBlockParagraphIdx = self->paragraphCounter;
-      self->paragraphCounter++;
-      self->currentBlockIndexAssigned = true;
-    }
+    self->claimParagraphIndex(currentIsTranslated);
   } else if (paraboundary::isParagraphBlockTag(name)) {
     // Reached only for NON-header block tags (headers handled by the branch
     // above), i.e. exactly the old BLOCK_TAGS set {p, li, div, br, blockquote}.
@@ -1493,14 +1508,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       // created text block takes the next index (currentBlockIndexAssigned latches so nested opens
       // reusing the same empty block inherit it instead of double-counting). A translated block
       // never advances the counter; it pairs with the most recent original (paragraphCounter - 1).
-      self->currentBlockIsTranslated = currentIsTranslated;
-      if (currentIsTranslated) {
-        self->currentBlockParagraphIdx = static_cast<int16_t>(self->paragraphCounter - 1);
-      } else if (!self->currentBlockIndexAssigned) {
-        self->currentBlockParagraphIdx = self->paragraphCounter;
-        self->paragraphCounter++;
-        self->currentBlockIndexAssigned = true;
-      }
+      self->claimParagraphIndex(currentIsTranslated);
 
       if (strcmp(name, "li") == 0) {
         self->currentTextBlock->addWord("\xe2\x80\xa2", EpdFontFamily::REGULAR, false, false, self->visibleTextOffset);
@@ -2059,6 +2067,10 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
     if (!self->currentTextBlock) {
       LOG_ERR("EHP", "OOM: text block after table");
     }
+    // Lingua: same reason as the table open -- this fresh block is installed directly rather than
+    // through startNewTextBlock, so the latch has to be cleared by hand or the next paragraph
+    // inherits the pre-table index.
+    self->currentBlockIndexAssigned = false;
     self->wordsExtractedInBlock = 0;
   }
 

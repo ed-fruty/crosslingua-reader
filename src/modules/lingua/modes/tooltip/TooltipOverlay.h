@@ -37,7 +37,11 @@ using TooltipStep = SentenceStep;
 // signature (no grayLevel parameter).
 class TooltipOverlay {
  public:
-  void setTranslatedHtmlPath(const std::string& path) { translatedHtmlPath = path; }
+  void setTranslationSource(const std::string& htmlPath, const std::string& cachePath, const std::string& lang) {
+    translationSourcePath = htmlPath;
+    pairCachePath = cachePath;
+    bookPrimaryLang = lang;
+  }
 
   bool handleInput(MappedInputManager& input);
 
@@ -70,7 +74,9 @@ class TooltipOverlay {
   int8_t skipDirection = 1;  // 1=forward, -1=backward (picks the start step after a page turn)
   bool pagePrepared = false;
 
-  std::string translatedHtmlPath;
+  std::string translationSourcePath;
+  std::string pairCachePath;
+  std::string bookPrimaryLang;
 
   static constexpr int MAX_WORDS = 500;
   const char* origWordPtrs[MAX_WORDS];

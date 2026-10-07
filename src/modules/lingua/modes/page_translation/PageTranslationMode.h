@@ -15,7 +15,10 @@ class PageTranslationMode final : public LinguaMode {
     overlay_.render(renderer, page, fontId, translationFontId, xOffset, yOffset, viewportWidth, viewportHeight);
   }
   void collectGlyphText(const Page& page, std::string& out) { overlay_.collectPageGlyphText(page, out); }
-  void setTranslatedHtmlPath(const std::string& path) { overlay_.setTranslatedHtmlPath(path); }
+  void setTranslationSource(const std::string& htmlPath, const std::string& cachePath,
+                            const std::string& bookPrimaryLang) {
+    overlay_.setTranslationSource(htmlPath, cachePath, bookPrimaryLang);
+  }
   void onPageChanged() { overlay_.onPageChanged(); }
   void onSectionChanged() { overlay_.onSectionChanged(); }
 

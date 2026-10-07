@@ -143,6 +143,12 @@ class Section {
   // startBuild() prefers it over the unzipped chapter HTML when present, and it survives
   // layout-cache invalidation (font/size/mode changes only invalidate the `.bin`).
   std::string getTranslatedHtmlPath() const;
+  // The file the Lingua overlays read this chapter's translation from: the sidecar when one is
+  // committed, otherwise the chapter's own cached XHTML (a plugin-translated book has no sidecar).
+  std::string getTranslationSourcePath() const;
+  // Memo of the walker's pairs for this chapter (lingua::writeTranslationPairCache). Keyed on the
+  // source, not the render spec, so it survives .bin invalidation -- like the translated sidecar.
+  std::string getTranslationPairCachePath() const;
 
   // Does this chapter have a translation to display? True for EITHER source:
   //   • a reader-produced `.translated.html` sidecar, or

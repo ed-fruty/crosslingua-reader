@@ -426,6 +426,13 @@ void ChapterTranslationActivity::runTranslation() {
     taskFailed = true;
     return;
   }
+  // The Lingua overlays memoize this chapter's (original, translation) pairs beside the sidecar
+  // (Section::getTranslationPairCachePath). A fresh translation invalidates that memo, and it is
+  // keyed on the source rather than on any render setting, so nothing else would ever drop it.
+  // Deriving the path here rather than taking a Section keeps this activity independent of one.
+  const std::string pairCachePath =
+      translatedHtmlPath.substr(0, translatedHtmlPath.rfind(".translated.html")) + ".pairs";
+  Storage.remove(pairCachePath.c_str());
 
   LOG_DBG("CHT", "Translation done: %d translated, %d skipped, %d failed", lastResult.paragraphsTranslated,
           lastResult.paragraphsSkipped, lastResult.translateFailures);

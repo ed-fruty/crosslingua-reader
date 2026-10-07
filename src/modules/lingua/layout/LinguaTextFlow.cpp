@@ -35,12 +35,9 @@
 // word arrives. flushPartWordBuffer calls this on every word; everything but the first word of a
 // <br>-opened block falls out on the guard below.
 //
-// The stamping itself mirrors startElement's block-open path exactly, so the parser keeps one rule
-// for paragraph indices: a translated block pairs with the most recent original paragraph
-// (paragraphCounter - 1) and never advances the counter, while an original block claims the next
-// index once -- currentBlockIndexAssigned latches so later words inherit it instead of
-// double-counting. Runs before the word-drop filter, so the block is classified even under a layout
-// that drops its words.
+// The stamping goes through claimParagraphIndex, the single owner of the paragraph-index rule, so
+// this context cannot drift from the others. Runs before the word-drop filter, so the block is
+// classified even under a layout that drops its words.
 void ChapterHtmlSlimParser::classifyBrOpenedBlock() {
   // Only the FIRST word of a still-empty <br>-opened block: partWordBufferIndex > 0 means a real
   // word is about to land (an empty flush must not consume a paragraph index), and isEmpty() stops
@@ -48,14 +45,7 @@ void ChapterHtmlSlimParser::classifyBrOpenedBlock() {
   if (partWordBufferIndex == 0 || !currentTextBlock || !currentTextBlock->isEmpty()) return;
   if (!currentTextBlock->getBlockStyle().fromBrElement) return;
 
-  currentBlockIsTranslated = !inlineStyleStack.empty() && inlineStyleStack.back().isTranslatedBlock;
-  if (currentBlockIsTranslated) {
-    currentBlockParagraphIdx = static_cast<int16_t>(paragraphCounter - 1);
-  } else if (!currentBlockIndexAssigned) {
-    currentBlockParagraphIdx = paragraphCounter;
-    paragraphCounter++;
-    currentBlockIndexAssigned = true;
-  }
+  claimParagraphIndex(!inlineStyleStack.empty() && inlineStyleStack.back().isTranslatedBlock);
 }
 
 // Lingua: layout-based block filtering, shared by flushPartWordBuffer and the ruby

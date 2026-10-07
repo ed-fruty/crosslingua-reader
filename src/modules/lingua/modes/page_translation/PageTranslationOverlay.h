@@ -9,18 +9,11 @@
 
 class PageTranslationOverlay {
  public:
-  // Public because static XML callbacks in the .cpp need access.
-  // Sparse: only paragraphs in the current page's [first..last] range get an entry, and each
-  // carries its real paragraph index — so we iterate by paragraphIdx, not by vector position.
-  struct ParagraphPair {
-    int16_t paragraphIdx = -1;       // actual chapter paragraph index this entry represents
-    std::string origText;            // kept ONLY for boundary paragraphs (first/last) — empty otherwise
-    std::string translation;         // translated paragraph text
-    int16_t origSentenceCount = 0;   // number of sentences in original paragraph
-    int16_t transSentenceCount = 0;  // number of sentences in translation
-  };
-
-  void setTranslatedHtmlPath(const std::string& path);
+  // Where the chapter's translated text lives -- the reader's `.translated.html` sidecar, or the
+  // chapter's own XHTML for a book whose translation is embedded -- plus the book's primary language,
+  // which is what makes a lang-tagged block a translation. Both are handed to the shared walker.
+  void setTranslationSource(const std::string& htmlPath, const std::string& cachePath,
+                            const std::string& bookPrimaryLang);
 
   // Opens the overlay externally (e.g. from EpubReaderActivity's longpress handler).
   void open();
@@ -74,7 +67,9 @@ class PageTranslationOverlay {
   int16_t prevScrollOffset = -1;
   bool pagePrepared = false;
 
-  std::string translatedHtmlPath;
+  std::string translationSourcePath;
+  std::string pairCachePath;
+  std::string bookPrimaryLang;
 
   // Page-level only: what to show for each VISIBLE source paragraph on the current
   // page. Dense over the page's [first..last] range (one entry per visible

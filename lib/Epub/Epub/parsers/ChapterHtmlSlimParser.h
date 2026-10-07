@@ -227,6 +227,13 @@ class ChapterHtmlSlimParser {
   // arrives -- which is where Calibre's plugin puts its translation. Defined in
   // modules/lingua/layout/LinguaTextFlow.cpp; a no-op on any block not opened by <br>.
   void classifyBrOpenedBlock();
+  // Lingua: THE paragraph-index rule, in one place. A translated block pairs with the most recent
+  // original (paragraphCounter - 1) and never advances the counter; an original block claims the
+  // next index once -- currentBlockIndexAssigned latches so a wrapper container and the child that
+  // reuses its still-empty ParsedText share ONE index instead of double-counting. Every context that
+  // opens a content block routes through here: header open, container open, a <br>-opened block's
+  // first word, and an image's alt-text fallback.
+  void claimParagraphIndex(bool isTranslated);
   // Lingua: the role every line of the currently-open block carries. Reads the SAME
   // block-level translated signal as the per-block hyphenation slot and the word-drop filter
   // (currentBlockIsTranslated), so the parser keeps exactly one notion of "translated".

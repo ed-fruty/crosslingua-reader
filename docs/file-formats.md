@@ -88,6 +88,42 @@ if (parsedSize != fileSize) {
 }
 ```
 
+## `<spine>.pairs` (Lingua translation pair cache)
+
+### Version 1
+
+A memo of `lingua::walkTranslationPairs`'s output for one chapter: its (original, translation)
+paragraph pairs, pre-parsed, in document order. The Lingua overlay display modes (Page Translation,
+Tooltip) match the paragraphs a page shows against these pairs by text.
+
+Purely an optimisation. A page whose chapter has no cache matches straight from the HTML instead, so
+translations are never unavailable because the cache has not been written yet — the cache only spares
+later pages the repeated walk from byte 0 of the chapter.
+
+Keyed on the SOURCE (the `.translated.html` sidecar, or the chapter's own XHTML for a book whose
+translation is embedded), NOT on any render setting, so it survives every `section.bin`
+invalidation. `Section::clearCache()` therefore leaves it alone and only removes a stale `.part`;
+the translator deletes it after committing a new sidecar, since that is what makes it stale.
+
+```c
+u32 magic;        // 'CPPR' (0x52505043)
+u8  version;      // 1
+u8  reserved;
+u16 reserved;
+
+// then, repeated to end of file, one record per pair in document order:
+struct Record {
+    u16 origLen;   u16 transLen;   // little-endian, each <= 8192 (the walker's run cap)
+    u8  original[origLen];         // UTF-8, words separated by single ASCII spaces
+    u8  translation[transLen];     // UTF-8
+};
+```
+
+Records are read strictly in order — that is all the matcher ever does, and document order is what
+lets several paragraphs with identical text pair with their own translation — so there is no offset
+table and no pair count. Written to `<spine>.pairs.part` and committed by an atomic rename, because a
+truncated record stream would otherwise read as a complete but shorter chapter.
+
 ## `section.bin`
 
 ### Version 46

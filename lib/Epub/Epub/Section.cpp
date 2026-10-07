@@ -179,7 +179,7 @@ namespace {
 // v45: Internal EPUB links preserve CSS superscript/subscript positioning.
 // v46: Lingua Interlinear carries an annotation tail into the following strips, and finishes a
 //      paragraph whose translation outruns them all with source-less tail strips, instead of cutting.
-constexpr uint8_t SECTION_FILE_VERSION = 46;
+constexpr uint8_t SECTION_FILE_VERSION = 45;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
@@ -493,6 +493,14 @@ bool Section::clearCache() const {
   const auto partPath = getTranslatedHtmlPath() + ".part";
   if (Storage.exists(partPath.c_str())) {
     Storage.remove(partPath.c_str());
+  }
+
+  // Same reasoning as the translated sidecar above: the committed pair memo is keyed on the SOURCE,
+  // not on the render spec, so it survives a layout invalidation and is dropped only when the
+  // translation itself changes. Only a stale ".part" from an interrupted write is transient.
+  const auto pairsPart = getTranslationPairCachePath() + ".part";
+  if (Storage.exists(pairsPart.c_str())) {
+    Storage.remove(pairsPart.c_str());
   }
 
   if (!Storage.exists(filePath.c_str())) {

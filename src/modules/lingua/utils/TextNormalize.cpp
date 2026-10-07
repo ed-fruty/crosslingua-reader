@@ -151,4 +151,31 @@ int closingQuoteLenAt(const std::string& text, size_t i) {
   return 0;
 }
 
+std::string foldForMatchNoSpaces(const std::string& text, const int limit) {
+  std::string folded = foldForMatch(text, limit);
+  size_t write = 0;
+  for (size_t read = 0; read < folded.size(); read++) {
+    if (folded[read] != ' ') folded[write++] = folded[read];
+  }
+  folded.resize(write);
+  return folded;
+}
+
+std::string foldForNeedle(const std::string& text, const int limit) {
+  // The artifact is only visible while the spaces are still there, so truncate first, de-space after.
+  std::string folded = foldForMatch(text, limit);
+  for (size_t k = 1; k + 1 < folded.size(); k++) {
+    if (folded[k] == '-' && folded[k + 1] == ' ' && folded[k - 1] != ' ') {
+      folded.resize(k);
+      break;
+    }
+  }
+  size_t write = 0;
+  for (size_t read = 0; read < folded.size(); read++) {
+    if (folded[read] != ' ') folded[write++] = folded[read];
+  }
+  folded.resize(write);
+  return folded;
+}
+
 }  // namespace textnorm

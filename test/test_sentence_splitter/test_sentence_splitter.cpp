@@ -1,6 +1,7 @@
 #include <unity.h>
 
 #include <cstdint>
+#include <cstdio>
 #include <initializer_list>
 #include <string>
 #include <vector>
@@ -13,6 +14,7 @@
 // SentencePairing.cpp -- pure text logic -- removed the need for the clone.)
 #include "modules/lingua/utils/SentencePairing.h"
 #include "modules/lingua/utils/SentenceSplitter.h"
+#include "modules/lingua/utils/TextNormalize.h"
 
 static constexpr int TEST_MAX_SENTENCES = MAX_SENTENCES;
 
@@ -218,6 +220,23 @@ void test_trimToLastSentences_last2(void) {
 }
 void test_trimToLastSentences_more_than_exists(void) {
   TEST_ASSERT_EQUAL_STRING("A. B.", trimToLastSentences("A. B.", 5).c_str());
+}
+
+// A serialized page carries no word-glue flag, so a word split by an inline tag
+// ("anything <i>lately</i>-unless") reaches the overlay as two words joined by a space the original
+// does not contain. The search has to see past that, or a paragraph carried over from the previous
+// page reports zero preceding sentences and Page Translation shows its translation from the
+// paragraph's start instead of from the part that is on screen.
+void test_countSentencesBefore_ignores_word_glue_spaces(void) {
+  // "lately-unless" in the source; "lately -unless" as the page joins it.
+  TEST_ASSERT_EQUAL(1, countSentencesBefore("She left. Not done anything lately-unless you count it.",
+                                            "lately -unless you count it."));
+}
+
+// Same insensitivity for a line-end hyphenation join inside the visible slice.
+void test_countSentencesBefore_ignores_hyphenation_join(void) {
+  TEST_ASSERT_EQUAL(1, countSentencesBefore("First one. The night she disappeared, I said nothing.",
+                                            "The night she disap- peared, I said nothing."));
 }
 
 // countSentencesBefore tests
@@ -575,6 +594,67 @@ void test_splitSentencePair_empty_side_rejected(void) {
   TEST_ASSERT_FALSE(splitSentencePair(empty.data(), empty.count(), src.data(), src.count(), g_scratch));
 }
 
+// A paragraph carried across a page break, from a real reported Tooltip skip. Its three sentences
+// must align to three DISTINCT translations: the Tooltip index is keyed per source sentence, and
+// groupTranslationSteps collapses consecutive sentences that share a translation into one step -- so
+// a collapse here would silently cost the reader two of the three steps.
+static std::vector<std::string> pipelineTokenize(const std::string& text) {
+  std::vector<std::string> words;
+  const size_t n = text.size();
+  size_t i = 0;
+  while (i < n) {
+    int wl;
+    while (i < n && (wl = textnorm::whitespaceLenAt(text, i)) > 0) i += static_cast<size_t>(wl);
+    if (i >= n) break;
+    const size_t start = i;
+    while (i < n && textnorm::whitespaceLenAt(text, i) == 0) i++;
+    words.emplace_back(text.data() + start, i - start);
+  }
+  return words;
+}
+
+void test_carriedParagraph_aligns_to_distinct_translations(void) {
+  const std::string orig =
+      "I want him to know how sorry I am that it wasn't enough to point them in Kamal's direction, "
+      "to say, Look, there he is. I should have seen something. That Saturday night, I should have "
+      "had my eyes open.";
+  const std::string trans =
+      "Я хочу, щоб він знав, як мені шкода, що мені не вистачило вказати йому на Камала, сказати: "
+      "«Дивись, ось він.» Я мала щось побачити. Тієї суботньої ночі я мала тримати очі відкритими.";
+
+  auto ow = pipelineTokenize(orig);
+  auto tw = pipelineTokenize(trans);
+  std::vector<const char*> op, tp;
+  for (auto& w : ow) op.push_back(w.c_str());
+  for (auto& w : tw) tp.push_back(w.c_str());
+
+  SentencePairScratch scratch;
+  TEST_ASSERT_TRUE(splitSentencePair(op.data(), (int)op.size(), tp.data(), (int)tp.size(), scratch));
+  TEST_ASSERT_EQUAL(3, scratch.origSplits.count);
+  mapSentenceSpans(op.data(), tp.data(), scratch);
+
+  // The keys the page's own sentences are looked up by.
+  TEST_ASSERT_EQUAL_STRING(
+      "I want him to know how",
+      sentenceKey(op.data(), scratch.origSplits.spans[0].startWord, scratch.origSplits.spans[0].endWord).c_str());
+  TEST_ASSERT_EQUAL_STRING(
+      "I should have seen something",
+      sentenceKey(op.data(), scratch.origSplits.spans[1].startWord, scratch.origSplits.spans[1].endWord).c_str());
+
+  // Three distinct translations, or two of the three steps disappear.
+  const std::string t0 = joinSpan(tw, scratch.transFor[0]);
+  const std::string t1 = joinSpan(tw, scratch.transFor[1]);
+  const std::string t2 = joinSpan(tw, scratch.transFor[2]);
+  TEST_ASSERT_TRUE(!t0.empty() && !t1.empty() && !t2.empty());
+  TEST_ASSERT_TRUE(t0 != t1);
+  TEST_ASSERT_TRUE(t1 != t2);
+
+  // ...and grouping must therefore keep them as three separate steps.
+  SentenceStep steps[8];
+  const std::vector<std::string> perSentence = {t0, t1, t2};
+  TEST_ASSERT_EQUAL(3, groupTranslationSteps(perSentence, steps, 8));
+}
+
 int main(int /*argc*/, char** /*argv*/) {
   UNITY_BEGIN();
 
@@ -636,6 +716,9 @@ int main(int /*argc*/, char** /*argv*/) {
   RUN_TEST(test_trimToLastSentences_last2);
   RUN_TEST(test_trimToLastSentences_more_than_exists);
 
+  RUN_TEST(test_carriedParagraph_aligns_to_distinct_translations);
+  RUN_TEST(test_countSentencesBefore_ignores_word_glue_spaces);
+  RUN_TEST(test_countSentencesBefore_ignores_hyphenation_join);
   RUN_TEST(test_countSentencesBefore_match);
   RUN_TEST(test_countSentencesBefore_no_match);
   RUN_TEST(test_countSentencesBefore_start_of_text);

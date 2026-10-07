@@ -3,22 +3,25 @@
 #include <CrossPointSettings.h>
 #include <Epub/ParsedText.h>
 #include <Epub/hyphenation/Hyphenator.h>
-#include <Epub/parsers/ParagraphBoundary.h>
-#include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
-#include <expat.h>
 
 #include <cstring>
 
 #include "fontIds.h"
 #include "modules/lingua/activities/LanguagePickerActivity.h"
+#include "modules/lingua/parsers/TranslationPairWalker.h"
 #include "modules/lingua/utils/SentenceSplitter.h"
 #include "modules/lingua/utils/TextNormalize.h"
 
 // ── State management ─────────────────────────────────────────────────────────
 
-void PageTranslationOverlay::setTranslatedHtmlPath(const std::string& path) { translatedHtmlPath = path; }
+void PageTranslationOverlay::setTranslationSource(const std::string& htmlPath, const std::string& cachePath,
+                                                  const std::string& bookPrimaryLang) {
+  translationSourcePath = htmlPath;
+  pairCachePath = cachePath;
+  this->bookPrimaryLang = bookPrimaryLang;
+}
 
 void PageTranslationOverlay::open() {
   active = true;
@@ -52,382 +55,21 @@ void PageTranslationOverlay::onPageChanged() {
 // textnorm canonical fold — the same single source of sentence-boundary truth the
 // word-span splitter uses. This overlay only wraps those helpers here.
 
-// ── HTML parsing: extract (original, translation) paragraph pairs ─────────────
+// ── Paragraph data: one shared walker over the chapter HTML ──────────────────
 //
-// The paragraph-boundary rule (container block tags + <br/>) is NOT redefined
-// here: this reparse and ChapterHtmlSlimParser's layout counter both call the
-// shared paraboundary predicate (ParagraphBoundary.h) so their paragraph indices
-// cannot diverge by a tag. See that header for the full contract.
+// No paragraph counting happens here any more. The overlay asks
+// lingua::matchPageParagraphs for the pair behind each paragraph the PAGE shows, matched by text --
+// so the parser's PageLine::paragraphIdx stays the only paragraph numbering in the system and there
+// is no second counter to drift from it. See TranslationPairWalker.h for why.
 
-// Selective forward SAX parse. Instead of building a pair for EVERY paragraph in the chapter
-// (~40 KB peak on a long chapter, which exhausts the heap), we keep a SPARSE vector covering only
-// the current page's [wantFirst, wantLast] range:
-//   1. Discard paragraph text for idx < wantFirst - 1 (no allocation).
-//   2. Capture an entry only when idx ∈ [wantFirst, wantLast].
-//   3. Retain origText ONLY for boundary entries (idx == wantFirst or wantLast) — the only
-//      paragraphs that can be partially visible and need countSentencesBefore().
-//   4. XML_StopParser() once past wantLast so expat bails without scanning the rest of the
-//      chapter. Peak heap stays under ~5 KB even for long chapters.
-struct PageTranslationParseCtx {
-  std::vector<PageTranslationOverlay::ParagraphPair>* entries;
-  int wantFirst = 0;
-  int wantLast = 0;
-  // Tracks the original (non-translation) paragraph index — matches the chapter parser's
-  // outermost-block counter. Pre-increment: starts at -1 so the first original becomes idx 0.
-  int paragraphCounter = -1;
-  bool inBlock = false;
-  bool isTranslation = false;
-  int blockDepth = 0;
-  // >0 while inside a subtree the layout parser SKIPS after emitting a single synthetic
-  // paragraph — a <table> ("[Table omitted]") or an undecodable <img> with alt text
-  // ("[Image: …]"). Mirrors ChapterHtmlSlimParser::skipUntilDepth: every nested start bumps
-  // it, every nested end drops it, and the matching close returns it to 0.
-  int skipDepth = 0;
-  // The innermost open block is an <li>. ChapterHtmlSlimParser seeds every <li> block with a
-  // U+2022 bullet, so an <li> whose only content so far is that implicit bullet still flushes a
-  // (bullet-only) paragraph when its first child block opens — we replicate that below.
-  bool currentBlockIsLi = false;
-  std::string currentText;
-  XML_Parser parser = nullptr;  // for XML_StopParser
+// One paragraph's texts as the walker found them. Sentence counts are computed here rather than
+// carried, so the sentence rule keeps exactly one implementation (SentenceSplitter).
+struct ParagraphEntry {
+  std::string origText;     // the FULL original paragraph
+  std::string translation;  // the FULL translation
+  int16_t origSentenceCount = 0;
+  int16_t transSentenceCount = 0;
 };
-
-// Push currentText as a finished original paragraph entry and advance
-// paragraphCounter — same body as the original branch in pageTranslationOnEnd, factored
-// out so <br/> handling in pageTranslationOnStart can reuse it. Whitespace-only text is
-// dropped (no counter increment), matching ChapterHtmlSlimParser which skips
-// empty blocks.
-static void flushOriginalParagraph(PageTranslationParseCtx* ctx) {
-  auto& t = ctx->currentText;
-  while (!t.empty() && (t.front() == ' ' || t.front() == '\n')) t.erase(0, 1);
-  while (!t.empty() && (t.back() == ' ' || t.back() == '\n')) t.pop_back();
-  if (t.empty()) {
-    ctx->currentText.clear();
-    return;
-  }
-  const int idx = ++ctx->paragraphCounter;
-  if (idx < ctx->wantFirst - 1) {
-    ctx->currentText.clear();
-    return;
-  }
-  if (idx > ctx->wantLast) {
-    if (ctx->parser) XML_StopParser(ctx->parser, XML_FALSE);
-    ctx->currentText.clear();
-    return;
-  }
-  const bool needsOrigText = (idx == ctx->wantFirst || idx == ctx->wantLast);
-  PageTranslationOverlay::ParagraphPair entry;
-  entry.paragraphIdx = static_cast<int16_t>(idx);
-  entry.origSentenceCount = static_cast<int16_t>(countSentences(t));
-  if (needsOrigText) {
-    entry.origText = std::move(t);
-  }
-  ctx->entries->push_back(std::move(entry));
-  ctx->currentText.clear();
-}
-
-// True if the accumulated block text holds any non-whitespace character. Used to tell an <li>
-// that has only its implicit bullet (empty currentText) from one that has real direct text.
-static bool hasVisibleText(const std::string& s) {
-  for (char c : s) {
-    if (c != ' ' && c != '\n' && c != '\r' && c != '\t') return true;
-  }
-  return false;
-}
-
-// ChapterHtmlSlimParser seeds EVERY <li> block with a U+2022 bullet (addWord), so an <li> with no
-// real direct text — empty, or holding only a media/table child (<li></li>, <li><img/></li>,
-// <li><table>…</table></li>) — is still a NON-empty block it counts as one (bullet-only) paragraph.
-// Seed the same bullet just before ANY flush of the current block so the reparser counts it too;
-// a no-op when the block is not an <li> or already has real text.
-static void seedLiBulletIfEmpty(PageTranslationParseCtx* ctx) {
-  if (ctx->currentBlockIsLi && !hasVisibleText(ctx->currentText)) {
-    ctx->currentText = "\xe2\x80\xa2";
-  }
-}
-
-// Mirror ChapterHtmlSlimParser's on-device decoder gate: only .jpg/.jpeg/.png images decode
-// (ImageDecoderFactory). Any other extension — or a missing src — makes the layout parser fall
-// back to the image's alt text, which it emits as exactly ONE "[Image: …]" paragraph. Replicating
-// the extension test lets the reparser count that fallback WITHOUT counting a decodable image
-// (which produces no paragraph). NOTE: a .jpg/.png that fails to decode at RUNTIME (corrupt data,
-// dimension read failure) still falls back in the layout parser but is treated as decodable here —
-// that residual case is not detectable from the HTML alone.
-static bool imgSrcDecodable(const char* src) {
-  if (!src || !*src) return false;
-  const char* dot = strrchr(src, '.');
-  if (!dot) return false;
-  std::string ext(dot);
-  for (auto& c : ext) {
-    if (c >= 'A' && c <= 'Z') c += 32;
-  }
-  return ext == ".jpg" || ext == ".jpeg" || ext == ".png";
-}
-
-static void XMLCALL pageTranslationOnStart(void* ud, const XML_Char* name, const XML_Char** atts) {
-  auto* ctx = static_cast<PageTranslationParseCtx*>(ud);
-
-  // Inside a skipped subtree (table cell / undecodable-image alt content): swallow every nested
-  // element so it can never contribute a paragraph, exactly like ChapterHtmlSlimParser's
-  // skipUntilDepth. Balanced by the matching drops in pageTranslationOnEnd.
-  if (ctx->skipDepth > 0) {
-    ctx->skipDepth++;
-    return;
-  }
-
-  // <br/> — a hard break is an EMPTY, NO-SCOPE element: it never opens a scope, so it must NEVER
-  // touch blockDepth (pageTranslationOnEnd skips its self-close too, keeping the count balanced in ALL
-  // cases). In an ORIGINAL block it ends the current paragraph in place so the counter advances
-  // exactly as ChapterHtmlSlimParser does on <br/>; in a TRANSLATION block it is just an internal
-  // line break, so keep accumulating (no flush).
-  if (paraboundary::isHardBreak(name)) {
-    if (ctx->inBlock && !ctx->isTranslation) flushOriginalParagraph(ctx);
-    return;
-  }
-
-  // <table> — first flush the PRIOR block (a parent block's direct text for mixed content, or a
-  // bullet-only <li>), then make "[Table omitted]" the RUNNING block. Crucially it is NOT flushed
-  // now: the layout parser keeps filling the same block, so trailing text in the SAME container
-  // (e.g. <div><table>…</table>tail</div>) stays in ONE paragraph — flushing it here would emit a
-  // spurious extra paragraph. It flushes naturally at the next block-open or block-close. The
-  // table subtree is swallowed via skipDepth. A top-level table (not yet inBlock) becomes its own
-  // running block so it still flushes (at the next block or the enclosing structural close).
-  if (strcmp(name, "table") == 0) {
-    if (!ctx->isTranslation) {
-      seedLiBulletIfEmpty(ctx);
-      flushOriginalParagraph(ctx);  // counts the prior block (parent text / bullet-only li) if any
-    }
-    if (!ctx->inBlock) {
-      ctx->inBlock = true;
-      ctx->blockDepth = 1;
-    }
-    ctx->isTranslation = false;
-    ctx->currentText = "[Table omitted]";
-    ctx->currentBlockIsLi = false;  // the placeholder block is not an <li>
-    ctx->skipDepth = 1;             // swallow cell content until the matching </table>
-    return;
-  }
-
-  // <img> — a decodable image (.jpg/.jpeg/.png) renders with NO paragraph; an undecodable image
-  // (any other src, or none) WITH alt text falls back to a single "[Image: …]" paragraph. Match
-  // both so images never drift the count. An image is otherwise a no-scope empty element, so
-  // (like <br/>) it must not touch blockDepth — pageTranslationOnEnd treats <img> as a no-op.
-  if (strcmp(name, "img") == 0) {
-    const char* src = nullptr;
-    const char* alt = nullptr;
-    if (atts) {
-      for (int i = 0; atts[i]; i += 2) {
-        if (strcmp(atts[i], "src") == 0)
-          src = atts[i + 1];
-        else if (strcmp(atts[i], "alt") == 0)
-          alt = atts[i + 1];
-      }
-    }
-    if (!imgSrcDecodable(src) && alt && *alt) {
-      // Same shape as <table>: flush the prior block (parent text / bullet-only li), then make
-      // "[Image: …]" the RUNNING block (deferred flush) so trailing same-container text stays in
-      // one paragraph. Swallow any image children via skipDepth.
-      if (!ctx->isTranslation) {
-        seedLiBulletIfEmpty(ctx);
-        flushOriginalParagraph(ctx);
-      }
-      if (!ctx->inBlock) {
-        ctx->inBlock = true;
-        ctx->blockDepth = 1;
-      }
-      ctx->isTranslation = false;
-      ctx->currentText = std::string("[Image: ") + alt + "]";
-      ctx->currentBlockIsLi = false;
-      ctx->skipDepth = 1;
-    }
-    return;  // decodable image / no alt: no paragraph, no scope
-  }
-
-  if (paraboundary::isContainerBlockTag(name)) {
-    // A container opening while a block is ALREADY open (mixed content, or an <li> with a nested
-    // block child): the layout parser first flushes the parent block's direct text as its own
-    // counted paragraph when the child opens — and an <li> whose only content so far is its
-    // implicit bullet flushes a bullet-only paragraph (the layout parser seeds every <li> with a
-    // U+2022 bullet, so its block is non-empty). Do that flush BEFORE (re)starting the block.
-    //
-    // We then start THIS container as a fresh block, re-detecting its lang, exactly like a
-    // top-level block. Handling every container independently (rather than carrying outer nesting)
-    // is what keeps a nested TRANSLATION block correctly recognized: our rewriter inserts the
-    // translated paragraph INSIDE any wrapper <div>/<blockquote>, e.g.
-    // <div><p>orig</p><p lang="fr">trad</p></div>. After the inner </p> the block is closed, so the
-    // sibling <p lang="fr"> re-enters here and its lang IS detected — a nesting-depth counter that
-    // stayed inside the div would miss it and drop the translation.
-    if (ctx->inBlock && !ctx->isTranslation) {
-      seedLiBulletIfEmpty(ctx);     // bullet-only <li> flushes a counted bullet paragraph here
-      flushOriginalParagraph(ctx);  // counts the parent's direct text (or the li bullet) if present
-    }
-    ctx->inBlock = true;
-    ctx->blockDepth = 1;
-    ctx->isTranslation = false;
-    ctx->currentBlockIsLi = (strcmp(name, "li") == 0);
-    ctx->currentText.clear();
-    if (atts) {
-      for (int i = 0; atts[i]; i += 2) {
-        // Our translator output marks translated paragraphs with data-translation; embedded
-        // Calibre translations use lang/xml:lang. Accept all three.
-        if (strcmp(atts[i], "lang") == 0 || strcmp(atts[i], "xml:lang") == 0 ||
-            strcmp(atts[i], "data-translation") == 0) {
-          ctx->isTranslation = true;
-        }
-      }
-    }
-    return;
-  }
-
-  if (ctx->inBlock) {
-    ctx->blockDepth++;  // inline element (span/b/i/…) inside a block — balanced by its end
-  }
-}
-
-static void XMLCALL pageTranslationOnEnd(void* ud, const XML_Char* name) {
-  auto* ctx = static_cast<PageTranslationParseCtx*>(ud);
-  // Leaving a skipped subtree (table cell / undecodable-image alt content). The matching close of
-  // the <table>/<img> that opened the skip brings skipDepth back to 0. Mirrors skipUntilDepth.
-  if (ctx->skipDepth > 0) {
-    ctx->skipDepth--;
-    return;
-  }
-  // <br/> is an empty element: expat fires a matching end event for it. It has no
-  // scope (pageTranslationOnStart already flushed the paragraph in place and left blockDepth
-  // untouched), so ignore it here. Otherwise it would decrement blockDepth, close
-  // the enclosing block one tag early, drop post-<br/> text, and drift the counter.
-  if (paraboundary::isHardBreak(name)) return;
-  // <img> is likewise a no-scope empty element on the decodable / no-alt path (the alt-text
-  // fallback set skipDepth and was consumed above), so its self-close must not touch blockDepth.
-  if (strcmp(name, "img") == 0) return;
-  if (!ctx->inBlock) return;
-  ctx->blockDepth--;
-  if (ctx->blockDepth > 0) return;
-  ctx->inBlock = false;
-
-  if (ctx->isTranslation) {
-    auto& t = ctx->currentText;
-    while (!t.empty() && (t.front() == ' ' || t.front() == '\n')) t.erase(0, 1);
-    while (!t.empty() && (t.back() == ' ' || t.back() == '\n')) t.pop_back();
-    if (!t.empty() && !ctx->entries->empty() && ctx->entries->back().paragraphIdx == ctx->paragraphCounter) {
-      ctx->entries->back().translation = std::move(t);
-      ctx->entries->back().transSentenceCount = static_cast<int16_t>(countSentences(ctx->entries->back().translation));
-    }
-    ctx->currentText.clear();
-  } else {
-    seedLiBulletIfEmpty(ctx);  // empty / media-only <li> still counts one bullet paragraph
-    flushOriginalParagraph(ctx);
-  }
-  // Block ended: no <li> context may leak to the next block-open (otherwise a following top-level
-  // <table>/<img> would wrongly seed a bullet).
-  ctx->currentBlockIsLi = false;
-}
-
-static void XMLCALL pageTranslationOnText(void* ud, const XML_Char* s, int len) {
-  auto* ctx = static_cast<PageTranslationParseCtx*>(ud);
-  if (ctx->skipDepth > 0) return;  // text inside a skipped table cell / image subtree
-  if (!ctx->inBlock) return;
-  // Canonicalize inter-token separators to a single ASCII space so origText and
-  // translation reach the SSOT (countSentences / trimToSentences / trimToLastSentences /
-  // foldForMatch in SentenceSplitter + TextNormalize) AND the display word-wrapper
-  // (splitWords, ASCII-space only) in ONE representation. For U+00A0 / U+202F this is the
-  // byte-identical representation the laid-out page words (visibleText) already use
-  // (ChapterHtmlSlimParser splits both into a standalone ASCII-space word); for the rarer
-  // family members the boundary check reconciles the two sides through foldForMatch, which
-  // collapses the whole set.
-  //
-  // The recognized set is exactly textnorm::whitespaceLenAt — the SSOT for "what
-  // separates words / sentences": ASCII space/tab/CR/LF, U+00A0, U+2000..U+200A,
-  // U+202F, U+205F. Collapsing them here (rather than only U+00A0, as the original
-  // caller-side workaround did) keeps this consumer aligned with the SSOT now that the
-  // splitter is NBSP-family-aware:
-  //   • A raw multi-byte separator that survived (e.g. U+202F, which Google, French and
-  //     Ukrainian typography emit) made the boundary drift check compare an ASCII-spaced
-  //     page slice against a raw-separated source paragraph — a false "drift" that forces
-  //     source fallback and can drop translatedCount to 0 (the "no translations" toast)
-  //     on any build whose foldForMatch does not collapse that byte sequence.
-  //   • It also reached splitWords() unsplit, so "word.<U+202F>Next" was ONE token wider
-  //     than the line → mis-wrapped / mis-aligned output.
-  //   • U+00AD soft hyphen stays dropped (invisible in the page words).
-  // NOTE (unchanged from before): a multi-byte separator split across two expat
-  // character-data callbacks is not folded (the second half arrives next call); this is
-  // rare and identical to the prior behaviour.
-  for (int i = 0; i < len; i++) {
-    const uint8_t b0 = static_cast<uint8_t>(s[i]);
-    if (b0 == 0xC2 && i + 1 < len) {
-      const uint8_t b1 = static_cast<uint8_t>(s[i + 1]);
-      if (b1 == 0xA0) {  // U+00A0 NBSP -> space
-        ctx->currentText += ' ';
-        i++;
-        continue;
-      }
-      if (b1 == 0xAD) {  // U+00AD soft hyphen — invisible, drop
-        i++;
-        continue;
-      }
-    } else if (b0 == 0xE2 && i + 2 < len) {
-      const uint8_t b1 = static_cast<uint8_t>(s[i + 1]);
-      const uint8_t b2 = static_cast<uint8_t>(s[i + 2]);
-      // U+2000..U+200A, U+202F, U+205F (mirror textnorm::whitespaceLenAt) -> space.
-      if ((b1 == 0x80 && b2 >= 0x80 && b2 <= 0x8A) || (b1 == 0x80 && b2 == 0xAF) || (b1 == 0x81 && b2 == 0x9F)) {
-        ctx->currentText += ' ';
-        i += 2;  // the for-loop ++ consumes the third byte
-        continue;
-      }
-    }
-    ctx->currentText += s[i];
-  }
-}
-
-static std::vector<PageTranslationOverlay::ParagraphPair> parseChapterHtml(const std::string& htmlPath, int wantFirst,
-                                                                           int wantLast) {
-  std::vector<PageTranslationOverlay::ParagraphPair> entries;
-
-  if (htmlPath.empty()) return entries;
-
-  HalFile file;
-  if (!Storage.openFileForRead("PGT", htmlPath, file)) {
-    LOG_ERR("PGT", "Cannot open %s", htmlPath.c_str());
-    return entries;
-  }
-
-  XML_Parser parser = XML_ParserCreate(nullptr);
-  if (!parser) {
-    LOG_ERR("PGT", "Failed to create expat parser");
-    return entries;
-  }
-
-  PageTranslationParseCtx ctx;
-  ctx.entries = &entries;
-  ctx.wantFirst = wantFirst;
-  ctx.wantLast = wantLast;
-  ctx.parser = parser;
-  XML_SetUserData(parser, &ctx);
-  XML_SetElementHandler(parser, pageTranslationOnStart, pageTranslationOnEnd);
-  XML_SetCharacterDataHandler(parser, pageTranslationOnText);
-
-  char buf[1024];
-  bool done = false;
-  bool stopped = false;
-  while (!done && !stopped) {
-    int len = file.read(reinterpret_cast<uint8_t*>(buf), sizeof(buf));
-    if (len < 0) len = 0;  // read error — treat as end of stream rather than feeding expat a bad length
-    done = (len < (int)sizeof(buf));
-    if (XML_Parse(parser, buf, len, done) == XML_STATUS_ERROR) {
-      // XML_StopParser() makes expat return ERROR with code XML_ERROR_ABORTED — that's our
-      // success path (we walked past the page and bailed early).
-      if (XML_GetErrorCode(parser) == XML_ERROR_ABORTED) {
-        stopped = true;
-      } else {
-        LOG_ERR("PGT", "XML parse error at line %lu", XML_GetCurrentLineNumber(parser));
-      }
-      break;
-    }
-  }
-  XML_ParserFree(parser);
-  LOG_DBG("PGT", "Parsed %d pair(s) in [%d..%d] from %s%s", (int)entries.size(), wantFirst, wantLast, htmlPath.c_str(),
-          stopped ? " (early-stop)" : "");
-  return entries;
-}
 
 // ── Page preparation: use paragraph indices stored during page building ────────
 
@@ -439,9 +81,8 @@ static std::vector<PageTranslationOverlay::ParagraphPair> parseChapterHtml(const
 // per-sentence alignment would be unreliable: no detectable translation sentences
 // (transSentenceCount == 0 treated as ordinary), or source vs. translation
 // sentence totals differ by more than one (large skew => do not mis-slice).
-static std::string sliceTranslationForPage(const PageTranslationOverlay::ParagraphPair& pair,
-                                           const std::string& visibleText, int visibleSentences, bool isFirst,
-                                           bool isLast) {
+static std::string sliceTranslationForPage(const ParagraphEntry& pair, const std::string& visibleText,
+                                           int visibleSentences, bool isFirst, bool isLast) {
   const int transTotal = pair.transSentenceCount;
   const int origTotal = pair.origSentenceCount;
 
@@ -494,24 +135,9 @@ void PageTranslationOverlay::preparePage(const Page& page) {
   pageParagraphs.clear();
   translatedCount = 0;
 
-  // The page knows exactly which paragraph indices it contains (set by the parser).
-  LOG_DBG("PGT", "Page paragraph indices: first=%d last=%d", page.firstParagraphIdx, page.lastParagraphIdx);
-
-  if (page.firstParagraphIdx < 0 || page.lastParagraphIdx < 0) {
-    LOG_DBG("PGT", "Page has no paragraph indices (old cache?) — clear cache and retry");
-    return;
-  }
-
-  // Sparse translation entries for this page's [first..last] range. Temporary —
-  // freed after this function; only boundary paragraphs retain origText, bounding
-  // peak RAM to ~5 KB. May be EMPTY (untranslated page) — we still source-fill
-  // every visible paragraph below and let the render() guard decide whether to
-  // open the overlay at all.
-  auto pairs = parseChapterHtml(translatedHtmlPath, page.firstParagraphIdx, page.lastParagraphIdx);
-
-  // Per-paragraph VISIBLE text from the page's lines, keyed by paragraphIdx. This
-  // is the source-of-truth for both the source fallback and the boundary
-  // safety-check. Lines of one paragraph are contiguous, so one entry per idx.
+  // Per-paragraph VISIBLE text from the page's lines, in reading order. This is the page's own
+  // truth: the source fallback, the text matched against the chapter, and the sentence window are
+  // all derived from it. Lines of one paragraph are contiguous, so one entry per paragraph index.
   struct ParaText {
     int16_t idx;
     std::string text;
@@ -523,119 +149,56 @@ void PageTranslationOverlay::preparePage(const Page& page) {
     const int16_t pIdx = line->paragraphIdx;
     if (pIdx < 0) continue;
     if (pageParas.empty() || pageParas.back().idx != pIdx) pageParas.push_back({pIdx, ""});
-    // v2 flattened TextBlock word storage: iterate by index (wordCount/wordText),
-    // NOT the fork's getWords() container.
     const auto& block = line->getBlock();
     for (uint16_t i = 0; i < block->wordCount(); i++) {
       if (!pageParas.back().text.empty()) pageParas.back().text += ' ';
       pageParas.back().text += block->wordText(i);
     }
   }
+  if (pageParas.empty()) {
+    LOG_DBG("PGT", "Page has no text lines");
+    return;
+  }
 
-  const int first = page.firstParagraphIdx;
-  const int last = page.lastParagraphIdx;
-  bool boundaryErrLogged = false;
+  // Ask the shared walker for the pair behind each of them. Bounded work: it stops as soon as every
+  // paragraph on this page has matched, and holds one paragraph at a time while walking.
+  std::vector<std::string> visibleTexts;
+  visibleTexts.reserve(pageParas.size());
+  for (const auto& pp : pageParas) visibleTexts.push_back(pp.text);
+  std::vector<lingua::PageMatch> matches(pageParas.size());
+  lingua::matchPageParagraphsCached(pairCachePath, translationSourcePath, bookPrimaryLang, visibleTexts.data(),
+                                    static_cast<int>(visibleTexts.size()), matches.data());
 
-  // INVARIANT: walk the page's paragraph index RANGE [first..last] (not the sparse
-  // pairs list) and emit exactly one entry per VISIBLE source paragraph. A
-  // translation attaches to a paragraph ONLY by validated index equality — never
-  // by document order or content search. A paragraph with no/empty translation,
-  // or one that fails the boundary safety-check, is source-filled and marked
-  // untranslated (Option C: source text + dim marker).
-  for (int idx = first; idx <= last; idx++) {
-    const ParaText* visiblePara = nullptr;
-    for (const auto& pp : pageParas) {
-      if (pp.idx == idx) {
-        visiblePara = &pp;
-        break;
-      }
-    }
-    if (visiblePara == nullptr) continue;  // image/gap index with no visible text line — nothing to show
-    const std::string& visibleText = visiblePara->text;
+  for (size_t i = 0; i < pageParas.size(); i++) {
+    const std::string& visibleText = pageParas[i].text;
+    const lingua::PageMatch& match = matches[i];
 
-    const PageTranslationOverlay::ParagraphPair* pair = nullptr;
-    for (const auto& p : pairs) {
-      if (p.paragraphIdx == idx) {
-        pair = &p;
-        break;
-      }
-    }
+    // Does this paragraph BEGIN on this page? Only the page's first entry can fail to -- every later
+    // one appears because a new paragraph opened here. The match offset answers it: a paragraph that
+    // starts here has its visible slice at offset 0 of the original, while one that flowed in from
+    // the previous page is found further in. There is no structural flag to read (PageLine carries no
+    // "first line of its paragraph" bit) and the layout's baked indent cannot stand in for one -- it
+    // is 0 for a genuine start too whenever the spacing setting is on. Unmatched defaults to TRUE,
+    // because a chapter's opening paragraph must indent.
+    const bool startsHere = (i > 0) || !match.matched || match.matchOffset == 0;
 
-    const bool isFirst = (idx == first);
-    const bool isLast = (idx == last);
-
-    // Boundary safety-check (a VALIDATOR, not the mapping): the two boundary
-    // paragraphs retain origText. If a discriminating prefix of the visible slice
-    // cannot be located inside the mapped source paragraph (both folded), the
-    // index mapping has drifted — log once and force source fallback rather than
-    // show a neighbor's translation. Array-free (substring compare, no std::set).
-    //
-    // The needle is bounded and truncated BEFORE the first line-break hyphenation
-    // artifact: layout splits a word at a line end into "prefix-" + "remainder"
-    // tokens, so the joined visible text carries a "…prefix- remainder…" that the
-    // unsplit source lacks. That artifact is a '-' glued to the preceding char and
-    // followed by a space (a real spaced dash has a space on BOTH sides), so we
-    // stop the needle there. The kept prefix always covers at least the first word
-    // (a line-end split never lands on the first token), which is enough to catch
-    // gross drift while tolerating benign in-text hyphenation.
-    //
-    // Does this paragraph BEGIN on this page? Only the page's FIRST entry can fail to: every later
-    // index appears because a new paragraph opened here. The same folded needle that validates the
-    // boundary answers it — a paragraph that starts here has its visible slice at OFFSET 0 of the
-    // source paragraph, while one that flowed in from the previous page is found further in. There
-    // is no structural flag to read (PageLine carries no "first line of its paragraph" bit), and the
-    // layout's baked indent cannot stand in for one: it is 0 for a genuine start too whenever the
-    // spacing setting is on. Unknown (no pair, no origText, or a needle too short to discriminate)
-    // defaults to TRUE — origText is retained for exactly the two boundary paragraphs, so the answer
-    // is available precisely where it is needed, and a chapter's opening paragraph must indent.
-    bool startsHere = true;
-    bool forceSource = false;
-    if (pair != nullptr && (isFirst || isLast) && !pair->origText.empty() && !visibleText.empty()) {
-      // ChapterHtmlSlimParser prepends a U+2022 bullet as the first word of every <li>, so a list
-      // item's visibleText reads "• <text>". The reparsed origText has no bullet, and foldForMatch
-      // does not fold it, so the needle would never be found and a correctly-translated <li> at a
-      // page boundary would be wrongly source-filled. Strip a leading bullet (+ following spaces)
-      // here -- LOCAL to the boundary needle only, so the general fold is untouched and origText is
-      // unchanged. (No em-space strip is needed: the layout expresses a paragraph indent as a pixel
-      // x offset, never as a character, so no synthetic em-space can reach the page words.)
-      std::string vis = visibleText;
-      size_t bo = 0;
-      if (vis.compare(0, 3, "\xe2\x80\xa2") == 0) {  // U+2022 <li> bullet
-        bo = 3;
-        while (bo < vis.size() && vis[bo] == ' ') bo++;
-      }
-      if (bo) vis.erase(0, bo);
-      std::string needle = textnorm::foldForMatch(vis, 48);
-      for (size_t k = 1; k + 1 < needle.size(); k++) {
-        if (needle[k] == '-' && needle[k + 1] == ' ' && needle[k - 1] != ' ') {
-          needle.resize(k);
-          break;
-        }
-      }
-      if (needle.size() >= 3) {
-        const std::string foldedOrig = textnorm::foldForMatch(pair->origText);
-        const size_t at = foldedOrig.find(needle);  // one scan answers both questions
-        if (at == std::string::npos) {
-          if (!boundaryErrLogged) {
-            LOG_ERR("PGT", "boundary drift at idx %d: visible text not in source paragraph — source fallback", idx);
-            boundaryErrLogged = true;
-          }
-          forceSource = true;
-        } else if (isFirst) {
-          startsHere = (at == 0);  // found further in => the page opened mid-paragraph
-        }
-      }
-    }
-
-    if (pair == nullptr || pair->translation.empty() || forceSource) {
-      pageParagraphs.push_back({visibleText, false, startsHere});  // Option C source fallback
+    if (!match.matched || match.translation.empty()) {
+      pageParagraphs.push_back({visibleText, false, startsHere});  // source text + the dim marker
       continue;
     }
 
+    ParagraphEntry entry;
+    entry.origText = match.original;
+    entry.translation = match.translation;
+    entry.origSentenceCount = static_cast<int16_t>(countSentences(entry.origText));
+    entry.transSentenceCount = static_cast<int16_t>(countSentences(entry.translation));
+
     const int visibleSentences = countSentences(visibleText);
-    std::string shown = sliceTranslationForPage(*pair, visibleText, visibleSentences, isFirst, isLast);
+    const bool isFirst = (i == 0);
+    const bool isLast = (i + 1 == pageParas.size());
+    std::string shown = sliceTranslationForPage(entry, visibleText, visibleSentences, isFirst, isLast);
     if (shown.empty()) {
-      pageParagraphs.push_back({visibleText, false, startsHere});  // defensive: never show a blank translated line
+      pageParagraphs.push_back({visibleText, false, startsHere});  // never show a blank translated line
       continue;
     }
     pageParagraphs.push_back({std::move(shown), true, startsHere});
