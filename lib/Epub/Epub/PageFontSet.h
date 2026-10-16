@@ -81,4 +81,14 @@ struct PageFontSet {
     }
     return INK_INHERIT;
   }
+
+  // Upstream screens hand Page::render the plain reader font id. The app registers how such an id
+  // becomes the page's full role set (LinguaReaderIntegration.cpp), so those call sites draw a
+  // mixed-size page exactly as the reader does without being edited. Unregistered (host tests),
+  // the set is uniform.
+  using Resolver = PageFontSet (*)(int bodyFontId);
+  inline static Resolver resolver = nullptr;
+  static PageFontSet resolve(const int bodyFontId) {
+    return resolver != nullptr ? resolver(bodyFontId) : PageFontSet(bodyFontId);
+  }
 };

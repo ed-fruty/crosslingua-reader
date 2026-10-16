@@ -1,6 +1,7 @@
 add_executable(ChapterHtmlSlimParserTest
   ChapterHtmlSlimParserTest.cpp
   LinguaParserTest.cpp
+  LinguaTranslatedWordsTest.cpp
   ParserLinkStubs.cpp
   ${REPO_ROOT}/lib/Epub/Epub/Page.cpp
   ${REPO_ROOT}/lib/Epub/Epub/blocks/TextBlock.cpp
@@ -18,6 +19,10 @@ add_executable(ChapterHtmlSlimParserTest
   ${REPO_ROOT}/src/modules/lingua/layout/ParsedTextLingua.cpp
   ${REPO_ROOT}/src/modules/lingua/modes/interlinear/InterlinearLayout.cpp
   ${REPO_ROOT}/src/modules/lingua/modes/side_by_side/SideBySideLayout.cpp
+  # Tooltip sentence keys (LinguaTranslatedWordsTest).
+  ${REPO_ROOT}/src/modules/lingua/utils/SentencePairing.cpp
+  ${REPO_ROOT}/src/modules/lingua/utils/SentenceSplitter.cpp
+  ${REPO_ROOT}/src/modules/lingua/utils/TextNormalize.cpp
 )
 
 target_include_directories(ChapterHtmlSlimParserTest PRIVATE
@@ -30,6 +35,7 @@ target_include_directories(ChapterHtmlSlimParserTest PRIVATE
   ${REPO_ROOT}/lib/Epub/Epub
   ${REPO_ROOT}/lib/Epub/Epub/parsers
   ${REPO_ROOT}/lib/Epub/Epub/css
+  ${REPO_ROOT}/lib/AsciiText
   ${REPO_ROOT}/lib/EpdFont
   ${REPO_ROOT}/lib/Utf8
   ${REPO_ROOT}/lib/Memory

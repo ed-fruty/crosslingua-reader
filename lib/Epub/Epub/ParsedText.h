@@ -72,7 +72,7 @@ class ParsedText {
   // Zero-based visible Unicode-codepoint offsets in the spine body, stored as
   // uint16_t deltas from a shared base to keep this layout-only metadata small.
   // Pathological spans wider than uint16_t use sparse rebases; rendered
-  // TextBlocks do not carry any of this metadata.
+  // TextBlocks retain absolute ranges for portable clipping anchors.
   struct VisibleOffsetRebase {
     size_t wordIndex;
     uint32_t base;
@@ -80,6 +80,24 @@ class ParsedText {
   std::vector<uint16_t> wordVisibleOffsetDeltas;
   uint32_t visibleOffsetBase = 0;
   std::vector<VisibleOffsetRebase> visibleOffsetRebases;
+  // Sparse NFC source positions, in small nothrow chunks rather than a large contiguous array.
+  struct AbsorbedSourceChunk {
+    std::unique_ptr<AbsorbedSourceChunk> next;
+    uint32_t base = 0;
+    uint16_t deltas[64] = {};
+    uint8_t begin = 0;
+    uint8_t count = 0;
+    ~AbsorbedSourceChunk() {
+      while (next) {
+        auto retired = std::move(next);
+        next = std::move(retired->next);
+      }
+    }
+  };
+  std::unique_ptr<AbsorbedSourceChunk> absorbedSourceHead;
+  AbsorbedSourceChunk* absorbedSourceTail = nullptr;
+  mutable const AbsorbedSourceChunk* absorbedSourceCursor = nullptr;
+  mutable uint32_t absorbedSourceCursorStart = 0;
   std::deque<std::string> rubyTexts;
   BlockStyle blockStyle;
   uint8_t wordSpacingPercent = 100;
@@ -102,6 +120,9 @@ class ParsedText {
   bool storeWord(std::string_view text, WordStore::StoredWord& out);
   uint32_t visibleOffsetBaseAt(size_t wordIndex) const;
   uint32_t visibleOffsetAt(size_t wordIndex) const;
+  uint32_t sourceOffsetAfter(uint32_t start, uint32_t renderedLength) const;
+  bool recordAbsorbedSourceOffset(uint32_t offset);
+  void retireAbsorbedSourceOffsets(uint32_t remainingStart);
   void pushVisibleOffset(uint32_t offset);
   void insertVisibleOffset(size_t wordIndex, uint32_t offset);
   void eraseVisibleOffsetPrefix(size_t count);
@@ -146,7 +167,9 @@ class ParsedText {
   void setRubyForWordAt(size_t index, const std::string& ruby);
   void setRubyGroupAt(size_t startIndex, size_t count, const std::string& ruby);
   EpdFontFamily::Style getWordStyleAt(size_t index) const {
-    return index < wordStyles.size() ? wordStyles[index] : EpdFontFamily::REGULAR;
+    return index < wordStyles.size()
+               ? static_cast<EpdFontFamily::Style>(wordStyles[index] & ~TextBlock::DISCRETIONARY_HYPHEN_FLAG)
+               : EpdFontFamily::REGULAR;
   }
   std::string getRubyTextAt(size_t index) const { return index < rubyTexts.size() ? rubyTexts[index] : std::string(); }
   void ensureRubyCapacity();
@@ -270,6 +293,15 @@ class ParsedText {
   bool extractNextLine(const GfxRenderer& renderer, int fontId, uint16_t width,
                        const std::function<void(std::unique_ptr<TextBlock>)>& processLine, int8_t characterSpacing = 0,
                        uint8_t wordSpacingPercent = 100);
+  // Every token the next addWord() calls push is translated text (a translated block, or an inline
+  // <span lang> inside an original one) while this is set. The parser sets it around its addWord
+  // and clears it straight after, so no other caller (list markers, Interlinear's annotation
+  // re-emit, the Side by Side marker) ever inherits it.
+  void setLinguaTranslatedInput(const bool translated) { linguaTranslatedInput = translated; }
+  // Translated flag of a token still in the pre-layout stream ("false" when out of range).
+  bool linguaWordTranslatedAt(const size_t index) const {
+    return index < linguaTranslated.size() && linguaTranslated[index];
+  }
 
  private:
   // Word indices (in the CURRENT layout call's PRE-layout index space) whose final resting place the
@@ -288,4 +320,17 @@ class ParsedText {
   void prepareForLayout(const GfxRenderer& renderer, int fontId);
   // Drop the first `consumed` tokens from every parallel vector once their line is out.
   void consumeWords(size_t consumed);
+  // Per-token translated flag, parallel to `words`. The upstream style byte has no free bit, so the
+  // flag lives here. EMPTY until the block's first translated token, so a block without one -- every
+  // block of a book without translations -- pays nothing; once non-empty it is exactly words.size().
+  std::vector<bool> linguaTranslated;
+  bool linguaTranslatedInput = false;
+  // Hooks that keep linguaTranslated in lockstep with the upstream per-token arrays.
+  void linguaOnTokenPushed();
+  void linguaOnWordSplit(size_t wordIndex);
+  void linguaErasePrefix(size_t consumed);
+  // Run on every line extractLine actually emits: report its tracked words and stamp the
+  // TextBlock's translated-word flags (visual order, like every other TextBlock array).
+  void finishLinguaLine(TextBlock& block, size_t lastBreakAt, size_t lineBreak, size_t emittedOrdinal, bool willReorder,
+                        const std::vector<int16_t>& lineXPos);
 };

@@ -250,11 +250,11 @@ void ChapterHtmlSlimParser::appendSideBySideNoTranslationMarkerIfUnpaired() {
   // text so the gap is visible but unobtrusive. RAM-cheap: a few extra addWord() calls on the block
   // already being flushed, no new buffers.
   //
-  // ITALICS, not a gray level. The fork dimmed this marker and v2 first copied that by tagging it
-  // EpdFontFamily::TRANSLATED, the per-word bit the renderer maps through
+  // ITALICS, not a gray level. The fork dimmed this marker and v2 first copied that by flagging it
+  // as a translated word, the per-word flag the renderer maps through
   // InterleavedMode::translatedWordInk(). That does
   // not work here, in either direction:
-  //   * the bit is a MODE-wide switch. Turning it on for Side by Side also greys the source column
+  //   * the flag is a MODE-wide switch. Turning it on for Side by Side also greys the source column
   //     of any book with inline lang= runs, every unpaired translation paragraph, the soft-flush
   //     escape, and the translation column of every chapter cached before it had a line role — see
   //     the leak list on InterleavedMode::translatedWordInk(). The marker cannot be singled out.
@@ -269,7 +269,12 @@ void ChapterHtmlSlimParser::appendSideBySideNoTranslationMarkerIfUnpaired() {
   for (const char* p = marker;; ++p) {
     if (*p == ' ' || *p == '\0') {
       if (!markerWord.empty()) {
-        currentTextBlock->addWord(markerWord, EpdFontFamily::ITALIC);
+        // The marker has no source text of its own. Anchor it at the parser's current offset, as
+        // upstream anchors its list markers, so its source range and a line it opens carry a real
+        // chapter position instead of 0 (which a clipping or the progress LUT would read as the
+        // chapter start).
+        currentTextBlock->addWord(markerWord, EpdFontFamily::ITALIC, /*underline=*/false, /*attachToPrevious=*/false,
+                                  visibleTextOffset);
         markerWord.clear();
       }
       if (*p == '\0') break;

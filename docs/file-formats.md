@@ -126,7 +126,44 @@ truncated record stream would otherwise read as a complete but shorter chapter.
 
 ## `section.bin`
 
+### Version 57
+
+CrossLingua merge of upstream version 56. The serialized layout is upstream's
+version 56 layout with the CrossLingua additions described under version 53
+(CrossLingua) below: the Lingua header block before `pageCount`, and the Lingua
+fields after each `PageLine`'s TextBlock. The translated-word flag is no longer
+stored as a bit of the per-word style byte, whose bits now match upstream
+(64 = ruby follower, 128 = discretionary hyphen). Instead each `PageLine` ends
+with a translated-words record after `fontRole`: `u8 encoding` (0 = no
+translated word, 1 = every word translated, 2 = mixed) and, for 2 only, a
+bitmask of `ceil(wordCount / 8)` bytes, bit `i` (LSB first) marking word `i`
+in the TextBlock's visual order.
+
+### Version 55
+
+Each TextBlock adds a uint16 `paragraphStartWord` after `textBytes`. It is the
+visual index of the paragraph's first logical word, or `UINT16_MAX` for a
+continuation line. Clipping uses this marker independently of source-offset
+gaps. Older completed and partial section caches rebuild automatically;
+book metadata and reading progress are kept.
+
+### Version 54
+
+The serialized layout is unchanged. Word source ranges and split offsets now
+include codepoints absorbed by NFC composition. The high bit of each word's
+style byte marks a discretionary hyphen, so clipping can remove it independently
+of source length. Rebuild completed and partial section caches to correct
+clipping spaces and anchors for decomposed text.
+
 ### Version 53
+
+Each TextBlock arena starts with one 8-byte source range per word (two uint32
+chapter-visible Unicode-codepoint offsets, start inclusive and end exclusive).
+Ranges follow words through BiDi ordering and line wrapping. This version also
+includes the version 52 redaction layout changes. Older completed and partial
+section caches are rebuilt automatically; book and progress files are kept.
+
+### Version 53 (CrossLingua, superseded by 57)
 
 CrossLingua merge of upstream version 52. The header is the upstream version 52
 header with the fork's Lingua fields inserted as one block before `pageCount`,
@@ -386,6 +423,10 @@ struct PageLine {
     TextBlock block;
     s16 paragraphIdx;   // Lingua: originating original paragraph, -1 = unset
     u8 fontRole;        // Lingua: 0 = Body, 1 = Translation, 2 = Annotation
+    u8 translatedWords; // Lingua: 0 = none, 1 = all, 2 = mixed (bitmask follows)
+    if (translatedWords == 2) {
+        u8 translatedMask[(block.wordCount + 7) / 8];  // Lingua: bit i = word i translated
+    }
 };
 
 struct PageImage {
@@ -611,3 +652,25 @@ make a real book disappear.
 
 `selfSize` is the expected file size. Comparing it against the real one is a free
 truncation guard: a build cut short by a power failure cannot pass.
+
+## Clipping store (`/.crosspoint/clippings/epub_<path-hash>.bin`)
+
+Version 4 retains the version 3 header and page-local range fields. After each
+record's layout signature it stores `startOffset` and `endOffset` (uint32 chapter
+codepoint range, end exclusive; UINT32_MAX means unavailable), `syncRevision`
+(uint64), `pendingUpload` (one byte), and a 65-byte NUL-terminated sync ID. The
+chapter title, text length, and text follow. Versions 1–3 remain readable.
+
+Stable IDs are saved before upload. A sibling `.deleted` file stores fixed
+65-byte IDs awaiting server acknowledgement. Deletions are queued before the
+local record is removed and retried on the next enabled manual sync. A `.bak`
+file is recovered if power interrupted replacement of the main store.
+
+Clipping header strings are limited to 4 KiB on both reads and writes. A failed
+load leaves no usable index and disables writes until a successful load. The
+index is allocated with checked, bounded growth and released on unload.
+
+Book moves rename the store and its `.deleted` journal (plus recovery sidecars)
+together. The stored source path is informational and is refreshed on the next
+save; the current file path selects the store. Local book deletion cleans up all
+of these sidecars but preserves the independent `My Clippings.txt` export.

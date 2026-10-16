@@ -3,6 +3,8 @@
 #include <cmath>
 #include <cstring>
 
+#include "modules/lingua/utils/TextNormalize.h"
+
 namespace {
 
 bool isAsciiSpace(const char c) { return c == ' ' || c == '\n' || c == '\r' || c == '\t'; }
@@ -143,6 +145,46 @@ int groupTranslationSpanSteps(const SentenceSpan* transFor, const int count, Sen
         return transFor[a].startWord == transFor[b].startWord && transFor[a].endWord == transFor[b].endWord;
       },
       out, maxSteps);
+}
+
+std::string sentenceKeyGlued(const char* const* words, const WordGlue* glue, const int start, const int end,
+                             const int n) {
+  if (glue == nullptr) return sentenceKey(words, start, end, n);
+  // Merge into whitespace tokens, exactly what the index side's tokenizer would have produced. A
+  // whitespace-only piece (an NBSP token of "200 km") is a separator there, so it ends the token
+  // here too. Only the first n tokens can reach the key, plus the ones sentenceKey skips or joins,
+  // so stop once comfortably past them.
+  std::vector<std::string> merged;
+  merged.reserve(static_cast<size_t>(n) * 2);
+  bool open = false;
+  for (int i = start; i < end && merged.size() < static_cast<size_t>(n) * 3; i++) {
+    const std::string w(words[i]);
+    bool allSpace = true;
+    for (size_t k = 0; k < w.size();) {
+      const int wl = textnorm::whitespaceLenAt(w, k);
+      if (wl == 0) {
+        allSpace = false;
+        break;
+      }
+      k += static_cast<size_t>(wl);
+    }
+    if (allSpace) {
+      open = false;
+      continue;
+    }
+    if (open && i > start && glue[i] != WordGlue::Separate) {
+      std::string& last = merged.back();
+      if (glue[i] == WordGlue::GluedDropHyphen && !last.empty() && last.back() == '-') last.pop_back();
+      last += w;
+    } else {
+      merged.push_back(w);
+      open = true;
+    }
+  }
+  std::vector<const char*> ptrs;
+  ptrs.reserve(merged.size());
+  for (const auto& m : merged) ptrs.push_back(m.c_str());
+  return sentenceKey(ptrs.data(), 0, static_cast<int>(ptrs.size()), n);
 }
 
 std::string sentenceKey(const char* const* words, const int start, const int end, const int n) {

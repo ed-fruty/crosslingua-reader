@@ -148,8 +148,8 @@ void appendAnnotationSpan(const InterlinearAnnotation& annotation, const ParsedT
   }
   for (uint16_t w = annotation.transStartWord; w < annotation.transEndWord && w < transBlock.size(); w++) {
     // REGULAR explicitly: the 8pt family ships a single face, so bold/italic would resolve back to
-    // regular anyway, and dropping the inherited EpdFontFamily::TRANSLATED bit keeps the row plain
-    // black rather than the Interleaved gray.
+    // regular anyway, and leaving the words unflagged (no setLinguaTranslatedInput) keeps the row
+    // plain black rather than the Interleaved gray.
     //
     // attachToPrevious MUST be carried across the re-emit, exactly as flushPartWordBuffer carries it
     // for the parser's own re-emit: the buffered translation is not one token per visual word (see

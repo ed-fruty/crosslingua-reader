@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -99,6 +100,22 @@ int groupTranslationSpanSteps(const SentenceSpan* transFor, int count, SentenceS
 // single-character-punctuation words, strips leading em-space and trailing dots/ellipsis, and joins
 // a hyphenated line-break fragment with the word that follows it ("over-" + "whelming").
 std::string sentenceKey(const char* const* words, int start, int end, int n = 6);
+
+// How a laid-out page word continues the word before it IN THE SOURCE (PageTextJoiner computes it
+// from the words' source ranges). Layout splits one source word into several page words -- an
+// explicit hyphen or dash ("well-" + "known", "said—" + "and"), an inline tag, a line-end
+// hyphenation ("Quadrat-" + "kilometer", whose '-' the source never had) -- while the tooltip index
+// tokenizes the source on whitespace.
+enum class WordGlue : uint8_t {
+  Separate = 0,         // whitespace (or an unknown gap) before this word
+  Glued = 1,            // touches the previous word in the source
+  GluedDropHyphen = 2,  // touches it, and the previous word ends in an INSERTED hyphen
+};
+
+// sentenceKey for laid-out page words: pieces of one source word are merged first (an inserted
+// hyphen dropped, a real one kept), so the key equals the one sentenceKey builds from the source's
+// whitespace tokens. `glue` is indexed like `words`; null falls back to plain sentenceKey.
+std::string sentenceKeyGlued(const char* const* words, const WordGlue* glue, int start, int end, int n = 6);
 
 // Join a span of words with single spaces. The inverse of the span form above, for callers that
 // still need the text (the tooltip index).

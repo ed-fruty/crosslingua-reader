@@ -76,6 +76,8 @@ const char* touchControllerName(const BoardConfig::TouchController c) {
       return "GSLX680";
     case BoardConfig::TouchController::Cst816s:  // CrossLingua: -Werror=switch
       return "CST816S";
+    case BoardConfig::TouchController::PiccoCst:  // CrossLingua: -Werror=switch (upstream falls through)
+      return nullptr;
   }
   return nullptr;
 }

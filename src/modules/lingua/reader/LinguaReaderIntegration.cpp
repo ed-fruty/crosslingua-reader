@@ -10,6 +10,25 @@
 #include "fontIds.h"
 #include "modules/lingua/parsers/TranslationPairWalker.h"
 
+namespace {
+// Interlinear annotation visibility as the reader last drew it (pageFontSet()). The upstream
+// screens stacked over the reader have no LinguaReaderIntegration of their own, so the resolver
+// below reads this mirror; it returns to the default when the reader exits.
+bool readerAnnotationsVisible = true;
+
+// Upstream screens (clip selection, dictionary, footnotes) render pages with the plain reader font
+// id. Map that id to the same role set the reader draws with; any other id (a dictionary
+// definition's own font) gets a uniform set, which is all its body-only pages need.
+PageFontSet resolveUpstreamPageFonts(const int bodyFontId) {
+  const PageFontSet fonts = LinguaReaderIntegration::resolvePageFontSet(readerAnnotationsVisible);
+  return bodyFontId == fonts.body ? fonts : PageFontSet(bodyFontId);
+}
+[[maybe_unused]] const bool upstreamPageFontsRegistered = [] {
+  PageFontSet::resolver = &resolveUpstreamPageFonts;
+  return true;
+}();
+}  // namespace
+
 LinguaReaderIntegration::InputAction LinguaReaderIntegration::handleInput(MappedInputManager& input,
                                                                           const bool hasSection) {
   InputAction action = handleTransientUi();
@@ -108,6 +127,7 @@ LinguaReaderIntegration::InputAction LinguaReaderIntegration::handleInterlinearI
     if (back || forward) {
       if (input.getHeldTime() >= ReaderUtils::SKIP_HOLD_MS) {
         modes_.interlinear().toggleTranslation();
+        readerAnnotationsVisible = modes_.interlinear().translationVisible();
         return InputAction::Render;
       }
       return forward ? InputAction::PageForward : InputAction::PageBack;
@@ -119,7 +139,8 @@ LinguaReaderIntegration::InputAction LinguaReaderIntegration::handleInterlinearI
 }
 
 PageFontSet LinguaReaderIntegration::pageFontSet() const {
-  return resolvePageFontSet(modes_.interlinear().translationVisible());
+  readerAnnotationsVisible = modes_.interlinear().translationVisible();
+  return resolvePageFontSet(readerAnnotationsVisible);
 }
 
 void LinguaReaderIntegration::configureRenderer(GfxRenderer& renderer) {
@@ -285,6 +306,7 @@ void LinguaReaderIntegration::buildPairCacheIfNeeded() {
 }
 
 void LinguaReaderIntegration::onReaderExit() {
+  readerAnnotationsVisible = true;
   clearOverlayPrewarm();
   modes_.pageTranslation().onSectionChanged();
   modes_.tooltip().onPageChanged();

@@ -52,6 +52,7 @@ void ParsedText::consumeWords(const size_t consumed) {
   wordNoSpaceBefore.erase(wordNoSpaceBefore.begin(), wordNoSpaceBefore.begin() + take);
   wordFocusBoundary.erase(wordFocusBoundary.begin(), wordFocusBoundary.begin() + take);
   wordLinkIds.erase(wordLinkIds.begin(), wordLinkIds.begin() + take);
+  linguaErasePrefix(take);
   eraseVisibleOffsetPrefix(take);
   if (!rubyTexts.empty()) {
     const size_t rtConsumed = std::min(take, rubyTexts.size());

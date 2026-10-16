@@ -385,11 +385,6 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
   } else if (effectiveSub) {
     fontStyle = static_cast<EpdFontFamily::Style>(fontStyle | EpdFontFamily::SUB);
   }
-  // Lingua: tag translated words so the renderer can apply gray-level dimming in
-  // Dark/Light modes. The TRANSLATED bit (64) composes with the existing style bits.
-  if (inTranslatedBlock) {
-    fontStyle = static_cast<EpdFontFamily::Style>(fontStyle | EpdFontFamily::TRANSLATED);
-  }
 
   // flush the buffer
   partWordBuffer[partWordBufferIndex] = '\0';
@@ -405,7 +400,9 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
     }
     linkId = currentFootnoteLinkId;
   }
+  currentTextBlock->setLinguaTranslatedInput(inTranslatedBlock);  // Lingua: per-word translated flag
   currentTextBlock->addWord(partWordBuffer, fontStyle, false, nextWordContinues, partWordVisibleOffset, linkId);
+  currentTextBlock->setLinguaTranslatedInput(false);  // Lingua
   if (insideTableCell && !tableRowStacked) {
     tableCellTextBytes += wordBytes;
     if (currentTextBlock->size() > MAX_GRID_TABLE_CELL_WORDS) {

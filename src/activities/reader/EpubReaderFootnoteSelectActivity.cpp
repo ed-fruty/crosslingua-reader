@@ -8,7 +8,6 @@
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
-#include "modules/lingua/reader/LinguaReaderIntegration.h"
 
 namespace {
 constexpr unsigned long WORD_REPEAT_START_MS = 500;
@@ -145,7 +144,7 @@ void EpubReaderFootnoteSelectActivity::render(RenderLock&&) {
 
   // Render the page underneath
   if (page) {
-    page->render(renderer, LinguaReaderIntegration::resolvePageFontSet(), marginLeft, marginTop);  // CrossLingua
+    page->render(renderer, SETTINGS.getReaderFontId(), marginLeft, marginTop);
   }
 
   if (!footnoteLinks.empty()) {

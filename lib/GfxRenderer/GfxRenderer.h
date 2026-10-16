@@ -37,7 +37,7 @@ class GfxRenderer {
 
   // "No forced ink" sentinel for setForcedInk() / ForcedInkScope. Deliberately NOT 0: 0 IS a level
   // (solid black), and forcing black is the whole point of the primitive -- it is what lets a line
-  // role override the per-word TRANSLATED style bit in BOTH directions. Mirrored by
+  // role override the per-word translated flag in BOTH directions. Mirrored by
   // PageFontSet::INK_INHERIT (lib/Epub); a static_assert in Page.cpp keeps the two equal.
   static constexpr uint8_t INK_INHERIT = 0xFF;
 
@@ -104,14 +104,17 @@ class GfxRenderer {
   mutable int clipBottom_ = 32767;
 
   uint8_t translationGrayLevel = 0;  // 0=black (default), 1=dark gray, 2=light gray.
-                                     // Applied to words tagged with EpdFontFamily::TRANSLATED.
+                                     // Applied while a translated word is being drawn.
 
-  // Forced ink for EVERY glyph of the current draw, whatever its style bits say. INK_INHERIT (the
-  // default) leaves the TRANSLATED-bit path above untouched, so a renderer that never sets this is
+  // Forced ink for EVERY glyph of the current draw, whatever word it belongs to. INK_INHERIT (the
+  // default) leaves the translated-word path above untouched, so a renderer that never sets this is
   // bit-identical to before. Any other value (0=black, 1=dark gray, 2=light gray) WINS over the
-  // style bit -- that is what makes "this line is black" expressible, not just "this line is gray".
-  // Set only by PageLine::render through ForcedInkScope, so its lifetime is exactly one line.
+  // per-word flag -- that is what makes "this line is black" expressible, not just "this line is
+  // gray". Set only by PageLine::render through ForcedInkScope, so its lifetime is exactly one line.
   uint8_t forcedInk = INK_INHERIT;
+  // The word being drawn is translated text (TextBlock::render -> TranslatedWordScope). Mutable
+  // because the text draw path is const.
+  mutable bool drawingTranslatedWord = false;
 
   // CJK UI font fallback map: primary (built-in, Latin-only) UI font id -> a
   // size-matched SD-card font id that carries CJK glyphs. When a string drawn
@@ -379,14 +382,14 @@ class GfxRenderer {
   // Grayscale functions
   void setRenderMode(RenderMode mode);
   RenderMode getRenderMode() const { return renderMode; }
-  // Lingua: gray level applied to glyphs whose style carries the TRANSLATED bit.
+  // Lingua: gray level applied to the glyphs of translated words (TranslatedWordScope).
   // 0=black (default, no remap), 1=dark gray (also drawn in BW pass as fallback), 2=light gray.
   void setTranslationGrayLevel(uint8_t level) { translationGrayLevel = level; }
   uint8_t getTranslationGrayLevel() const { return translationGrayLevel; }
   // Per-ROLE ink (Lingua colour sub-settings). The app resolves a line's LineFontRole to an ink
   // level and the whole line draws in it, which is why the colour of an annotation row or a
-  // translation column is decided ONCE per line here instead of per word through the style bit.
-  // INK_INHERIT restores the style-bit behaviour.
+  // translation column is decided ONCE per line here instead of per word.
+  // INK_INHERIT restores the per-word behaviour.
   void setForcedInk(const uint8_t ink) { forcedInk = ink; }
   uint8_t getForcedInk() const { return forcedInk; }
 
@@ -400,6 +403,19 @@ class GfxRenderer {
     ~ForcedInkScope() { renderer.setForcedInk(previous); }
     ForcedInkScope(const ForcedInkScope&) = delete;
     ForcedInkScope& operator=(const ForcedInkScope&) = delete;
+  };
+  bool isDrawingTranslatedWord() const { return drawingTranslatedWord; }
+  // Marks the glyphs drawn during its lifetime as one translated (or original) word. Same
+  // save/restore shape as ForcedInkScope.
+  struct TranslatedWordScope {
+    const GfxRenderer& renderer;
+    bool previous;
+    TranslatedWordScope(const GfxRenderer& r, const bool translated) : renderer(r), previous(r.drawingTranslatedWord) {
+      r.drawingTranslatedWord = translated;
+    }
+    ~TranslatedWordScope() { renderer.drawingTranslatedWord = previous; }
+    TranslatedWordScope(const TranslatedWordScope&) = delete;
+    TranslatedWordScope& operator=(const TranslatedWordScope&) = delete;
   };
   // Grayscale preconditioning settle pass (no-op on X4). The rect overload
   // takes the gray region in LOGICAL screen coordinates and rotates it to the

@@ -29,8 +29,8 @@ void PageLine::render(GfxRenderer& renderer, const PageFontSet& fonts, const int
   // A line is homogeneous, so the role resolves to ONE id here and TextBlock keeps its plain
   // int fontId — the mixed-font page is a property of the page, not of any single line.
   //
-  // Same for the ink: colour is applied at the LINE boundary from the role, not per word from a
-  // style bit. Scope-guarded because a page is drawn three times (BW + LSB + MSB planes) and each
+  // Same for the ink: colour is applied at the LINE boundary from the role, overriding the per-word
+  // translated flag. Scope-guarded because a page is drawn three times (BW + LSB + MSB planes) and each
   // pass must set and clear it again; a latch would leak one line's colour into the next.
   const GfxRenderer::ForcedInkScope ink(renderer, fonts.inkForRole(fontRole));
   block->render(renderer, fonts.forRole(fontRole), xPos + xOffset, yPos + yOffset);
@@ -41,7 +41,7 @@ bool PageLine::serialize(HalFile& file) {
   serialization::writePod(file, yPos);
 
   // serialize TextBlock pointed to by PageLine
-  return block->serialize(file) && serializeLinguaFields(file);  // Lingua: + paragraphIdx, fontRole
+  return block->serialize(file) && serializeLinguaFields(file);  // Lingua: + paragraphIdx, fontRole, translated
 }
 
 std::unique_ptr<PageLine> PageLine::deserialize(HalFile& file) {
@@ -61,7 +61,7 @@ std::unique_ptr<PageLine> PageLine::deserialize(HalFile& file) {
     LOG_ERR("PGE", "Deserialization failed: could not allocate PageLine");
     return nullptr;
   }
-  line->deserializeLinguaFields(file);  // Lingua
+  if (!line->deserializeLinguaFields(file)) return nullptr;  // Lingua
   return line;
 }
 
@@ -69,10 +69,11 @@ bool PageLine::serializeLinguaFields(HalFile& file) const {
   serialization::writePod(file, paragraphIdx);
   // Per-line font role, one byte after paragraphIdx.
   serialization::writePod(file, static_cast<uint8_t>(fontRole));
-  return true;
+  // Which words are translated text (see LinguaWordFlags.h for the encoding).
+  return block->linguaTranslatedWords().serialize(file, block->wordCount());
 }
 
-void PageLine::deserializeLinguaFields(HalFile& file) {
+bool PageLine::deserializeLinguaFields(HalFile& file) {
   // Paragraph index written after the TextBlock (see serialize()).
   serialization::readPod(file, paragraphIdx);
   // Font role byte. Always present -- the version check rejects every file written before the role
@@ -82,6 +83,7 @@ void PageLine::deserializeLinguaFields(HalFile& file) {
   serialization::readPod(file, roleByte);
   fontRole = (roleByte <= static_cast<uint8_t>(LineFontRole::Annotation)) ? static_cast<LineFontRole>(roleByte)
                                                                           : LineFontRole::Body;
+  return block->linguaTranslatedWords().deserialize(file, block->wordCount());
 }
 
 void PageImage::render(GfxRenderer& renderer, const PageFontSet& fonts, const int xOffset, const int yOffset) {

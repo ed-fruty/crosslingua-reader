@@ -10,6 +10,7 @@
 
 #include "fontIds.h"
 #include "modules/lingua/activities/LanguagePickerActivity.h"
+#include "modules/lingua/modes/common/PageTextJoiner.h"
 #include "modules/lingua/parsers/TranslationPairWalker.h"
 #include "modules/lingua/utils/SentenceSplitter.h"
 #include "modules/lingua/utils/TextNormalize.h"
@@ -143,17 +144,18 @@ void PageTranslationOverlay::preparePage(const Page& page) {
     std::string text;
   };
   std::vector<ParaText> pageParas;
+  lingua::PageTextJoiner joiner;
   for (const auto& el : page.elements) {
     if (el->getTag() != TAG_PageLine) continue;
     const auto* line = static_cast<const PageLine*>(el.get());
     const int16_t pIdx = line->paragraphIdx;
     if (pIdx < 0) continue;
-    if (pageParas.empty() || pageParas.back().idx != pIdx) pageParas.push_back({pIdx, ""});
-    const auto& block = line->getBlock();
-    for (uint16_t i = 0; i < block->wordCount(); i++) {
-      if (!pageParas.back().text.empty()) pageParas.back().text += ' ';
-      pageParas.back().text += block->wordText(i);
+    if (pageParas.empty() || pageParas.back().idx != pIdx) {
+      pageParas.push_back({pIdx, ""});
+      joiner.reset();
     }
+    const auto& block = line->getBlock();
+    for (uint16_t i = 0; i < block->wordCount(); i++) joiner.append(pageParas.back().text, *block, i);
   }
   if (pageParas.empty()) {
     LOG_DBG("PGT", "Page has no text lines");

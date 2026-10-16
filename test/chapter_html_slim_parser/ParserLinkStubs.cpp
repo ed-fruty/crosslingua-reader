@@ -14,7 +14,13 @@ const char* lookupHtmlEntity(const char*, size_t) { return nullptr; }
 bool isExplicitHyphen(uint32_t) { return false; }
 bool isSoftHyphen(uint32_t) { return false; }
 
-std::vector<Hyphenator::BreakInfo> Hyphenator::breakOffsets(const std::string&, bool, bool) { return {}; }
+// Lingua tests set this to give the stub hyphenator real break points.
+std::vector<Hyphenator::BreakInfo> (*gTestBreakOffsets)(const std::string&, bool, bool) = nullptr;
+std::vector<Hyphenator::BreakInfo> Hyphenator::breakOffsets(const std::string& word, const bool includeFallback,
+                                                            const bool translated) {
+  return gTestBreakOffsets ? gTestBreakOffsets(word, includeFallback, translated)
+                           : std::vector<Hyphenator::BreakInfo>{};
+}
 void Hyphenator::setTranslatedLanguage(const std::string&) {}
 
 ImageBlock::ImageBlock(const std::string& imagePath, const std::string& srcPath, int16_t width, int16_t height)

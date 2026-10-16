@@ -9,13 +9,14 @@
 namespace linguaInk {
 
 // 0 = black (no Lingua ink); 1 = dark gray; 2 = light gray. A per-role ink set by the line being
-// drawn (PageLine::render -> ForcedInkScope) OVERRIDES the per-word TRANSLATED bit, including with 0:
-// a Lingua colour is a property of the whole line, and "black" has to be able to win over an
-// inherited TRANSLATED bit. INK_INHERIT means no line asked.
-inline uint8_t levelFor(const GfxRenderer& renderer, const EpdFontFamily::Style style) {
+// drawn (PageLine::render -> ForcedInkScope) OVERRIDES the per-word translated flag
+// (TextBlock::render -> TranslatedWordScope), including with 0: a Lingua colour is a property of the
+// whole line, and "black" has to be able to win over translated words. INK_INHERIT means no line
+// asked.
+inline uint8_t levelFor(const GfxRenderer& renderer) {
   const uint8_t forcedInk = renderer.getForcedInk();
   if (forcedInk != GfxRenderer::INK_INHERIT) return forcedInk;
-  return (style & EpdFontFamily::TRANSLATED) != 0 ? renderer.getTranslationGrayLevel() : 0;
+  return renderer.isDrawingTranslatedWord() ? renderer.getTranslationGrayLevel() : 0;
 }
 
 // One ink pixel of a scaled (SUP/SUB) glyph; level 0 is the plain drawPixel.

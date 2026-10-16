@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstring>
 
+#include "modules/lingua/modes/common/PageTextJoiner.h"
 #include "modules/lingua/parsers/TranslationPairWalker.h"
 #include "modules/lingua/utils/SentencePairing.h"
 #include "modules/lingua/utils/TextNormalize.h"
@@ -195,6 +196,19 @@ static void addPairToIndex(const std::string& origText, const std::string& trans
   }
 }
 
+// Strip dots and collapse spaces; the same fold for index keys and page keys.
+static std::string normalizeSentenceKey(const std::string& key) {
+  std::string out;
+  out.reserve(key.size());
+  for (char c : key) {
+    if (c == '.') continue;
+    if (c == ' ' && (out.empty() || out.back() == ' ')) continue;
+    out += c;
+  }
+  while (!out.empty() && out.back() == ' ') out.pop_back();
+  return out;
+}
+
 // Parse HTML and build sentence index in one pass — no intermediate storage. Only paragraphs in
 // [wantFirst, wantLast] (the current page's range) get index entries, so peak RAM is bounded by one
 // page's worth of translations rather than the whole chapter.
@@ -273,6 +287,14 @@ void TooltipOverlay::preparePage(const Page& page) {
   //    yields at least one, and the split budget is MAX_SENTENCES), so the table is capped there.
   uint16_t paraRunStarts[MAX_SENTENCES];
   int paraRunCount = 0;
+  // One joined text per run, for the walker (step 3). A page shows a handful of paragraphs.
+  std::vector<std::string> visibleTexts;
+  visibleTexts.reserve(8);
+  lingua::PageTextJoiner joiner;
+  // How each page word continues the previous one in the source, for the page-side sentence keys
+  // (step 4). Transient; without it the keys fall back to plain space-joined words.
+  const auto origWordGlue = makeUniqueNoThrow<WordGlue[]>(MAX_WORDS);
+  if (!origWordGlue) LOG_ERR("TIP", "OOM: word glue (%d bytes)", MAX_WORDS);
   int16_t lastParagraphIdx = -1;
   bool haveRun = false;  // the first line always opens a run, whatever its index
   for (const auto& el : page.elements) {
@@ -280,12 +302,20 @@ void TooltipOverlay::preparePage(const Page& page) {
     const auto* line = static_cast<const PageLine*>(el.get());
     if (!haveRun || line->paragraphIdx != lastParagraphIdx) {
       haveRun = true;
-      if (paraRunCount < MAX_SENTENCES) paraRunStarts[paraRunCount++] = static_cast<uint16_t>(origWordCount);
+      if (paraRunCount < MAX_SENTENCES) {
+        paraRunStarts[paraRunCount++] = static_cast<uint16_t>(origWordCount);
+        visibleTexts.emplace_back();
+        joiner.reset();
+      }
       lastParagraphIdx = line->paragraphIdx;
     }
     const auto& block = line->getBlock();
     for (uint16_t i = 0; i < block->wordCount(); i++) {
-      if (origWordCount < MAX_WORDS) origWordPtrs[origWordCount++] = block->wordText(i);
+      if (origWordCount < MAX_WORDS) {
+        const WordGlue glue = joiner.append(visibleTexts.back(), *block, i);
+        if (origWordGlue) origWordGlue[origWordCount] = glue;
+        origWordPtrs[origWordCount++] = block->wordText(i);
+      }
     }
   }
 
@@ -299,21 +329,9 @@ void TooltipOverlay::preparePage(const Page& page) {
           splits.count);
 
   // 3. Build the sentence index from the pairs behind the paragraphs this page shows. The runs above
-  //    already cut the page at paragraph edges, so joining each run's words gives exactly the texts
-  //    the walker matches against -- and only this page's pairs are ever held.
-  std::vector<std::string> visibleTexts;
-  visibleTexts.reserve(static_cast<size_t>(paraRunCount));
-  for (int r = 0; r < paraRunCount; r++) {
-    const int from = paraRunStarts[r];
-    const int to = (r + 1 < paraRunCount) ? paraRunStarts[r + 1] : origWordCount;
-    std::string text;
-    for (int w = from; w < to; w++) {
-      if (!text.empty()) text += ' ';
-      text += origWordPtrs[w];
-    }
-    visibleTexts.push_back(std::move(text));
-  }
-
+  //    already cut the page at paragraph edges, and step 1 joined each run's words (source-glued
+  //    pieces without a space, see PageTextJoiner) into exactly the texts the walker matches against
+  //    -- and only this page's pairs are ever held.
   auto index = buildIndexForPage(pairCachePath, translationSourcePath, bookPrimaryLang, visibleTexts);
   if (index.empty()) {
     LOG_DBG("TIP", "No index entries for this page");
@@ -327,15 +345,7 @@ void TooltipOverlay::preparePage(const Page& page) {
 
   // Pre-normalize index keys (strip dots, collapse spaces).
   std::vector<std::string> normKeys(index.size());
-  for (int j = 0; j < (int)index.size(); j++) {
-    auto& nk = normKeys[j];
-    for (char c : index[j].key) {
-      if (c == '.') continue;
-      if (c == ' ' && (nk.empty() || nk.back() == ' ')) continue;
-      nk += c;
-    }
-    while (!nk.empty() && nk.back() == ' ') nk.pop_back();
-  }
+  for (int j = 0; j < (int)index.size(); j++) normKeys[j] = normalizeSentenceKey(index[j].key);
 
   // The page sentences that carry matchable text, in order. A sentence whose key is EMPTY has none:
   // sentenceKey drops single-character punctuation words, so a scene-break ornament paragraph ("*",
@@ -354,16 +364,11 @@ void TooltipOverlay::preparePage(const Page& page) {
 
   // Forward pass: match by key.
   for (int s = 0; s < splits.count; s++) {
-    std::string pk = sentenceKey(origWordPtrs, splits.spans[s].startWord, splits.spans[s].endWord);
+    std::string pk =
+        sentenceKeyGlued(origWordPtrs, origWordGlue.get(), splits.spans[s].startWord, splits.spans[s].endWord);
     if (pk.empty()) continue;
     if (keyedCount < MAX_SENTENCES) keyed[keyedCount++] = static_cast<uint8_t>(s);
-    std::string np;
-    for (char c : pk) {
-      if (c == '.') continue;
-      if (c == ' ' && (np.empty() || np.back() == ' ')) continue;
-      np += c;
-    }
-    while (!np.empty() && np.back() == ' ') np.pop_back();
+    const std::string np = normalizeSentenceKey(pk);
 
     int foundIdx = -1;
     // Sequential hint.

@@ -1,5 +1,6 @@
 #include "Section.h"
 
+#include <BufferedFile.h>
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
@@ -64,8 +65,9 @@ namespace {
 //   measured as SHAPED visual text (getTextAdvanceX), so cached word positions match what drawText
 //   actually renders. TextBlock also serializes a per-word ruby annotation string after the word
 //   arena (native <ruby>/<rt>, <rp> skipped), and a closing tag starts a fresh text block so a
-//   closed block's style cannot leak into following bare text. The persisted ruby style bit is 128
-//   (bit 7); 64 is this line's TRANSLATED bit, which is why ruby could not keep upstream's value.
+//   closed block's style cannot leak into following bare text. The style byte's bits are exactly
+//   upstream's (ruby follower 64, discretionary hyphen 128): the translated-word flag is NOT a style
+//   bit but a per-line LinguaWordFlags record in PageLine's Lingua fields (none / all / bitmask).
 // * Images. ImageBlock serializes the book-internal source href after the cache path: images are
 //   header-probed at build time and extracted lazily on first render.
 // * Pages and lines. Each line carries a paragraphIdx and a LineFontRole byte, and each page a
@@ -193,14 +195,20 @@ namespace {
 // v50: Paragraph indentation width in the header for cache validation.
 // v51: Preserve paragraph continuity and top spacing across soft flushes.
 // v52: Missing full-block and black-square symbols now have visible widths.
+// v53: Persist per-word source ranges alongside the redaction layout changes.
+// v54: Source ranges retain codepoints absorbed by NFC composition.
+// v55: Persist the first logical word of each paragraph for clipping separators.
+// v56: Split hyphen and dash tokens (e.g "foo—bar" into "foo—" and "bar") in standard reading mode
 // (CrossLingua) v46 and v47 were also used by this fork, with its own header layout: v46 for the
 //      Interlinear annotation carry/tail strips, v47 for the Lingua paragraph-index fix after tables
 //      and image alt text. Both are superseded by v53.
-// v53: CrossLingua merge of upstream v52. The header is upstream's v52 header with the fork's
+// (CrossLingua) v53: merge of upstream v52. The header is upstream's v52 header with the fork's
 //      translationFontId, annotationFontId, linguaLayout, translatedSource and embeddedTranslation
 //      inserted as one block before pageCount; PageLine carries paragraphIdx and fontRole; <ul>/<ol>
 //      are layout blocks. A later upstream merge takes max(ours, upstream) + 1.
-constexpr uint8_t SECTION_FILE_VERSION = 53;
+// v57: CrossLingua merge of upstream v56. Upstream's v56 layout plus the fork's v53 Lingua header
+//      block and PageLine fields; the translated-word flag is no longer a style-byte bit.
+constexpr uint8_t SECTION_FILE_VERSION = 57;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
@@ -794,6 +802,77 @@ std::optional<uint16_t> Section::findAnchor(const std::string& anchor) const {
   return getPageForAnchor(anchor);
 }
 
+int Section::getTocIndexForPage(const int page) const {
+  int selected = epub->getTocIndexForSpineIndex(spineIndex);
+  int latestPage = -1;
+  struct TocAnchor {
+    size_t hash;
+    int index;
+  };
+  // Bound scratch space to 512 bytes on C3; anchor text stays in the existing caches.
+  constexpr size_t BATCH_SIZE = 64;
+  auto targets = makeUniqueNoThrow<TocAnchor[]>(BATCH_SIZE);
+  if (!targets) {
+    LOG_ERR("SCT", "OOM: TOC anchor lookup");
+    return selected;
+  }
+  HalFile anchorFile;
+  uint16_t anchorCount = 0;
+  std::optional<serialization::BufferedFileReader> anchorReader;
+  uint32_t anchorStart = 0;
+  if (openAnchorMap(anchorFile, anchorCount)) {
+    anchorStart = anchorFile.position();
+    // Reuse one 1 KB buffer across batches and interleaved TOC metadata reads.
+    anchorReader.emplace(anchorFile, 1024);
+  }
+  std::string cachedAnchor;
+  size_t count = 0;
+  const auto considerAnchor = [&](const std::string& anchor, const uint16_t anchorPage, const bool fromDisk) {
+    const size_t hash = std::hash<std::string>{}(anchor);
+    for (size_t i = 0; i < count; ++i) {
+      if (targets[i].hash != hash || epub->getTocItem(targets[i].index).anchor != anchor) continue;
+      const int resolvedPage = fromDisk ? findAnchorDuringBuild(anchor).value_or(anchorPage) : anchorPage;
+      if (resolvedPage <= page &&
+          (resolvedPage > latestPage || (resolvedPage == latestPage && targets[i].index > selected))) {
+        selected = targets[i].index;
+        latestPage = resolvedPage;
+      }
+    }
+  };
+  const auto resolveBatch = [&]() {
+    if (build_ && build_->parser) {
+      for (const auto& [anchor, anchorPage] : build_->parser->getAnchors()) {
+        considerAnchor(anchor, anchorPage, false);
+      }
+    }
+    if (anchorReader && anchorReader->seek(anchorStart)) {
+      for (uint16_t i = 0; i < anchorCount; ++i) {
+        uint16_t anchorPage;
+        serialization::readString(*anchorReader, cachedAnchor);
+        serialization::readPod(*anchorReader, anchorPage);
+        considerAnchor(cachedAnchor, anchorPage, true);
+      }
+    }
+    count = 0;
+  };
+  const int first = std::max(0, selected);
+  for (int i = first; i < epub->getTocItemsCount(); ++i) {
+    const auto item = epub->getTocItem(i);
+    if (item.spineIndex != spineIndex) continue;
+    if (item.anchor.empty()) {
+      if (page >= 0 && latestPage <= 0) {
+        selected = i;
+        latestPage = 0;
+      }
+    } else {
+      targets[count++] = {std::hash<std::string>{}(item.anchor), i};
+      if (count == BATCH_SIZE) resolveBatch();
+    }
+  }
+  if (count > 0) resolveBatch();
+  return selected;
+}
+
 uint16_t Section::estimatedTotalPages() const {
   // Extrapolation from a suspended session's watermark trailer. A static snapshot, so no EMA
   // damping is needed. Also the best guess while a rebuild is running but hasn't laid out
@@ -1153,10 +1232,9 @@ std::optional<uint16_t> Section::getCachedPageCount() const {
   return count;
 }
 
-std::optional<uint16_t> Section::getPageForAnchor(const std::string& anchor) const {
-  HalFile f;
+bool Section::openAnchorMap(HalFile& f, uint16_t& count) const {
   if (!Storage.openFileForRead("SCT", filePath, f)) {
-    return std::nullopt;
+    return false;
   }
 
   const uint32_t fileSize = f.size();
@@ -1164,12 +1242,18 @@ std::optional<uint16_t> Section::getPageForAnchor(const std::string& anchor) con
   uint32_t anchorMapOffset;
   serialization::readPod(f, anchorMapOffset);
   if (anchorMapOffset == 0 || anchorMapOffset >= fileSize) {
-    return std::nullopt;
+    return false;
   }
 
   f.seek(anchorMapOffset);
-  uint16_t count;
   serialization::readPod(f, count);
+  return true;
+}
+
+std::optional<uint16_t> Section::getPageForAnchor(const std::string& anchor) const {
+  HalFile f;
+  uint16_t count;
+  if (!openAnchorMap(f, count)) return std::nullopt;
   for (uint16_t i = 0; i < count; i++) {
     std::string key;
     uint16_t page;

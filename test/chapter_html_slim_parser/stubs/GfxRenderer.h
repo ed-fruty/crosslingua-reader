@@ -5,6 +5,8 @@
 
 #include <deque>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace BidiUtils {
 enum class BidiBaseDir : signed char { AUTO = -1, LTR = 0, RTL = 1 };
@@ -19,6 +21,18 @@ class GfxRenderer {
    public:
     ForcedInkScope(GfxRenderer&, uint8_t) {}
   };
+  // Lingua per-word translated flag (TextBlock::render scopes it per word); drawText records it.
+  mutable bool drawingTranslatedWord = false;
+  struct TranslatedWordScope {
+    const GfxRenderer& renderer;
+    bool previous;
+    TranslatedWordScope(const GfxRenderer& r, const bool translated) : renderer(r), previous(r.drawingTranslatedWord) {
+      r.drawingTranslatedWord = translated;
+    }
+    ~TranslatedWordScope() { renderer.drawingTranslatedWord = previous; }
+  };
+  // Optional draw log: every drawText appends (text, drawn as a translated word).
+  mutable std::vector<std::pair<std::string, bool>>* drawLog = nullptr;
   // The fixture has no framebuffer to lend; image probes run as without a loan.
   class FrameBufferLoan {
    public:
@@ -31,8 +45,10 @@ class GfxRenderer {
   }
   bool isFontCacheScanning() const { return false; }
   void drawLine(int, int, int, int, int, bool) const {}
-  void drawText(int, int, int, const char*, bool, EpdFontFamily::Style,
-                BidiUtils::BidiBaseDir = BidiUtils::BidiBaseDir::AUTO, int8_t = 0) const {}
+  void drawText(int, int, int, const char* text, bool, EpdFontFamily::Style,
+                BidiUtils::BidiBaseDir = BidiUtils::BidiBaseDir::AUTO, int8_t = 0) const {
+    if (drawLog) drawLog->emplace_back(text, drawingTranslatedWord);
+  }
   int getTextWidth(int font, const char* text, EpdFontFamily::Style style,
                    BidiUtils::BidiBaseDir = BidiUtils::BidiBaseDir::AUTO) const {
     return getTextAdvanceX(font, text, style);

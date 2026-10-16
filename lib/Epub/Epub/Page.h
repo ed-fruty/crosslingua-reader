@@ -55,9 +55,12 @@ class PageLine final : public PageElement {
   // layout time (the measurement used the same role), so a cached page always redraws in the font
   // it was measured with.
   LineFontRole fontRole = LineFontRole::Body;
-  // The two fields above, written after the TextBlock.
+  // The two fields above, then the TextBlock's translated-word flags, written after the TextBlock.
   bool serializeLinguaFields(HalFile& file) const;
-  void deserializeLinguaFields(HalFile& file);
+  bool deserializeLinguaFields(HalFile& file);
+  // An Interlinear annotation strip: translated furniture the reader inserted, not the chapter's own
+  // text, and without meaningful source ranges. Word selection, clipping and page text skip it.
+  bool isLinguaAnnotation() const { return fontRole == LineFontRole::Annotation; }
 };
 
 // New PageImage class
@@ -153,6 +156,18 @@ class Page {
       return element->getTag() == TAG_PageImage &&
              static_cast<const PageImage&>(*element).getImageBlock().needsDecode();
     });
+  }
+
+  // Lingua: the upstream int-font-id entry points, resolved through PageFontSet::resolve.
+  void render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset) const {
+    render(renderer, PageFontSet::resolve(fontId), xOffset, yOffset);
+  }
+  void renderImages(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset) const {
+    renderImages(renderer, PageFontSet::resolve(fontId), xOffset, yOffset);
+  }
+  void renderWithImagePlaceholders(GfxRenderer& renderer, const int fontId, const int xOffset,
+                                   const int yOffset) const {
+    renderWithImagePlaceholders(renderer, PageFontSet::resolve(fontId), xOffset, yOffset);
   }
 
   // Get bounding box of all images on the page (union of image rects)

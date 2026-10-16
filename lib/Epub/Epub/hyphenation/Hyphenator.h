@@ -44,7 +44,7 @@ class Hyphenator {
   // Provide a publication-level language hint (e.g. "en", "en-US", "ru") used to select hyphenation rules.
   static void setPreferredLanguage(const std::string& lang);
 
-  // Provide the language of translated blocks (words carrying EpdFontFamily::TRANSLATED), used to
+  // Provide the language of translated blocks (words ParsedText flags as translated), used to
   // select hyphenation rules for those words. Pass an empty string to clear the slot (e.g. at the
   // start of each section build so it never leaks across books). Independent of setPreferredLanguage.
   static void setTranslatedLanguage(const std::string& lang);
