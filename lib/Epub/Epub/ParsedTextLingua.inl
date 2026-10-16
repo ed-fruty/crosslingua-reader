@@ -6,18 +6,35 @@
 //
 // Not a standalone translation unit: no include guard, no includes of its own.
 
+namespace {
+// One lazily materialized per-token flag vector: empty until its first set token (all false), then
+// exactly `tokenCount` long, reserved alongside the upstream arrays (`capacity`).
+void linguaPushFlag(std::vector<bool>& flags, const bool value, const size_t tokenCount, const size_t capacity) {
+  if (flags.empty()) {
+    if (!value) return;
+    flags.reserve(capacity);
+    flags.resize(tokenCount - 1, false);
+  } else if (flags.capacity() < capacity) {
+    flags.reserve(capacity);
+  }
+  flags.push_back(value);
+}
+// The token inserted at wordIndex + 1 by a split is the same word: it copies the prefix's flag.
+void linguaSplitFlag(std::vector<bool>& flags, const size_t wordIndex) {
+  if (flags.empty() || wordIndex >= flags.size()) return;
+  const bool value = flags[wordIndex];
+  flags.insert(flags.begin() + wordIndex + 1, value);
+}
+void linguaEraseFlags(std::vector<bool>& flags, const size_t consumed) {
+  if (flags.empty()) return;
+  flags.erase(flags.begin(), flags.begin() + std::min(consumed, flags.size()));
+}
+}  // namespace
+
 void ParsedText::linguaOnTokenPushed() {
   // Called right after words.push_back, so the new token is words.back().
-  if (linguaTranslated.empty()) {
-    if (!linguaTranslatedInput) return;
-    // First translated token of the block: materialize the flags for the tokens before it.
-    linguaTranslated.reserve(wordStyles.capacity());
-    linguaTranslated.resize(words.size() - 1, false);
-  } else if (linguaTranslated.capacity() < wordStyles.capacity()) {
-    // Follow the upstream arrays' bulk reserve instead of growing on our own schedule.
-    linguaTranslated.reserve(wordStyles.capacity());
-  }
-  linguaTranslated.push_back(linguaTranslatedInput);
+  linguaPushFlag(linguaTranslated, linguaTranslatedInput, words.size(), wordStyles.capacity());
+  linguaPushFlag(linguaInserted, linguaInsertedInput, words.size(), wordStyles.capacity());
 }
 
 void ParsedText::linguaOnWordSplit(const size_t wordIndex) {
@@ -32,17 +49,13 @@ void ParsedText::linguaOnWordSplit(const size_t wordIndex) {
       ++tracked;
     }
   }
-  // The remainder is the same word, so it keeps the prefix's translated flag.
-  if (!linguaTranslated.empty() && wordIndex < linguaTranslated.size()) {
-    const bool translated = linguaTranslated[wordIndex];
-    linguaTranslated.insert(linguaTranslated.begin() + wordIndex + 1, translated);
-  }
+  linguaSplitFlag(linguaTranslated, wordIndex);
+  linguaSplitFlag(linguaInserted, wordIndex);
 }
 
 void ParsedText::linguaErasePrefix(const size_t consumed) {
-  if (linguaTranslated.empty()) return;
-  const size_t take = std::min(consumed, linguaTranslated.size());
-  linguaTranslated.erase(linguaTranslated.begin(), linguaTranslated.begin() + take);
+  linguaEraseFlags(linguaTranslated, consumed);
+  linguaEraseFlags(linguaInserted, consumed);
 }
 
 void ParsedText::finishLinguaLine(TextBlock& block, const size_t lastBreakAt, const size_t lineBreak,
@@ -53,17 +66,22 @@ void ParsedText::finishLinguaLine(TextBlock& block, const size_t lastBreakAt, co
     return lastBreakAt + (willReorder ? static_cast<size_t>(visualOrderScratch[visual]) : visual);
   };
 
+  // INSERTED WORDS (a sidecar's added translation) have no position in the original text.
+  if (!linguaInserted.empty() && lineWordCount == block.wordCount()) {
+    for (size_t i = 0; i < lineWordCount; ++i) {
+      const size_t logical = logicalAt(i);
+      if (logical < linguaInserted.size() && linguaInserted[logical]) {
+        block.linguaClearSourceRange(static_cast<uint16_t>(i));
+      }
+    }
+  }
+
   // TRANSLATED WORDS, in the TextBlock's visual order. none / all cost nothing; only a line mixing
   // the two (an inline <span lang> run inside an original paragraph) carries a bitmask.
   if (!linguaTranslated.empty() && lineWordCount > 0 && lineWordCount == block.wordCount()) {
     size_t translatedCount = 0;
     for (size_t i = 0; i < lineWordCount; ++i) {
       if (linguaWordTranslatedAt(logicalAt(i))) ++translatedCount;
-    }
-    if (linguaTranslatedWithoutSource) {
-      for (size_t i = 0; i < lineWordCount; ++i) {
-        if (linguaWordTranslatedAt(logicalAt(i))) block.linguaClearSourceRange(static_cast<uint16_t>(i));
-      }
     }
     LinguaWordFlags& flags = block.linguaTranslatedWords();
     if (translatedCount == lineWordCount) {

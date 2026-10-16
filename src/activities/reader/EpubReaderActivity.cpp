@@ -1678,7 +1678,7 @@ void EpubReaderActivity::renderBook() {
     }
 
     if (offsetJump.has_value()) {
-      section->linguaSetTieBreakPage(section->currentPage);  // Lingua: v2 pages sharing one offset
+      section->linguaSetTieBreakPage(section->currentPage);  // Lingua: sidecar pages sharing one offset
       if (const auto offsetPage = section->getPageForVisibleTextOffset(*offsetJump)) {
         section->currentPage = *offsetPage;
         clearDeferredReposition();
@@ -3304,7 +3304,7 @@ CrossPointPosition EpubReaderActivity::getCurrentPosition() const {
   if (section && currentPage >= 0 && currentPage < section->pageCount) {
     if (const auto offset = section->getVisibleTextOffsetForPage(static_cast<uint16_t>(currentPage))) {
       localPos.visibleTextOffset = *offset;
-      localPos.hasVisibleTextOffset = !lingua::isLegacySidecarOffset(*offset);  // Lingua: not comparable
+      localPos.hasVisibleTextOffset = true;
     }
   }
   if (paragraphIndex.has_value()) {

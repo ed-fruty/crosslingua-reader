@@ -18,12 +18,11 @@
  * each closing block tag (p, h1-h6, li, blockquote) append a translated
  * paragraph marked with a lang attribute (<p lang="xx">).
  *
- * Output format 2 (lingua::SIDECAR_FORMAT_ATTR="2" on the root element): the
- * original's visible text survives byte-for-byte, so the reader's visible-text offsets
+ * The original's visible text survives byte-for-byte, so the reader's visible-text offsets
  * (progress, clippings, KOReader sync) mean the same position in the sidecar as in the
  * chapter itself. Nothing of the rewriter's own is added between elements (no newlines
- * after closing tags), inserted blocks carry lingua::INSERTED_TRANSLATION_ATTR so the
- * parser can leave them uncounted, and a translation block already in the source is
+ * after closing tags), inserted blocks carry lingua::content::INSERTED_TRANSLATION_ATTR so
+ * the parser can leave them uncounted, and a translation block already in the source is
  * kept with a `hidden` attribute instead of being dropped (its text is counted in the
  * original, and hidden blocks are laid out as display:none). CDATA is copied as CDATA.
  */

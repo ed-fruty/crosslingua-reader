@@ -52,6 +52,12 @@
 // TranslatedContentDetector.cpp.
 namespace lingua::content {
 
+// The attribute TranslationHtmlRewriter puts on every translation block it inserts into a
+// `.translated.html` sidecar. The parser counts no visible-text offset, XPath paragraph or list item
+// for such a block, and its words carry no source range, so offsets in a sidecar mean the same
+// position as in the chapter's own XHTML. Embedded (plugin-made) translations do not carry it.
+constexpr char INSERTED_TRANSLATION_ATTR[] = "data-translation";
+
 namespace detail {
 
 inline bool isAsciiSpace(const char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; }

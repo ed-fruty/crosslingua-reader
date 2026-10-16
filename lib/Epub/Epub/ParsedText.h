@@ -298,13 +298,13 @@ class ParsedText {
   // and clears it straight after, so no other caller (list markers, Interlinear's annotation
   // re-emit, the Side by Side marker) ever inherits it.
   //
-  // `withoutSourceRange`: these translated words are not in the original text (a v2 sidecar's
-  // inserted translation, whose characters the parser does not count). Their lines then carry no
+  // `inserted`: the words are not in the original text at all (a sidecar's inserted translation,
+  // whose characters the parser does not count), whatever their language. Their lines carry no
   // source range for them, so clipping never anchors a position to text the original lacks.
-  void setLinguaTranslatedInput(const bool translated, const bool withoutSourceRange = false) {
+  void setLinguaTranslatedInput(const bool translated, const bool inserted = false) {
     linguaTranslatedInput = translated;
+    linguaInsertedInput = inserted;
     linguaDropInput = false;
-    if (translated && withoutSourceRange) linguaTranslatedWithoutSource = true;
   }
   // addWord() ignores words until the next setLinguaTranslatedInput(): the parser's way to drop a
   // marker it adds for a block whose text the active layout filters out.
@@ -336,9 +336,12 @@ class ParsedText {
   // block of a book without translations -- pays nothing; once non-empty it is exactly words.size().
   std::vector<bool> linguaTranslated;
   bool linguaTranslatedInput = false;
-  bool linguaTranslatedWithoutSource = false;
+  // Per-token "inserted by the sidecar rewriter" flag, kept exactly like linguaTranslated (empty
+  // until the first such token).
+  std::vector<bool> linguaInserted;
+  bool linguaInsertedInput = false;
   bool linguaDropInput = false;
-  // Hooks that keep linguaTranslated in lockstep with the upstream per-token arrays.
+  // Hooks that keep linguaTranslated / linguaInserted in lockstep with the upstream per-token arrays.
   void linguaOnTokenPushed();
   void linguaOnWordSplit(size_t wordIndex);
   void linguaErasePrefix(size_t consumed);

@@ -19,7 +19,6 @@
 #include "Epub/css/CssStyle.h"
 #include "modules/lingua/layout/LinguaLayout.h"
 #include "modules/lingua/modes/interlinear/InterlinearAnnotation.h"
-#include "modules/lingua/services/LinguaSourceKind.h"
 
 class Page;
 class PageLine;
@@ -109,18 +108,18 @@ class ChapterHtmlSlimParser {
   bool currentBlockIsTranslated = false;  // True when the currently-open block has lang= differing from bookPrimaryLang
   std::string bookPrimaryLang;            // Book's content.opf language; a differing lang= marks a translated block
   std::string translatedHyphenLang;       // Last lang= applied to the Hyphenator's translated slot; avoids re-resolving
-  // Parsing a v2 translated sidecar (LinguaSourceKind.h): its inserted translation blocks are not
+  // A translated sidecar's inserted blocks (lingua::content::INSERTED_TRANSLATION_ATTR) are not
   // counted in visibleTextOffset or the XPath paragraph / list-item indices, and their words carry no
   // source range, so every position means the same as in the chapter's own XHTML.
-  bool linguaSidecarV2 = false;
-  // Offset space of the file (LinguaSourceKind.h). Section passes Original or LegacySidecar; a
-  // sidecar's root element upgrades it to SidecarV2.
-  LinguaSourceKind linguaSourceKind_ = LinguaSourceKind::Original;
-  bool linguaRootSeen = false;
   void linguaOnElementStart(const char* name, const char** atts);
+  // Depth the open inserted block started at, or -1. A word flushed by the block's own closing tag
+  // still sees depth > this (endElement flushes before it decrements depth).
+  int linguaInsertedDepth = -1;
+  bool linguaTranslatedSidecar = false;  // parsing a `.translated.html` sidecar (Section sets it)
+  bool linguaInsideInsertedTranslation() const { return linguaInsertedDepth >= 0 && depth > linguaInsertedDepth; }
   // Before a block's list marker is added: the marker of a translated item is translated text, and
   // dropped with it by a layout that drops translated words (no orphan "•" line).
-  void linguaPrepareBlockMarker();
+  void linguaPrepareBlockMarker(const char* name);
 
   // Lingua (SideBySide and Interlinear): the current ORIGINAL outermost block is buffered
   // here until its paired translation arrives, because the parser flushes the original long before
@@ -456,10 +455,8 @@ class ChapterHtmlSlimParser {
     wordSpacingPercent = wordPercent;
   }
   void setParagraphIndentSpaces(const uint8_t spaces) { paragraphIndentSpaces = spaces; }
-  // Lingua: the offset space of the file being parsed (call before beginParse).
-  void setLinguaSourceKind(LinguaSourceKind kind);
-  LinguaSourceKind linguaSourceKind() const { return linguaSourceKind_; }
-  bool linguaHasSeenRoot() const { return linguaRootSeen; }
+  // Lingua: the file is our `.translated.html` sidecar, whose inserted blocks are not original text.
+  void setLinguaTranslatedSidecar(const bool sidecar) { linguaTranslatedSidecar = sidecar; }
 
   // One-shot parse: builds every page before returning (begin + step* + finish).
   bool parseAndBuildPages();

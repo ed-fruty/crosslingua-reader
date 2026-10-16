@@ -435,8 +435,7 @@ void ChapterTranslationActivity::runTranslation() {
       translatedHtmlPath.substr(0, translatedHtmlPath.rfind(".translated.html")) + ".pairs";
   Storage.remove(pairCachePath.c_str());
   // The chapter's laid-out pages came from the previous source. A re-translation keeps
-  // translatedSource true, so the section key alone would serve them -- and a legacy -> v2
-  // sidecar also changes which offset space the pages use (LinguaSourceKind.h). Drop them.
+  // translatedSource true, so the section key alone would serve them. Drop them.
   const std::string sectionBinPath =
       translatedHtmlPath.substr(0, translatedHtmlPath.rfind(".translated.html")) + ".bin";
   Storage.remove(sectionBinPath.c_str());

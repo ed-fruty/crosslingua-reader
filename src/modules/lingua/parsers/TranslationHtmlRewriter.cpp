@@ -8,7 +8,6 @@
 
 #include "CrossPointSettings.h"
 #include "modules/lingua/engines/ParagraphTranslator.h"
-#include "modules/lingua/services/LinguaSourceKind.h"
 #include "modules/lingua/services/TranslatedContentDetector.h"
 #include "modules/lingua/services/TranslatorHttp.h"
 
@@ -409,7 +408,8 @@ void TranslationHtmlRewriter::flushBatch() {
         }
         static constexpr char kLangAttr[] = " lang=\"";
         static constexpr char kTagAttrs[] = "\" data-translation=\"true\" dir=\"auto\">";
-        // `data-translation` is lingua::INSERTED_TRANSLATION_ATTR: the parser leaves these uncounted.
+        // `data-translation` is lingua::content::INSERTED_TRANSLATION_ATTR: the parser leaves these
+        // uncounted.
         writeRaw(kLangAttr, sizeof(kLangAttr) - 1);
         writeRaw(targetLang, strlen(targetLang));
         writeRaw(kTagAttrs, sizeof(kTagAttrs) - 1);
@@ -465,22 +465,6 @@ void XMLCALL TranslationHtmlRewriter::onStart(void* ud, const XML_Char* name, co
   if (strcmp(name, "head") == 0) self->insideHead = true;
 
   std::string tag = makeOpenTag(name, atts);
-
-  // Format marker on the root element, where the parser reads it before any body text.
-  if (self->depth == 0) {
-    bool hasFormat = false;
-    for (int i = 0; atts && atts[i]; i += 2) {
-      if (strcmp(atts[i], lingua::SIDECAR_FORMAT_ATTR) == 0) hasFormat = true;
-    }
-    if (!hasFormat) {
-      std::string attr = " ";
-      attr += lingua::SIDECAR_FORMAT_ATTR;
-      attr += "=\"";
-      attr += lingua::SIDECAR_FORMAT_V2;
-      attr += "\"";
-      tag.insert(tag.size() - 1, attr);
-    }
-  }
 
   if (self->keptTranslationDepth != -1) {
     // Inside an existing translation block being kept hidden: pass through verbatim

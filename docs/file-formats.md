@@ -126,29 +126,34 @@ truncated record stream would otherwise read as a complete but shorter chapter.
 
 ## `<spine>.translated.html` (Lingua translated sidecar)
 
-### Format 2
-
 The chapter's XHTML with a translation block inserted after every translated
-original block. The root element carries `data-crosslingua-sidecar="2"`, which
-the parser reads at the root before any body text. Inserted blocks repeat the
-original's tag and class and carry `lang="<target>" data-translation="true"
-dir="auto"`; the rewriter adds no characters between elements (CDATA sections
-stay CDATA), so the original's visible text is byte-identical. A translation
-block already present in the source (a block whose `lang` / `xml:lang` differs
-from the book's language) is kept with `hidden="hidden"` instead of being
-dropped.
+original block. Inserted blocks repeat the original's tag and class and carry
+`lang="<target>" data-translation="true" dir="auto"`. The rewriter adds no
+characters between elements (CDATA sections stay CDATA), so the original's
+visible text is byte-identical. A translation block already present in the
+source (a block whose `lang` / `xml:lang` differs from the book's language) is
+kept with `hidden="hidden"` instead of being dropped, so its text still counts
+as it does in the original.
 
-A sidecar without the attribute is format 1: it appended a newline after every
-closing block tag and dropped existing translation blocks, so its offsets cannot
-be mapped to the original. Re-translating the chapter writes format 2.
+Offsets: the parser counts no visible-text offset and no XPath paragraph / list
+item for a `data-translation="true"` block, and its words carry no source range
+(`UINT32_MAX`). Every visible-text offset in a section laid out from a sidecar
+(page LUT, word source ranges, progress, clippings, KOReader sync) therefore
+means the same position as in the chapter's own XHTML. Translations embedded in
+the book itself carry no `data-translation` attribute and are counted as text.
+Consecutive pages inside one inserted translation start at the same offset; for
+a chapter laid out from a sidecar, an offset lookup resolves that tie to the
+caller's saved page when it is one of them, otherwise to the first. Committing a
+sidecar deletes the chapter's `.bin`, `.bin.part` and `.pairs`.
 
 ## `section.bin`
 
-### Version 58
+### Version 59
 
-The version 57 layout below, renumbered: some version 57 caches were written
-before the Lingua header block gained `sourceKind`, so their later header fields
-would read shifted by one byte.
+The version 57 layout below. Version 58 was a development layout with an extra
+`sourceKind` byte at the end of the Lingua header block; it is gone again.
+Version 59 also changes what a sidecar's offsets count (see the sidecar format
+above), so earlier caches rebuild.
 
 ### Version 57
 
@@ -162,31 +167,6 @@ with a translated-words record after `fontRole`: `u8 encoding` (0 = no
 translated word, 1 = every word translated, 2 = mixed) and, for 2 only, a
 bitmask of `ceil(wordCount / 8)` bytes, bit `i` (LSB first) marking word `i`
 in the TextBlock's visual order.
-
-The Lingua header block ends with `u8 sourceKind` after `embeddedTranslation`,
-naming the offset space of every visible-text offset in the file (page LUT and
-word source ranges):
-
-- `0` original: the chapter's own XHTML, counted exactly as upstream counts it
-  (embedded bilingual books included).
-- `1` translated sidecar, format 2 (see above): the same numbers as the
-  original chapter. Inserted translation blocks are not counted, their words
-  share the offset of the position they were inserted at and carry no source
-  range (`UINT32_MAX`), and the XPath paragraph / list-item indices skip them.
-- `2` legacy sidecar (format 1): offsets start at `0x80000000`, so they stay
-  consistent within the chapter but never resolve against an original-text
-  position, and are never compared with or uploaded as one (progress,
-  bookmarks, clippings, KOReader sync fall back to their page or percentage
-  paths). The paragraph LUT is written with count 0, which every reader treats
-  as absent.
-
-Readers of a `.bin` take `sourceKind` from its header, also when they query the
-cache without loading the section. Consecutive v2 pages inside one inserted
-translation start at the same offset; an offset lookup resolves that tie to the
-caller's saved page when it is one of them, otherwise to the first.
-
-`sourceKind` is not a cache key; committing a new sidecar deletes the chapter's
-`.bin`.
 
 ### Version 55
 
@@ -212,7 +192,7 @@ Ranges follow words through BiDi ordering and line wrapping. This version also
 includes the version 52 redaction layout changes. Older completed and partial
 section caches are rebuilt automatically; book and progress files are kept.
 
-### Version 53 (CrossLingua, superseded by 58)
+### Version 53 (CrossLingua, superseded by 57)
 
 CrossLingua merge of upstream version 52. The header is the upstream version 52
 header with the fork's Lingua fields inserted as one block before `pageCount`,
@@ -226,7 +206,6 @@ u8  imageRendering; bool focusReadingEnabled; s8 characterSpacing;
 u8  wordSpacingPercent;
 s32 translationFontId; s32 annotationFontId; u8 linguaLayout;     // Lingua
 bool translatedSource; bool embeddedTranslation;                  // Lingua
-u8  sourceKind;                                                   // Lingua, v58+
 u16 pageCount; u32 lutOffset; u32 anchorMapOffset; u32 paragraphLutOffset;
 u32 liLutOffset; u32 visibleOffsetLutOffset;
 ```
@@ -561,7 +540,6 @@ struct SectionBin {
     u8 linguaLayout;          // Lingua
     bool translatedSource;    // Lingua
     bool embeddedTranslation; // Lingua (memo, not a cache key)
-    u8 sourceKind;            // Lingua: offset space of every visible-text offset
 
     u16 pageCount;
     u32 pageLutOffset;

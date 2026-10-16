@@ -400,7 +400,7 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
     }
     linkId = currentFootnoteLinkId;
   }
-  currentTextBlock->setLinguaTranslatedInput(inTranslatedBlock, linguaSidecarV2);  // Lingua: per-word flag
+  currentTextBlock->setLinguaTranslatedInput(inTranslatedBlock, linguaInsideInsertedTranslation());  // Lingua
   currentTextBlock->addWord(partWordBuffer, fontStyle, false, nextWordContinues, partWordVisibleOffset, linkId);
   currentTextBlock->setLinguaTranslatedInput(false);  // Lingua
   if (insideTableCell && !tableRowStacked) {
@@ -767,7 +767,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
   if (self->insideBody && (self->nonVisibleTextDepth > 0 || isNonVisibleTextTag(name))) {
     self->nonVisibleTextDepth++;
   }
-  self->linguaOnElementStart(name, atts);  // Lingua: sidecar format; v2 translations are not original text
+  self->linguaOnElementStart(name, atts);  // Lingua: a sidecar's inserted translations are not original text
 
   // Middle of skip
   if (self->skipUntilDepth < self->depth) {
@@ -1556,7 +1556,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       // reusing the same empty block inherit it instead of double-counting). A translated block
       // never advances the counter; it pairs with the most recent original (paragraphCounter - 1).
       self->claimParagraphIndex(currentIsTranslated);
-      self->linguaPrepareBlockMarker();  // Lingua: a translated item's marker follows its text
+      self->linguaPrepareBlockMarker(name);  // Lingua: a translated / inserted item's marker
 
       if (strcmp(name, "li") == 0) {
         // Innermost open <ul>/<ol> (if any) decides whether this item gets a bullet,

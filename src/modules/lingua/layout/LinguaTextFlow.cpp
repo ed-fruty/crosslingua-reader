@@ -150,65 +150,48 @@ void ChapterHtmlSlimParser::stampLinguaLine(PageLine& line, const LineFontRole r
   }
 }
 
-// ── Translated sidecar offsets (LinguaSourceKind.h) ──────────────────────────────────────────────
+// ── Translated sidecar offsets ────────────────────────────────────────────────────────────────
 
-void ChapterHtmlSlimParser::setLinguaSourceKind(const LinguaSourceKind kind) { linguaSourceKind_ = kind; }
-
-namespace {
-const char* attributeValue(const char** atts, const char* name) {
-  for (int i = 0; atts != nullptr && atts[i]; i += 2) {
-    if (strcmp(atts[i], name) == 0) return atts[i + 1];
-  }
-  return nullptr;
-}
-}  // namespace
-
-// Called by startElement right after its non-visible bookkeeping and before its skip check.
-//
-// At the ROOT element: a sidecar Section announced as LegacySidecar is v2 when the root carries
-// the format attribute; one that stays legacy counts in its own offset space from here on (no body
-// text has been counted yet) -- self-consistent for this layout, never equal to an original-text
-// position.
-//
-// Inside a v2 sidecar, an element the rewriter inserted holds no original text: make it
-// non-visible for offset counting (endElement unwinds it like any other non-visible element), and
-// pre-cancel the XPath paragraph / list-item increment startElement is about to apply -- unless the
-// element sits in a skipped subtree, where startElement returns before incrementing (the counters
-// are unsigned, so the pre-decrement of a zero count wraps back on the increment).
+// Called by startElement right after its non-visible bookkeeping and before its skip check. An
+// element TranslationHtmlRewriter inserted holds no original text: make it non-visible for offset
+// counting (endElement unwinds it like any other non-visible element), and pre-cancel the XPath
+// paragraph / list-item increment startElement is about to apply -- unless the element sits in a
+// skipped subtree, where startElement returns before incrementing (the counters are unsigned, so
+// the pre-decrement of a zero count wraps back on the increment).
 void ChapterHtmlSlimParser::linguaOnElementStart(const char* name, const char** atts) {
-  if (!linguaRootSeen) {
-    linguaRootSeen = true;
-    if (linguaSourceKind_ == LinguaSourceKind::LegacySidecar) {
-      const char* format = attributeValue(atts, lingua::SIDECAR_FORMAT_ATTR);
-      if (format != nullptr && strcmp(format, lingua::SIDECAR_FORMAT_V2) == 0) {
-        linguaSourceKind_ = LinguaSourceKind::SidecarV2;
-      } else {
-        visibleTextOffset = lingua::LEGACY_SIDECAR_OFFSET_BASE;
-      }
+  if (linguaInsertedDepth >= 0 && depth <= linguaInsertedDepth) linguaInsertedDepth = -1;  // left it
+  // Only OUR sidecar's blocks: a book's own XHTML is counted exactly as KOReader counts it.
+  if (!linguaTranslatedSidecar || atts == nullptr) return;
+  const char* inserted = nullptr;
+  for (int i = 0; atts[i]; i += 2) {
+    if (strcmp(atts[i], lingua::content::INSERTED_TRANSLATION_ATTR) == 0) {
+      inserted = atts[i + 1];
+      break;
     }
-    linguaSidecarV2 = linguaSourceKind_ == LinguaSourceKind::SidecarV2;
   }
-  if (!linguaSidecarV2) return;
-  const char* inserted = attributeValue(atts, lingua::INSERTED_TRANSLATION_ATTR);
   if (inserted == nullptr || strcmp(inserted, "true") != 0) return;
+  if (linguaInsertedDepth < 0) linguaInsertedDepth = depth;
   if (insideBody && nonVisibleTextDepth == 0) nonVisibleTextDepth++;
   if (skipUntilDepth < depth) return;
   if (strcmp(name, "p") == 0) xpathParagraphIndex--;
   if (strcmp(name, "li") == 0) xpathListItemIndex--;
 }
 
-void ChapterHtmlSlimParser::linguaPrepareBlockMarker() {
+void ChapterHtmlSlimParser::linguaPrepareBlockMarker(const char* name) {
   if (!currentTextBlock) return;
   const bool translated = !inlineStyleStack.empty() && inlineStyleStack.back().isTranslatedBlock;
-  if (!translated) {
-    // Also clears a drop latched on an empty block that this one now reuses.
-    currentTextBlock->setLinguaTranslatedInput(false);
-    return;
+  // This element is (or sits inside) an inserted block: depth has not been incremented for it yet.
+  const bool inserted = linguaInsertedDepth >= 0 && depth >= linguaInsertedDepth;
+  // An inserted <li> is not an item of the original list: it repeats its original's number instead
+  // of taking the next one (startElement increments the counter right after this).
+  if (inserted && strcmp(name, "li") == 0 && !listStack.empty() && listStack.back().ordered) {
+    listStack.back().counter -= 1;
   }
-  if (wordIsFiltered()) {
+  if (translated && wordIsFiltered()) {
     currentTextBlock->setLinguaDropInput();
     return;
   }
-  // flushPartWordBuffer sets (and clears) the flag for every word that follows.
-  currentTextBlock->setLinguaTranslatedInput(true, linguaSidecarV2);
+  // Also clears a drop latched on an empty block that this one now reuses. flushPartWordBuffer sets
+  // (and clears) the flags for every word that follows.
+  currentTextBlock->setLinguaTranslatedInput(translated, inserted);
 }
