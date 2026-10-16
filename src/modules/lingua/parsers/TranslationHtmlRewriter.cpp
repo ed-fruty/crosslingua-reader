@@ -8,6 +8,8 @@
 
 #include "CrossPointSettings.h"
 #include "modules/lingua/engines/ParagraphTranslator.h"
+#include "modules/lingua/services/LinguaSourceKind.h"
+#include "modules/lingua/services/TranslatedContentDetector.h"
 #include "modules/lingua/services/TranslatorHttp.h"
 
 static constexpr size_t PARSE_CHUNK = 1024;
@@ -127,7 +129,7 @@ void TranslationHtmlRewriter::flushBlock(const char* endTagName) {
   writeOut(blockHtml);
   writeOut("</", 2);
   writeOut(endTagName, strlen(endTagName));
-  writeOut(">\n", 2);
+  writeOut(">", 1);  // no whitespace of our own: the original's visible text must stay byte-identical
 
   // Trim block text for translation, and collapse every internal newline run to a
   // single '\n'.
@@ -407,6 +409,7 @@ void TranslationHtmlRewriter::flushBatch() {
         }
         static constexpr char kLangAttr[] = " lang=\"";
         static constexpr char kTagAttrs[] = "\" data-translation=\"true\" dir=\"auto\">";
+        // `data-translation` is lingua::INSERTED_TRANSLATION_ATTR: the parser leaves these uncounted.
         writeRaw(kLangAttr, sizeof(kLangAttr) - 1);
         writeRaw(targetLang, strlen(targetLang));
         writeRaw(kTagAttrs, sizeof(kTagAttrs) - 1);
@@ -415,7 +418,7 @@ void TranslationHtmlRewriter::flushBatch() {
         writeRaw(escaped);
         writeRaw("</", 2);
         writeRaw(tag, strlen(tag));
-        writeRaw(">\n", 2);
+        writeRaw(">", 1);
         paragraphsTranslated++;
       } else {
         paragraphsSkipped++;
@@ -461,28 +464,55 @@ void XMLCALL TranslationHtmlRewriter::onStart(void* ud, const XML_Char* name, co
 
   if (strcmp(name, "head") == 0) self->insideHead = true;
 
-  const std::string tag = makeOpenTag(name, atts);
+  std::string tag = makeOpenTag(name, atts);
 
-  if (self->skipBlockDepth != -1) {
-    // Inside a block being skipped (existing translation): ignore everything
+  // Format marker on the root element, where the parser reads it before any body text.
+  if (self->depth == 0) {
+    bool hasFormat = false;
+    for (int i = 0; atts && atts[i]; i += 2) {
+      if (strcmp(atts[i], lingua::SIDECAR_FORMAT_ATTR) == 0) hasFormat = true;
+    }
+    if (!hasFormat) {
+      std::string attr = " ";
+      attr += lingua::SIDECAR_FORMAT_ATTR;
+      attr += "=\"";
+      attr += lingua::SIDECAR_FORMAT_V2;
+      attr += "\"";
+      tag.insert(tag.size() - 1, attr);
+    }
+  }
+
+  if (self->keptTranslationDepth != -1) {
+    // Inside an existing translation block being kept hidden: pass through verbatim
+    self->writeOut(tag);
   } else if (self->blockDepth != -1) {
     // Inside a block element: accumulate
     self->blockHtml += tag;
     // Also track plain text for inner inline tags (no text here, just tag)
   } else if (!self->insideHead && isBlockTag(name)) {
-    // Check for existing translation (Calibre or CrossPoint) — block element with `lang` attribute
+    // Check for existing translation (Calibre or CrossPoint): a block whose lang= differs from the
+    // book's language, by the parser's own rule -- so a book tagging every paragraph with its own
+    // language is not mistaken for a translated one. Book language unknown: any lang= block.
     bool hasLangAttr = false;
     if (atts) {
       for (int i = 0; atts[i]; i += 2) {
         if (strcmp(atts[i], "lang") == 0 || strcmp(atts[i], "xml:lang") == 0) {
-          hasLangAttr = true;
+          hasLangAttr = self->bookPrimaryLang.empty() ||
+                        lingua::content::isTranslatedLangTag(atts[i + 1], self->bookPrimaryLang.c_str());
           break;
         }
       }
     }
     if (hasLangAttr) {
-      // Skip this block entirely — it's an existing translation paragraph
-      self->skipBlockDepth = self->depth;
+      // An existing translation paragraph: not translated again, and kept (hidden) rather than
+      // dropped, so the text the original counts is still in the file.
+      bool alreadyHidden = false;
+      for (int i = 0; atts && atts[i]; i += 2) {
+        if (strcmp(atts[i], "hidden") == 0) alreadyHidden = true;
+      }
+      if (!alreadyHidden) tag.insert(tag.size() - 1, " hidden=\"hidden\"");
+      self->writeOut(tag);
+      self->keptTranslationDepth = self->depth;
       self->paragraphsSkipped++;
     } else {
       // Start of a new block element
@@ -512,11 +542,12 @@ void XMLCALL TranslationHtmlRewriter::onEnd(void* ud, const XML_Char* name) {
   auto* self = static_cast<TranslationHtmlRewriter*>(ud);
   self->depth--;
 
-  if (self->skipBlockDepth == self->depth) {
-    // Done skipping an existing translation block
-    self->skipBlockDepth = -1;
-  } else if (self->skipBlockDepth != -1) {
-    // Still inside a skipped block — ignore
+  if (self->keptTranslationDepth != -1) {
+    // Closing an element of (or) the hidden existing translation block
+    self->writeOut("</", 2);
+    self->writeOut(name, strlen(name));
+    self->writeOut(">", 1);
+    if (self->keptTranslationDepth == self->depth) self->keptTranslationDepth = -1;
   } else if (self->blockDepth == self->depth) {
     // Closing the outermost block element we're tracking
     if (self->cancelled && *self->cancelled) {
@@ -538,28 +569,44 @@ void XMLCALL TranslationHtmlRewriter::onEnd(void* ud, const XML_Char* name) {
     self->writeOut("</", 2);
     self->writeOut(name, strlen(name));
     self->writeOut(">", 1);
-    if (strcmp(name, "html") == 0) self->writeOut("\n", 1);
   }
 }
 
 void XMLCALL TranslationHtmlRewriter::onChars(void* ud, const XML_Char* s, int len) {
   auto* self = static_cast<TranslationHtmlRewriter*>(ud);
-  if (self->skipBlockDepth != -1) return;  // inside a skipped translation block
   if (self->blockDepth != -1) {
     // Inside a block: add to both HTML output and plain text
     appendEscaped(s, static_cast<size_t>(len), self->blockHtml);
     self->blockText.append(s, static_cast<size_t>(len));
   } else if (!self->insideHead) {
-    // Outside blocks (e.g. whitespace between tags): pass through escaped
+    // Outside blocks (e.g. whitespace between tags): pass through, escaped -- except inside a CDATA
+    // section, whose markers are copied too and whose text must stay literal.
+    if (self->insideCdata) {
+      self->writeOut(s, static_cast<size_t>(len));
+      return;
+    }
     std::string escaped;
     appendEscaped(s, static_cast<size_t>(len), escaped);
     self->writeOut(escaped);
   }
 }
 
+// A CDATA section outside a block is copied as CDATA (inside a block its text is escaped into the
+// block's markup instead, as it always was). Either way the parser sees the same characters.
+void XMLCALL TranslationHtmlRewriter::onCdataStart(void* ud) {
+  auto* self = static_cast<TranslationHtmlRewriter*>(ud);
+  self->insideCdata = true;
+  if (self->blockDepth == -1 && !self->insideHead) self->writeOut("<![CDATA[", 9);
+}
+
+void XMLCALL TranslationHtmlRewriter::onCdataEnd(void* ud) {
+  auto* self = static_cast<TranslationHtmlRewriter*>(ud);
+  self->insideCdata = false;
+  if (self->blockDepth == -1 && !self->insideHead) self->writeOut("]]>", 3);
+}
+
 void XMLCALL TranslationHtmlRewriter::onDefault(void* ud, const XML_Char* s, int len) {
   auto* self = static_cast<TranslationHtmlRewriter*>(ud);
-  if (self->skipBlockDepth != -1) return;  // inside a skipped translation block
   // Handle HTML entities and pass through XML declarations / DOCTYPE
   if (len >= 2 && s[0] == '&' && s[len - 1] == ';') {
     // Entity reference — pass through as-is (expat already tried to expand)
@@ -658,7 +705,8 @@ TranslationHtmlRewriter::Result TranslationHtmlRewriter::rewrite(const char* inp
   blockText.clear();
   blockTagName.clear();
   blockClass.clear();
-  skipBlockDepth = -1;
+  keptTranslationDepth = -1;
+  insideCdata = false;
   paragraphsTranslated = 0;
   paragraphsSkipped = 0;
   translateFailures = 0;
@@ -682,6 +730,7 @@ TranslationHtmlRewriter::Result TranslationHtmlRewriter::rewrite(const char* inp
   XML_SetUserData(parser, this);
   XML_SetElementHandler(parser, onStart, onEnd);
   XML_SetCharacterDataHandler(parser, onChars);
+  XML_SetCdataSectionHandler(parser, onCdataStart, onCdataEnd);
   XML_SetDefaultHandlerExpand(parser, onDefault);
 
   size_t offset = 0;
@@ -762,7 +811,8 @@ TranslationHtmlRewriter::Result TranslationHtmlRewriter::rewriteFromFile(
   blockText.clear();
   blockTagName.clear();
   blockClass.clear();
-  skipBlockDepth = -1;
+  keptTranslationDepth = -1;
+  insideCdata = false;
   paragraphsTranslated = 0;
   paragraphsSkipped = 0;
   translateFailures = 0;
@@ -797,6 +847,7 @@ TranslationHtmlRewriter::Result TranslationHtmlRewriter::rewriteFromFile(
   XML_SetUserData(parser, this);
   XML_SetElementHandler(parser, onStart, onEnd);
   XML_SetCharacterDataHandler(parser, onChars);
+  XML_SetCdataSectionHandler(parser, onCdataStart, onCdataEnd);
   XML_SetDefaultHandlerExpand(parser, onDefault);
 
   char buf[PARSE_CHUNK];

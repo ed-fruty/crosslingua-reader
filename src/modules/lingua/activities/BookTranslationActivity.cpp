@@ -458,6 +458,7 @@ void BookTranslationActivity::runTranslation() {
 
     const char* srcLang = sourceLangCode.c_str();
     TranslationHtmlRewriter rewriter;
+    rewriter.setBookPrimaryLang(epub->getLanguage());  // the parser's rule for existing translations
     const auto result = rewriter.rewriteFromFile(
         tmpPath, outFile, srcLang, targetLangCode.c_str(), SETTINGS.translationEngine, SETTINGS.translateApiKey,
         &cancelFlag, &progressCurrent, &BookTranslationActivity::batchBoundaryTrampoline, this);
@@ -511,6 +512,14 @@ void BookTranslationActivity::runTranslation() {
       snprintf(statusMsg, sizeof(statusMsg), "Ch %d: failed to finalize", si + 1);
       taskFailed = true;
       return;
+    }
+
+    // Same as ChapterTranslationActivity: the old pages (and pair memo) came from the previous source.
+    {
+      const std::string base = cachePath + "/sections/" + std::to_string(si);
+      Storage.remove((base + ".pairs").c_str());
+      Storage.remove((base + ".bin").c_str());
+      Storage.remove((base + ".bin.part").c_str());
     }
 
     chaptersCompleted = chaptersCompleted + 1;  // ++ on volatile is deprecated in C++20

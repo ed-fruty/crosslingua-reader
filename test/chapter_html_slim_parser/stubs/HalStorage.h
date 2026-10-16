@@ -1,5 +1,7 @@
 #pragma once
 
+#include <sys/stat.h>
+
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -22,6 +24,7 @@ class HalFile {
   size_t write(uint8_t byte) { return write(&byte, 1); }
   bool flush() { return file_ && std::fflush(file_) == 0; }
   bool seekCur(size_t offset) { return file_ && std::fseek(file_, static_cast<long>(offset), SEEK_CUR) == 0; }
+  bool seek(size_t offset) { return file_ && std::fseek(file_, static_cast<long>(offset), SEEK_SET) == 0; }
   bool close() {
     if (!file_) return false;
     const bool ok = std::fclose(file_) == 0;
@@ -60,6 +63,7 @@ class HalStorage {
   }
   bool remove(const std::string& path) { return std::remove(path.c_str()) == 0; }
   bool rename(const char* from, const char* to) { return std::rename(from, to) == 0; }
+  bool mkdir(const char* path) { return ::mkdir(path, 0755) == 0; }
 };
 
 #define Storage HalStorage::getInstance()

@@ -995,6 +995,7 @@ void EpubReaderActivity::applyProgressChange(const ProgressChangeResult& sync) {
   if (sync.hasVisibleTextOffset && sync.spineIndex >= 0 && sync.spineIndex < epub->getSpineItemsCount()) {
     RenderLock lock;
     clearDeferredReposition();
+    if (section && currentSpineIndex == sync.spineIndex) section->linguaSetTieBreakPage(sync.page);  // Lingua
     const auto page = section && currentSpineIndex == sync.spineIndex
                           ? section->getPageForVisibleTextOffset(sync.visibleTextOffset)
                           : std::nullopt;
@@ -1677,6 +1678,7 @@ void EpubReaderActivity::renderBook() {
     }
 
     if (offsetJump.has_value()) {
+      section->linguaSetTieBreakPage(section->currentPage);  // Lingua: v2 pages sharing one offset
       if (const auto offsetPage = section->getPageForVisibleTextOffset(*offsetJump)) {
         section->currentPage = *offsetPage;
         clearDeferredReposition();
@@ -3302,7 +3304,7 @@ CrossPointPosition EpubReaderActivity::getCurrentPosition() const {
   if (section && currentPage >= 0 && currentPage < section->pageCount) {
     if (const auto offset = section->getVisibleTextOffsetForPage(static_cast<uint16_t>(currentPage))) {
       localPos.visibleTextOffset = *offset;
-      localPos.hasVisibleTextOffset = true;
+      localPos.hasVisibleTextOffset = !lingua::isLegacySidecarOffset(*offset);  // Lingua: not comparable
     }
   }
   if (paragraphIndex.has_value()) {

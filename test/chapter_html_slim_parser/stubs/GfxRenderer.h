@@ -12,8 +12,12 @@ namespace BidiUtils {
 enum class BidiBaseDir : signed char { AUTO = -1, LTR = 0, RTL = 1 };
 }
 
+class FontCacheManager;
+
 class GfxRenderer {
  public:
+  // Section reclaims SD font caches through this; the fixture has none.
+  FontCacheManager* getFontCacheManager() const { return nullptr; }
   enum class TextMeasureMode { Layout, Rendered };
   // Lingua per-line ink (Page.cpp scopes it per PageLine); the fixture draws nothing.
   static constexpr uint8_t INK_INHERIT = 0xFF;

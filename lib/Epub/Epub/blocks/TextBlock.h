@@ -132,6 +132,8 @@ class TextBlock final : public Block {
   bool linguaWordTranslated(const uint16_t i) const { return linguaTranslated.test(i); }
   LinguaWordFlags& linguaTranslatedWords() { return linguaTranslated; }
   const LinguaWordFlags& linguaTranslatedWords() const { return linguaTranslated; }
+  // Mark word i as having no position in the original text (a sidecar's inserted translation).
+  void linguaClearSourceRange(const uint16_t i) { const_cast<SourceRange*>(sourceRanges)[i] = SourceRange{}; }
 
  private:
   LinguaWordFlags linguaTranslated;

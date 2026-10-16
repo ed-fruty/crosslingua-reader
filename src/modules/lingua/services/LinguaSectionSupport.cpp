@@ -1,8 +1,12 @@
+#include <Epub/Page.h>
 #include <Epub/Section.h>
+#include <Epub/parsers/ChapterHtmlSlimParser.h>
 #include <HalStorage.h>
 #include <Logging.h>
 #include <Memory.h>
 #include <Serialization.h>
+
+#include <string_view>
 
 #include "modules/lingua/services/LinguaCacheKey.h"
 #include "modules/lingua/services/TranslatedContentDetector.h"
@@ -126,6 +130,10 @@ void Section::writeLinguaHeaderFields(const ReaderRenderSpec& spec, const bool t
   // not know). That is the safe way to be wrong: it can only make a later load recompute a smaller
   // translatedSource and rebuild, never serve the wrong pages.
   serialization::writePod(file, embeddedTranslation);
+  // Which offset space the pages use (LinguaSourceKind.h). Not a cache key: it is a property of the
+  // source file, which a translation commit replaces together with this .bin (both translation
+  // activities delete the chapter's .bin when they commit a sidecar).
+  serialization::writePod(file, linguaSourceKind_);
 }
 
 bool Section::readLinguaHeaderFields(const ReaderRenderSpec& spec) {
@@ -134,11 +142,17 @@ bool Section::readLinguaHeaderFields(const ReaderRenderSpec& spec) {
   uint8_t fileLinguaLayout;
   bool fileTranslatedSource;
   bool fileEmbeddedTranslation;
+  uint8_t fileSourceKind = 0;
   serialization::readPod(file, fileTranslationFontId);
   serialization::readPod(file, fileAnnotationFontId);
   serialization::readPod(file, fileLinguaLayout);
   serialization::readPod(file, fileTranslatedSource);
   serialization::readPod(file, fileEmbeddedTranslation);
+  serialization::readPod(file, fileSourceKind);
+  linguaSourceKind_ = fileSourceKind <= static_cast<uint8_t>(LinguaSourceKind::LegacySidecar)
+                          ? static_cast<LinguaSourceKind>(fileSourceKind)
+                          : LinguaSourceKind::LegacySidecar;  // unknown value: the conservative space
+  linguaSourceKindKnown_ = true;
 
   // Match on the EFFECTIVE (post-fallback) layout: an untranslated chapter is laid out and its
   // header stamped with the Both layout by startBuild(), so it must also be looked up under Both
@@ -176,4 +190,92 @@ bool Section::readLinguaHeaderFields(const ReaderRenderSpec& spec) {
   return lingua::keyedTranslationFontId(spec.translationFontId, layout) == fileTranslationFontId &&
          lingua::keyedAnnotationFontId(spec.annotationFontId, layout) == fileAnnotationFontId &&
          translatedSource == fileTranslatedSource && static_cast<uint8_t>(layout) == fileLinguaLayout;
+}
+
+LinguaSourceKind Section::linguaSourceKind() const {
+  if (build_ && build_->parser) return build_->parser->linguaSourceKind();
+  if (linguaSourceKindKnown_) return linguaSourceKind_;
+  linguaSourceKindKnown_ = true;
+  linguaSourceKind_ = LinguaSourceKind::Original;
+  HalFile f;
+  if (!Storage.openFileForRead("SCT", filePath, f)) return linguaSourceKind_;
+  uint8_t version = 0;
+  serialization::readPod(f, version);
+  if (!linguaIsReadableVersion(version) || !f.seek(linguaSourceKindHeaderPos())) return linguaSourceKind_;
+  uint8_t kind = 0;
+  serialization::readPod(f, kind);
+  linguaSourceKind_ = kind <= static_cast<uint8_t>(LinguaSourceKind::LegacySidecar)
+                          ? static_cast<LinguaSourceKind>(kind)
+                          : LinguaSourceKind::LegacySidecar;
+  return linguaSourceKind_;
+}
+
+bool Section::linguaAcceptsVisibleTextOffset(const uint32_t offset) const {
+  return lingua::sourceAcceptsVisibleTextOffset(linguaSourceKind(), offset);
+}
+
+bool Section::linguaPageForVisibleTextOffset(const uint32_t offset, const bool preferFirstAtOffset,
+                                             std::optional<uint16_t>& out) const {
+  if (linguaResolvingPage_) return false;  // the nested lookups below are plain upstream ones
+  const int hint = linguaTieBreakPage_;
+  linguaTieBreakPage_ = -1;
+  const LinguaSourceKind kind = linguaSourceKind();
+  if (!lingua::sourceAcceptsVisibleTextOffset(kind, offset)) {
+    out = std::nullopt;
+    return true;
+  }
+  if (kind != LinguaSourceKind::SidecarV2) return false;
+
+  // v2: pages inside one inserted translation share their start offset. Upstream resolves a tie
+  // to the LAST page (or the first with preferFirstAtOffset); pick the caller's page when it is in
+  // the run, else the first, so a reopen never jumps forward through the translation.
+  linguaResolvingPage_ = true;
+  const auto last = getPageForVisibleTextOffset(offset, false);
+  out = last;
+  if (last && getVisibleTextOffsetForPage(*last) == offset) {
+    const auto first = getPageForVisibleTextOffset(offset, true);
+    if (first) {
+      out = lingua::pickTiePage(*first, *last, hint);
+    }
+  }
+  // No exact start match: preferFirstAtOffset cannot change the upstream answer either.
+  (void)preferFirstAtOffset;
+  linguaResolvingPage_ = false;
+  return true;
+}
+
+void Section::linguaFinalizeHeader(const uint32_t paragraphLutOffset) {
+  linguaSourceKind_ = linguaSourceKind();  // the parser's final answer
+  linguaSourceKindKnown_ = true;
+  // The header patch that follows seeks explicitly, so the write position need not be restored.
+  if (linguaSourceKind_ == LinguaSourceKind::LegacySidecar) {
+    file.seek(paragraphLutOffset);
+    serialization::writePod(file, static_cast<uint16_t>(0));
+  }
+  file.seek(linguaSourceKindHeaderPos());
+  serialization::writePod(file, linguaSourceKind_);
+}
+
+bool Section::linguaSettleSourceKind() {
+  linguaSettledToEnd_ = false;
+  if (!build_ || !build_->parser) return true;
+  ChapterHtmlSlimParser& parser = *build_->parser;
+  // Only a sidecar's kind is provisional (LegacySidecar until its root element says v2).
+  if (parser.linguaSourceKind() != LinguaSourceKind::LegacySidecar) return true;
+  // The root element sits in the first parse buffer for any real file; pages laid out on the way
+  // go to the LUT exactly as buildSomeMore() would put them there.
+  while (!parser.linguaHasSeenRoot()) {
+    const auto status = parser.parseStep();
+    if (status == ChapterHtmlSlimParser::ParseStatus::Error) {
+      LOG_ERR("SCT", "Parse error while reading the sidecar's root element");
+      abandonBuild();
+      return false;
+    }
+    if (status == ChapterHtmlSlimParser::ParseStatus::Done) {
+      linguaSettledToEnd_ = true;
+      break;
+    }
+  }
+  build_->bytesConsumed = parser.parseBytesConsumed();
+  return true;
 }

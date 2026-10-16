@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "modules/lingua/engines/TranslationEnginePolicy.h"
@@ -16,6 +17,15 @@
  * Strategy: reconstruct the original markup from expat callbacks, and after
  * each closing block tag (p, h1-h6, li, blockquote) append a translated
  * paragraph marked with a lang attribute (<p lang="xx">).
+ *
+ * Output format 2 (lingua::SIDECAR_FORMAT_ATTR="2" on the root element): the
+ * original's visible text survives byte-for-byte, so the reader's visible-text offsets
+ * (progress, clippings, KOReader sync) mean the same position in the sidecar as in the
+ * chapter itself. Nothing of the rewriter's own is added between elements (no newlines
+ * after closing tags), inserted blocks carry lingua::INSERTED_TRANSLATION_ATTR so the
+ * parser can leave them uncounted, and a translation block already in the source is
+ * kept with a `hidden` attribute instead of being dropped (its text is counted in the
+ * original, and hidden blocks are laid out as display:none). CDATA is copied as CDATA.
  */
 class TranslationHtmlRewriter {
  public:
@@ -60,6 +70,9 @@ class TranslationHtmlRewriter {
   // has a clean hole. C-style pointer + context to avoid std::function heap/bloat.
   using BatchBoundaryCb = void (*)(void* ctx);
 
+  // Call before rewrite*(): see bookPrimaryLang.
+  void setBookPrimaryLang(std::string lang) { bookPrimaryLang = std::move(lang); }
+
   // Rewrite HTML from a file on SD card into `out`, reading in 1KB chunks.
   // This avoids loading the entire chapter HTML into memory.
   // Optional boundaryCb fires between batches (see BatchBoundaryCb); pass nullptr to
@@ -99,7 +112,11 @@ class TranslationHtmlRewriter {
   std::string blockTagName;  // tag name of current block (e.g., "p", "h1")
   std::string blockClass;    // class attribute of current block
 
-  int skipBlockDepth = -1;  // depth of a block being skipped (existing translation)
+  int keptTranslationDepth = -1;  // depth of an existing translation block passed through hidden
+  bool insideCdata = false;       // between expat's CDATA start/end callbacks
+  // The book's language (content.opf). A block whose lang= differs from it is an existing
+  // translation -- the parser's rule (lingua::content::isTranslatedLangTag). Empty: any lang= block.
+  std::string bookPrimaryLang;
 
   int paragraphsTranslated = 0;
   int paragraphsSkipped = 0;
@@ -176,6 +193,8 @@ class TranslationHtmlRewriter {
   static void XMLCALL onStart(void* ud, const XML_Char* name, const XML_Char** atts);
   static void XMLCALL onEnd(void* ud, const XML_Char* name);
   static void XMLCALL onChars(void* ud, const XML_Char* s, int len);
+  static void XMLCALL onCdataStart(void* ud);
+  static void XMLCALL onCdataEnd(void* ud);
   static void XMLCALL onDefault(void* ud, const XML_Char* s, int len);
 
   // Counting-only callbacks (for countBlocksInFile)

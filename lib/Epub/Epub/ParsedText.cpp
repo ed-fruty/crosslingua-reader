@@ -550,6 +550,7 @@ bool ParsedText::storeWord(const std::string_view text, WordStore::StoredWord& o
 void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle, const bool underline,
                          const bool attachToPrevious, const uint32_t visibleTextOffset, const uint8_t linkId) {
   if (word.empty()) return;
+  if (linguaDropInput) return;  // Lingua
 
   // The device fonts carry no combining-mark positioning, so EPUB text stored in NFD
   // (a base letter followed by separate combining accents -- common for Vietnamese,

@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <iterator>
 #include <new>
 
@@ -147,4 +148,67 @@ void ChapterHtmlSlimParser::stampLinguaLine(PageLine& line, const LineFontRole r
     }
     currentPage->lastParagraphIdx = currentBlockParagraphIdx;
   }
+}
+
+// ── Translated sidecar offsets (LinguaSourceKind.h) ──────────────────────────────────────────────
+
+void ChapterHtmlSlimParser::setLinguaSourceKind(const LinguaSourceKind kind) { linguaSourceKind_ = kind; }
+
+namespace {
+const char* attributeValue(const char** atts, const char* name) {
+  for (int i = 0; atts != nullptr && atts[i]; i += 2) {
+    if (strcmp(atts[i], name) == 0) return atts[i + 1];
+  }
+  return nullptr;
+}
+}  // namespace
+
+// Called by startElement right after its non-visible bookkeeping and before its skip check.
+//
+// At the ROOT element: a sidecar Section announced as LegacySidecar is v2 when the root carries
+// the format attribute; one that stays legacy counts in its own offset space from here on (no body
+// text has been counted yet) -- self-consistent for this layout, never equal to an original-text
+// position.
+//
+// Inside a v2 sidecar, an element the rewriter inserted holds no original text: make it
+// non-visible for offset counting (endElement unwinds it like any other non-visible element), and
+// pre-cancel the XPath paragraph / list-item increment startElement is about to apply -- unless the
+// element sits in a skipped subtree, where startElement returns before incrementing (the counters
+// are unsigned, so the pre-decrement of a zero count wraps back on the increment).
+void ChapterHtmlSlimParser::linguaOnElementStart(const char* name, const char** atts) {
+  if (!linguaRootSeen) {
+    linguaRootSeen = true;
+    if (linguaSourceKind_ == LinguaSourceKind::LegacySidecar) {
+      const char* format = attributeValue(atts, lingua::SIDECAR_FORMAT_ATTR);
+      if (format != nullptr && strcmp(format, lingua::SIDECAR_FORMAT_V2) == 0) {
+        linguaSourceKind_ = LinguaSourceKind::SidecarV2;
+      } else {
+        visibleTextOffset = lingua::LEGACY_SIDECAR_OFFSET_BASE;
+      }
+    }
+    linguaSidecarV2 = linguaSourceKind_ == LinguaSourceKind::SidecarV2;
+  }
+  if (!linguaSidecarV2) return;
+  const char* inserted = attributeValue(atts, lingua::INSERTED_TRANSLATION_ATTR);
+  if (inserted == nullptr || strcmp(inserted, "true") != 0) return;
+  if (insideBody && nonVisibleTextDepth == 0) nonVisibleTextDepth++;
+  if (skipUntilDepth < depth) return;
+  if (strcmp(name, "p") == 0) xpathParagraphIndex--;
+  if (strcmp(name, "li") == 0) xpathListItemIndex--;
+}
+
+void ChapterHtmlSlimParser::linguaPrepareBlockMarker() {
+  if (!currentTextBlock) return;
+  const bool translated = !inlineStyleStack.empty() && inlineStyleStack.back().isTranslatedBlock;
+  if (!translated) {
+    // Also clears a drop latched on an empty block that this one now reuses.
+    currentTextBlock->setLinguaTranslatedInput(false);
+    return;
+  }
+  if (wordIsFiltered()) {
+    currentTextBlock->setLinguaDropInput();
+    return;
+  }
+  // flushPartWordBuffer sets (and clears) the flag for every word that follows.
+  currentTextBlock->setLinguaTranslatedInput(true, linguaSidecarV2);
 }

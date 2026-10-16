@@ -93,3 +93,4 @@ add_test(NAME TrustedTimeTimezone COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_
 # CrossLingua fork tests (kept in one block so upstream additions above merge cleanly)
 add_subdirectory(text_normalize)
 add_subdirectory(translation_pair_walker)
+add_subdirectory(lingua_section)

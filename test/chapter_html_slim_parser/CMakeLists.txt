@@ -2,6 +2,7 @@ add_executable(ChapterHtmlSlimParserTest
   ChapterHtmlSlimParserTest.cpp
   LinguaParserTest.cpp
   LinguaTranslatedWordsTest.cpp
+  LinguaSidecarTest.cpp
   ParserLinkStubs.cpp
   ${REPO_ROOT}/lib/Epub/Epub/Page.cpp
   ${REPO_ROOT}/lib/Epub/Epub/blocks/TextBlock.cpp
@@ -23,6 +24,11 @@ add_executable(ChapterHtmlSlimParserTest
   ${REPO_ROOT}/src/modules/lingua/utils/SentencePairing.cpp
   ${REPO_ROOT}/src/modules/lingua/utils/SentenceSplitter.cpp
   ${REPO_ROOT}/src/modules/lingua/utils/TextNormalize.cpp
+  # Translated sidecar offsets (LinguaSidecarTest); the translator itself is stubbed.
+  ${REPO_ROOT}/src/modules/lingua/parsers/TranslationHtmlRewriter.cpp
+  ${REPO_ROOT}/src/modules/lingua/parsers/TranslationPairWalker.cpp
+  ${REPO_ROOT}/src/modules/lingua/services/TranslatedContentDetector.cpp
+  ${REPO_ROOT}/src/modules/lingua/engines/TranslationEnginePolicy.cpp
 )
 
 target_include_directories(ChapterHtmlSlimParserTest PRIVATE

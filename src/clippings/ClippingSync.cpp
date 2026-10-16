@@ -11,6 +11,7 @@
 #include <cstring>
 
 #include "ClippingStore.h"
+#include "modules/lingua/services/LinguaSourceKind.h"  // Lingua
 
 namespace {
 // One item per response: 4 KiB text may occupy 24 KiB when JSON-escaped.
@@ -78,7 +79,9 @@ void encode(JsonObject item, const Clipping& clipping, const std::string& text) 
   item["text"] = text.c_str();
   item["created_at"] = clipping.timestamp;
   item["layout_signature"] = clipping.layoutSignature;
-  if (clipping.startOffset != UINT32_MAX && clipping.endOffset != UINT32_MAX) {
+  // Lingua: a legacy-sidecar offset is only meaningful on this device's copy of the chapter.
+  if (clipping.startOffset != UINT32_MAX && clipping.endOffset != UINT32_MAX &&
+      !lingua::isLegacySidecarOffset(clipping.startOffset)) {
     item["start_offset"] = clipping.startOffset;
     item["end_offset"] = clipping.endOffset;
   }

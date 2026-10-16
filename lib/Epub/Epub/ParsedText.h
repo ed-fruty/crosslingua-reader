@@ -297,7 +297,18 @@ class ParsedText {
   // <span lang> inside an original one) while this is set. The parser sets it around its addWord
   // and clears it straight after, so no other caller (list markers, Interlinear's annotation
   // re-emit, the Side by Side marker) ever inherits it.
-  void setLinguaTranslatedInput(const bool translated) { linguaTranslatedInput = translated; }
+  //
+  // `withoutSourceRange`: these translated words are not in the original text (a v2 sidecar's
+  // inserted translation, whose characters the parser does not count). Their lines then carry no
+  // source range for them, so clipping never anchors a position to text the original lacks.
+  void setLinguaTranslatedInput(const bool translated, const bool withoutSourceRange = false) {
+    linguaTranslatedInput = translated;
+    linguaDropInput = false;
+    if (translated && withoutSourceRange) linguaTranslatedWithoutSource = true;
+  }
+  // addWord() ignores words until the next setLinguaTranslatedInput(): the parser's way to drop a
+  // marker it adds for a block whose text the active layout filters out.
+  void setLinguaDropInput() { linguaDropInput = true; }
   // Translated flag of a token still in the pre-layout stream ("false" when out of range).
   bool linguaWordTranslatedAt(const size_t index) const {
     return index < linguaTranslated.size() && linguaTranslated[index];
@@ -325,6 +336,8 @@ class ParsedText {
   // block of a book without translations -- pays nothing; once non-empty it is exactly words.size().
   std::vector<bool> linguaTranslated;
   bool linguaTranslatedInput = false;
+  bool linguaTranslatedWithoutSource = false;
+  bool linguaDropInput = false;
   // Hooks that keep linguaTranslated in lockstep with the upstream per-token arrays.
   void linguaOnTokenPushed();
   void linguaOnWordSplit(size_t wordIndex);

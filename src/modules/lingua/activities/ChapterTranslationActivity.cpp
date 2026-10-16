@@ -374,6 +374,7 @@ void ChapterTranslationActivity::runTranslation() {
   LOG_DBG("CHT", "Using source=%s, target=%s", srcLang, targetLangCode.c_str());
 
   TranslationHtmlRewriter rewriter;
+  rewriter.setBookPrimaryLang(epub->getLanguage());  // the parser's rule for existing translations
   lastResult = rewriter.rewriteFromFile(tmpPath, outFile, srcLang, targetLangCode.c_str(), SETTINGS.translationEngine,
                                         SETTINGS.translateApiKey, &cancelFlag, &progressCurrent,
                                         &ChapterTranslationActivity::batchBoundaryTrampoline, this);
@@ -433,6 +434,13 @@ void ChapterTranslationActivity::runTranslation() {
   const std::string pairCachePath =
       translatedHtmlPath.substr(0, translatedHtmlPath.rfind(".translated.html")) + ".pairs";
   Storage.remove(pairCachePath.c_str());
+  // The chapter's laid-out pages came from the previous source. A re-translation keeps
+  // translatedSource true, so the section key alone would serve them -- and a legacy -> v2
+  // sidecar also changes which offset space the pages use (LinguaSourceKind.h). Drop them.
+  const std::string sectionBinPath =
+      translatedHtmlPath.substr(0, translatedHtmlPath.rfind(".translated.html")) + ".bin";
+  Storage.remove(sectionBinPath.c_str());
+  Storage.remove((sectionBinPath + ".part").c_str());
 
   LOG_DBG("CHT", "Translation done: %d translated, %d skipped, %d failed", lastResult.paragraphsTranslated,
           lastResult.paragraphsSkipped, lastResult.translateFailures);

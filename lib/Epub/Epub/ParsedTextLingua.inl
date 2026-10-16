@@ -60,6 +60,11 @@ void ParsedText::finishLinguaLine(TextBlock& block, const size_t lastBreakAt, co
     for (size_t i = 0; i < lineWordCount; ++i) {
       if (linguaWordTranslatedAt(logicalAt(i))) ++translatedCount;
     }
+    if (linguaTranslatedWithoutSource) {
+      for (size_t i = 0; i < lineWordCount; ++i) {
+        if (linguaWordTranslatedAt(logicalAt(i))) block.linguaClearSourceRange(static_cast<uint16_t>(i));
+      }
+    }
     LinguaWordFlags& flags = block.linguaTranslatedWords();
     if (translatedCount == lineWordCount) {
       flags.setAll();

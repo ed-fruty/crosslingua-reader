@@ -7,6 +7,7 @@
 
 #include "Epub.h"
 #include "ReaderRenderSpec.h"
+#include "modules/lingua/services/LinguaSourceKind.h"  // Lingua
 
 class Page;
 class GfxRenderer;
@@ -96,6 +97,34 @@ class Section {
   uint32_t partialTotalBytes_ = 0;
   // Source the available pages were laid out from; see builtFromTranslatedSource().
   bool translatedSource_ = false;
+  // Lingua: which offset space those pages use (LinguaSourceKind.h). Memo of linguaSourceKind():
+  // set by startBuild (provisionally; the parser settles it at the root element), by
+  // loadSectionFile's header read, or on first use from the .bin header (LinguaSectionSupport.cpp).
+  mutable LinguaSourceKind linguaSourceKind_ = LinguaSourceKind::Original;
+  mutable bool linguaSourceKindKnown_ = false;
+  // One-shot page hint for a tie in getPageForVisibleTextOffset (see linguaSetTieBreakPage).
+  mutable int linguaTieBreakPage_ = -1;
+  mutable bool linguaResolvingPage_ = false;
+  // startBuild on a translated sidecar parses up to its root element, so the source kind (and with
+  // it every offset decision) is final before the first page lookup. A file small enough to parse
+  // completely in that step finalizes on the next buildSomeMore().
+  bool linguaSettledToEnd_ = false;
+  bool linguaSettleSourceKind();
+  bool linguaTakeSettledToEnd() {
+    const bool settled = linguaSettledToEnd_;
+    linguaSettledToEnd_ = false;
+    return settled;
+  }
+  // At commit: stamp the parser's final source kind into the header, and commit a LegacySidecar's
+  // paragraph LUT empty (count 0) -- its paragraph / list-item indices count the inserted
+  // translations, and every reader of that LUT treats count 0 as absent.
+  void linguaFinalizeHeader(uint32_t paragraphLutOffset);
+  // Header facts LinguaSectionSupport.cpp needs (defined in Section.cpp beside the layout).
+  static uint32_t linguaSourceKindHeaderPos();
+  static bool linguaIsReadableVersion(uint8_t version);
+  // getPageForVisibleTextOffset's Lingua front end: true when it decided the answer (`out`) --
+  // an offset from another offset space resolves to nothing, and a v2 sidecar breaks ties.
+  bool linguaPageForVisibleTextOffset(uint32_t offset, bool preferFirstAtOffset, std::optional<uint16_t>& out) const;
   // Memoized answer to hasTranslation(). Resolving it can cost a SAX scan of the chapter HTML, and
   // the reader asks several times per chapter load (fallback gate, cache key, reposition
   // compatibility, build-popup hint), so it is computed at most once per Section -- i.e. at most
@@ -275,6 +304,20 @@ class Section {
   // False with no build running -- there is nothing left to wait for, so the on-disk
   // cache answers directly.
   bool buildReachedVisibleTextOffset(uint32_t offset) const {
+    if (!linguaAcceptsVisibleTextOffset(offset)) return true;  // Lingua: another offset space never arrives
     return build_ && !build_->lut.empty() && offset <= build_->lut.back().visibleTextOffset;
   }
+
+  // ── Lingua ──
+  // Authoritative for ANY Section, loaded or not: the running build's parser, else the memo, else
+  // the .bin header (a Section a caller constructs just to query the cache reads it once).
+  LinguaSourceKind linguaSourceKind() const;
+  // False when `offset` was recorded against a different offset space than these pages use
+  // (original vs. legacy sidecar); such an offset resolves to no page.
+  bool linguaAcceptsVisibleTextOffset(uint32_t offset) const;
+  // Inside a v2 sidecar, inserted translation text adds no offset, so consecutive pages of one long
+  // translated paragraph START AT THE SAME offset. The next getPageForVisibleTextOffset() call picks,
+  // among such pages, `page` when it is one of them and the first otherwise (instead of the last).
+  // Consumed by that call; no effect on any other source.
+  void linguaSetTieBreakPage(const int page) const { linguaTieBreakPage_ = page; }
 };

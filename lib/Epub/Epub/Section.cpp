@@ -52,10 +52,11 @@ namespace {
 //   paragraphIndentSpaces:uint8, paragraphAlignment:uint8, viewportWidth:uint16, viewportHeight:uint16,
 //   hyphenationEnabled:bool, embeddedStyle:bool, imageRendering:uint8, focusReadingEnabled:bool,
 //   characterSpacing:int8, wordSpacingPercent:uint8), then the Lingua fields (translationFontId:int,
-//   annotationFontId:int, linguaLayout:uint8, translatedSource:bool, embeddedTranslation:bool), then
+//   annotationFontId:int, linguaLayout:uint8, translatedSource:bool, embeddedTranslation:bool,
+//   sourceKind:uint8), then
 //   pageCount:uint16 and five uint32 LUT offsets. The Lingua fields sit in one block so the upstream
 //   header code stays verbatim and an upstream header change merges as an insertion.
-// Every field except embeddedTranslation is part of the cache key.
+// Every field except embeddedTranslation and sourceKind is part of the cache key.
 //
 // The substantive properties this format has accumulated, and why each one is load-bearing:
 //
@@ -207,8 +208,11 @@ namespace {
 //      inserted as one block before pageCount; PageLine carries paragraphIdx and fontRole; <ul>/<ol>
 //      are layout blocks. A later upstream merge takes max(ours, upstream) + 1.
 // v57: CrossLingua merge of upstream v56. Upstream's v56 layout plus the fork's v53 Lingua header
-//      block and PageLine fields; the translated-word flag is no longer a style-byte bit.
-constexpr uint8_t SECTION_FILE_VERSION = 57;
+//      block and PageLine fields; the translated-word flag is no longer a style-byte bit. The Lingua
+//      block ends with a sourceKind byte (LinguaSourceKind.h): a v2 translated sidecar counts visible
+//      offsets exactly like the original chapter, a legacy sidecar counts in its own offset space.
+// v58: v57 builds without the sourceKind byte existed on devices; bumped so they rebuild.
+constexpr uint8_t SECTION_FILE_VERSION = 58;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
@@ -239,8 +243,9 @@ static_assert(SECTION_FILE_PARTIAL_VERSION > SECTION_FILE_VERSION &&
               "Partial sentinel collides with a real version");
 // Lingua: the fork's header fields, written between wordSpacingPercent and pageCount by
 // writeLinguaHeaderFields() (LinguaSectionSupport.cpp): translationFontId, annotationFontId,
-// linguaLayout, translatedSource, embeddedTranslation.
-constexpr uint32_t LINGUA_HEADER_SIZE = sizeof(int) + sizeof(int) + sizeof(uint8_t) + sizeof(bool) + sizeof(bool);
+// linguaLayout, translatedSource, embeddedTranslation, sourceKind.
+constexpr uint32_t LINGUA_HEADER_SIZE =
+    sizeof(int) + sizeof(int) + sizeof(uint8_t) + sizeof(bool) + sizeof(bool) + sizeof(LinguaSourceKind);
 constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) + sizeof(int) + sizeof(float) + sizeof(bool) + sizeof(uint8_t) +
                                  sizeof(uint16_t) + sizeof(uint16_t) + sizeof(uint16_t) + sizeof(bool) + sizeof(bool) +
                                  sizeof(uint8_t) + sizeof(bool) + sizeof(uint32_t) + sizeof(uint32_t) +
@@ -628,6 +633,9 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
     translationPresence_ = translatedSource ? TranslationPresence::Yes : TranslationPresence::No;
   }
   translatedSource_ = translatedSource;
+  // Lingua: provisional; the parser upgrades a sidecar to v2 at its root element.
+  linguaSourceKind_ = usingTranslatedSidecar ? LinguaSourceKind::LegacySidecar : LinguaSourceKind::Original;
+  linguaSourceKindKnown_ = true;
 
   // Per-chapter auto-fallback: a filtering layout on a chapter with no translated content would
   // filter for translated words that do not exist and render a blank chapter. Lay this chapter out
@@ -741,6 +749,7 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
 
   ctx->parser->setTextSpacing(spec.characterSpacing, spec.wordSpacingPercent);
   ctx->parser->setParagraphIndentSpaces(spec.paragraphIndentSpaces);
+  ctx->parser->setLinguaSourceKind(linguaSourceKind_);  // Lingua
   Hyphenator::setPreferredLanguage(epub->getLanguage());
   // Clear any translated-language slot left by a previous build; the slim parser repopulates it
   // from each translated block's lang= as it parses, so it never leaks across books/sections.
@@ -753,7 +762,7 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
     return false;
   }
   build_->totalBytes = build_->parser->parseTotalBytes();
-  return true;
+  return linguaSettleSourceKind();  // Lingua: a sidecar's format is known before startBuild returns
 }
 
 bool Section::buildSomeMore(const int maxPages) {
@@ -761,6 +770,7 @@ bool Section::buildSomeMore(const int maxPages) {
     LOG_ERR("SCT", "buildSomeMore with no active build");
     return false;
   }
+  if (linguaTakeSettledToEnd()) return finalizeBuild();  // Lingua: startBuild already parsed it all
   // Pace on pages laid out by THIS build, not pageCount: during a rebuild over a partial,
   // pageCount stays pinned at the partial's watermark until the build passes it, which
   // would otherwise turn one "small" chunk into a blocking rebuild of the whole watermark.
@@ -976,6 +986,7 @@ bool Section::commitBuildFile(const uint8_t version, const uint32_t bytesConsume
     serialization::writePod(file, bytesConsumed);
     serialization::writePod(file, totalBytes);
   }
+  linguaFinalizeHeader(paragraphLutOffset);  // Lingua
 
   // Patch header with the built page count and section offsets...
   file.seek(HEADER_SIZE - sizeof(uint32_t) * 5 - sizeof(builtPageCount_));
@@ -1425,6 +1436,8 @@ std::optional<uint32_t> Section::getVisibleTextOffsetForPage(const uint16_t page
 
 std::optional<uint16_t> Section::getPageForVisibleTextOffset(const uint32_t offset,
                                                              const bool preferFirstAtOffset) const {
+  if (std::optional<uint16_t> page; linguaPageForVisibleTextOffset(offset, preferFirstAtOffset, page))
+    return page;  // Lingua
   const auto findInEntries = [offset, preferFirstAtOffset](const auto& entries) -> std::optional<uint16_t> {
     if (entries.empty()) return std::nullopt;
     uint16_t result = 0;
@@ -1499,4 +1512,13 @@ std::optional<uint16_t> Section::getPageForVisibleTextOffset(const uint32_t offs
     return std::nullopt;
   }
   return result;
+}
+
+// Lingua: header layout facts for LinguaSectionSupport.cpp. sourceKind is the last Lingua field,
+// right before pageCount and the five LUT offsets.
+uint32_t Section::linguaSourceKindHeaderPos() {
+  return HEADER_SIZE - sizeof(uint32_t) * 5 - sizeof(uint16_t) - sizeof(LinguaSourceKind);
+}
+bool Section::linguaIsReadableVersion(const uint8_t version) {
+  return version == SECTION_FILE_VERSION || version == SECTION_FILE_PARTIAL_VERSION;
 }
