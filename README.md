@@ -504,6 +504,7 @@ If CrossLingua is useful to you and you would like to support further developmen
 
 [![Support on Ko-fi](https://img.shields.io/badge/Support_on_Ko--fi-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/edfruty)
 [![Support on Donatello](https://img.shields.io/badge/Support_on_Donatello-F9C80E?style=for-the-badge&logo=buymeacoffee&logoColor=111111)](https://donatello.to/EdFruty)
+[![Fund contributors](https://img.shields.io/badge/%F0%9F%91%91_Fund_contributors-royalty.dev-BB953A?style=for-the-badge&labelColor=1a1a1a)](https://app.royalty.dev/ed-fruty/crosslingua-reader)
 
 Donations are optional. Bug reports, testing results, and suggestions are valuable contributions too.
 
