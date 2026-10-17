@@ -620,7 +620,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // wordLensEmptyStrips: WORD_LENS_EMPTY_STRIPS, a LAYOUT input (part of the Word Lens cache key).
   // wordLensToggleByLongPress: a long press of the stepping pair hides / shows the strips (drawing
   // only; the strips keep their space), independent of Interlinear's own toggle.
-  uint8_t wordLensEmptyStrips = WORD_LENS_KEEP_EMPTY_STRIPS;
+  uint8_t wordLensEmptyStrips = WORD_LENS_HIDE_EMPTY_STRIPS;
   uint8_t wordLensToggleByLongPress = 1;
   char wordLensHint[8] = "";
 

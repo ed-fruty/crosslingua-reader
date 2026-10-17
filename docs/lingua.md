@@ -170,9 +170,9 @@ language → your hint language), downloaded once.
 - **Book Language** — only for a book that declares no language.
 - **Translation Colour** and **Translation Size** — the strip's colour and type
   size, shared with Interlinear.
-- **Empty Strips** — **Keep** (default) gives every line a strip, so the line
-  pitch stays even; **Hide** gives a strip only to lines with a glossed word, so
-  a page holds more text.
+- **Empty Strips** — **Hide** (default) gives a strip only to lines with a
+  glossed word, so a page holds more text; **Keep** gives every line a strip, so
+  the line pitch stays even.
 - **Page Turn Buttons** — which button pair turns pages (default: the side
   buttons). The other pair steps through the hard words of the page.
 - **At Last Word** — whether stepping past the last (or first) hard word wraps

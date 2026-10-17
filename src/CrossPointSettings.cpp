@@ -411,8 +411,8 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
                               (uint8_t)OVERLAY_BUTTONS_COUNT, (uint8_t)OVERLAY_BUTTONS_SIDE);
   wordLensNavigation = clamp(doc["wordLensNavigation"] | (uint8_t)TOOLTIP_NAV_TURN_PAGE,
                              (uint8_t)TOOLTIP_NAVIGATION_COUNT, (uint8_t)TOOLTIP_NAV_TURN_PAGE);
-  wordLensEmptyStrips = clamp(doc["wordLensEmptyStrips"] | (uint8_t)WORD_LENS_KEEP_EMPTY_STRIPS,
-                              (uint8_t)WORD_LENS_EMPTY_STRIPS_COUNT, (uint8_t)WORD_LENS_KEEP_EMPTY_STRIPS);
+  wordLensEmptyStrips = clamp(doc["wordLensEmptyStrips"] | (uint8_t)WORD_LENS_HIDE_EMPTY_STRIPS,
+                              (uint8_t)WORD_LENS_EMPTY_STRIPS_COUNT, (uint8_t)WORD_LENS_HIDE_EMPTY_STRIPS);
   wordLensToggleByLongPress = clamp(doc["wordLensToggleByLongPress"] | (uint8_t)1, (uint8_t)2, (uint8_t)1);
   copyToField(wordLensHint, doc["wordLensHint"] | "", sizeof(wordLensHint));
   // A language code only (it names a pack file); anything else means automatic.
