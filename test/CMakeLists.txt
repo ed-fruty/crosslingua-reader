@@ -94,3 +94,4 @@ add_test(NAME TrustedTimeTimezone COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_
 add_subdirectory(text_normalize)
 add_subdirectory(translation_pair_walker)
 add_subdirectory(lingua_section)
+add_subdirectory(word_lens_format)
