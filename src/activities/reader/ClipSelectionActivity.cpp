@@ -20,6 +20,7 @@
 #include "clippings/SelectionGeometry.h"
 #include "components/UIScale.h"
 #include "components/UITheme.h"
+#include "modules/lingua/reader/LinguaPageLines.h"  // Lingua
 #include "util/WordSelectionInput.h"
 
 using Input = WordSelectionInput;
@@ -104,9 +105,9 @@ bool ClipSelectionActivity::extractWords() {
       const auto& line = static_cast<const PageLine&>(*element);
       const auto& block = line.getBlock();
       if (!block || !block->valid()) continue;
-      if (line.isLinguaAnnotation()) continue;  // Lingua: Interlinear strips are not the chapter's text
+      if (lingua::isAnnotationLine(line)) continue;  // Lingua: Interlinear strips are not the chapter's text
       // Lingua: this line's own face and line box; deliberately shadow the page-wide members below.
-      const int fontId = linguaFonts.forRole(line.fontRole);
+      const int fontId = lingua::lineFontId(linguaFonts, line);
       const int lineHeight = renderer.getLineHeight(fontId);
 
       if (needsFontPrewarm && block->wordCount() != 0) {

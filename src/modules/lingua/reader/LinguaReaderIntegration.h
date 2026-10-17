@@ -12,6 +12,7 @@
 
 #include "modules/lingua/modes/LinguaModeRegistry.h"
 #include "modules/lingua/modes/word_lens/WordLensReader.h"
+#include "modules/lingua/reader/LinguaPageLines.h"
 
 class MappedInputManager;
 

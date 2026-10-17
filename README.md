@@ -204,7 +204,8 @@ recent, alphabetical and per-author views), EPUB 2/3 rendering, `.xtc/.xtch`, `.
 support, images, embedded styles, hyphenation, kerning, footnotes, bookmarks,
 StarDict dictionaries, chapter navigation, go-to-percent, focus reading,
 auto page turn, orientation control, screenshots, custom fonts, themes,
-button remapping, KOReader progress sync, OPDS, SD-card plugins, WebDAV, Calibre wireless
+button remapping, KOReader progress sync, OPDS 1 and 2, SD-card plugins, a Bluetooth page
+turner (X3/X4), WebDAV, Calibre wireless
 transfer, a web file manager and settings UI, EPUB optimization, OTA updates,
 24 UI languages and RTL support.
 

@@ -93,6 +93,15 @@ struct PageLine {
   const Block* getBlock() const { return &block; }
 };
 struct Page { std::vector<std::unique_ptr<PageLine>> elements; };
+// CrossLingua: stubs for the Lingua hooks inside the extracted page walks.
+struct PageFontSet {
+  int body = 0;
+  static PageFontSet resolve(int id) { PageFontSet fonts; fonts.body = id; return fonts; }
+};
+namespace lingua {
+template <class Line> bool isAnnotationLine(const Line&) { return false; }
+template <class Fonts, class Line> int lineFontId(const Fonts& fonts, const Line&) { return fonts.body; }
+}  // namespace lingua
 struct Renderer {
   enum RenderMode { BW };
   struct Draw { int x, width, tracking; };

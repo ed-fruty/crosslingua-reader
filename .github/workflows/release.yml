@@ -105,7 +105,16 @@ jobs:
           ~/.platformio/penv/bin/pio --version
 
       - name: Build CrossLingua
-        run: pio run -e ${{ matrix.pio_env }} -j1
+        env:
+          # Enrollment gate for the LCP service: official CrossPoint releases carry
+          # this key and self-builds do not (they lose only LCP). Unset here unless
+          # the repo defines the secret.
+          FREEINK_LCP_RELEASE_KEY: ${{ secrets.FREEINK_LCP_RELEASE_KEY }}
+        run: |
+          if [ -n "$FREEINK_LCP_RELEASE_KEY" ]; then
+            export PLATFORMIO_BUILD_FLAGS="-DFREEINK_LCP_RELEASE_KEY=\\\"$FREEINK_LCP_RELEASE_KEY\\\""
+          fi
+          pio run -e ${{ matrix.pio_env }} -j1
 
       - name: Prepare firmware assets
         run: |
