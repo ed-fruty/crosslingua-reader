@@ -36,14 +36,15 @@ namespace {
 constexpr char MANIFEST_TMP[] = "/.crosspoint/wordlens/manifest.tmp";
 constexpr char JSON_TMP[] = "/.crosspoint/wordlens/readest-pack.tmp";
 
-// Source languages the Word Lens tokenizer handles (the same list crosslingua-wordlens'
-// update_packs.py builds).
+// Source languages the Word Lens tokenizer handles: every space-delimited script. The ones that
+// need a word segmenter are refused, as Readest refuses them.
 bool supportedSource(const char* code) {
-  static constexpr const char* SOURCES[] = {"en", "de", "es", "fr", "it", "pt", "ru"};
-  for (const char* s : SOURCES) {
-    if (std::strcmp(s, code) == 0) return true;
+  static constexpr const char* NEED_SEGMENTER[] = {"zh", "ja", "ko", "th"};
+  if (code[0] == '\0') return false;
+  for (const char* s : NEED_SEGMENTER) {
+    if (std::strcmp(s, code) == 0) return false;
   }
-  return false;
+  return true;
 }
 
 // A manifest value used in a path or URL: letters, digits, '-', '_' and '.', no "..".

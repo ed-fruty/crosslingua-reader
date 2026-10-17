@@ -30,11 +30,12 @@ void primarySubtag(const char* code, char* out, const size_t outSize) {
 }
 
 // dc:language is often a three-letter ISO 639-2 code (Calibre writes "eng"); packs are keyed by
-// ISO 639-1. Covers every pack source language plus the hint languages packs exist for.
+// ISO 639-1. Covers every pack source and hint language, including the ua-dict ones (ro, nl, pl).
 void toIso6391(char* code, const size_t size) {
   static constexpr const char* MAP[][2] = {{"eng", "en"}, {"fra", "fr"}, {"fre", "fr"}, {"deu", "de"}, {"ger", "de"},
                                            {"spa", "es"}, {"ita", "it"}, {"por", "pt"}, {"rus", "ru"}, {"ukr", "uk"},
-                                           {"vie", "vi"}, {"hun", "hu"}, {"ara", "ar"}, {"zho", "zh"}, {"chi", "zh"}};
+                                           {"vie", "vi"}, {"hun", "hu"}, {"ara", "ar"}, {"zho", "zh"}, {"chi", "zh"},
+                                           {"ron", "ro"}, {"rum", "ro"}, {"nld", "nl"}, {"dut", "nl"}, {"pol", "pl"}};
   for (const auto& m : MAP) {
     if (std::strcmp(code, m[0]) == 0) {
       std::snprintf(code, size, "%s", m[1]);
