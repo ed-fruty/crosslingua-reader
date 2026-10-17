@@ -230,6 +230,14 @@ whether a pack needs rebuilding.
 
 ## `section.bin`
 
+### Version 61
+
+The version 60 layout below. Only the parser output changes: a word still
+buffered when a block element opens (`text<ol>`, `text<div>`, `text<h2>`, with no
+whitespace before the tag) now ends in the preceding block instead of being glued
+onto the new block's first word, so chapters with that markup lay out
+differently. Every v60 file is rejected and rebuilt.
+
 ### Version 60
 
 CrossLingua Word Lens. One field joins the Lingua block, after `annotationFontId`:
@@ -461,7 +469,7 @@ import std.mem;
 import std.string;
 import std.core;
 
-#define EXPECTED_VERSION 60
+#define EXPECTED_VERSION 61
 #define MAX_STRING_LENGTH 65535
 #define FOOTNOTE_NUMBER_LEN 32
 #define FOOTNOTE_HREF_LEN 256

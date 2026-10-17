@@ -1,5 +1,6 @@
 add_executable(ChapterHtmlSlimParserTest
   ChapterHtmlSlimParserTest.cpp
+  BlockStartWordFlushTest.cpp
   LinguaParserTest.cpp
   LinguaTranslatedWordsTest.cpp
   LinguaSidecarTest.cpp

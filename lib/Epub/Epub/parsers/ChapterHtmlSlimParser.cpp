@@ -1474,6 +1474,12 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     return;
   }
 
+  // A block start ends the word in progress ("text<ol>"): flush it into the preceding block, under
+  // the current style, or it stays buffered and glues onto the new block's first word.
+  if (self->partWordBufferIndex > 0 && isHeaderOrBlock(name)) {
+    self->flushPartWordBuffer();
+  }
+
   if (matches(name, HEADER_TAGS, std::size(HEADER_TAGS))) {
     self->currentCssStyle = cssStyle;
     auto headerBlockStyle = BlockStyle::fromCssStyle(cssStyle, emSize, CssTextAlign::Center, self->viewportWidth);

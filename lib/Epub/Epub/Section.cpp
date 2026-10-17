@@ -214,7 +214,9 @@ namespace {
 //      their words carry no source range, so offsets mean the same position as in the chapter itself.
 // v60: (CrossLingua) Word Lens: LinguaLayout::WordLens and a wordLensKey:uint32 (pack identity, reader
 //      level, empty-strip choice) in the Lingua header block, after annotationFontId.
-constexpr uint8_t SECTION_FILE_VERSION = 60;
+// v61: v60 layout. A word buffered when a block element opens ("text<ol>") ends in the block before
+//      it instead of gluing onto the new block's first word, so affected chapters lay out differently.
+constexpr uint8_t SECTION_FILE_VERSION = 61;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
