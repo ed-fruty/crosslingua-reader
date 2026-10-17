@@ -6,9 +6,10 @@ the button-only and touch/frontlight devices.
 
 Lingua is CrossLingua's bilingual reading system. It can produce a bilingual
 copy of any EPUB on the device or use language-tagged translations already
-embedded by a Calibre workflow. The current code provides eight display modes:
+embedded by a Calibre workflow. The current code provides nine display modes:
 Normal, Interleaved, Side by Side, Original Only, Translation Only, Tooltip,
-Page Translation, and Interlinear.
+Page Translation, Interlinear, and Word Lens. Word Lens needs no translation at
+all: it glosses hard words from a downloaded word list.
 
 <img src="./images/crosslingua/interlinear.jpg" height="500" alt="CrossLingua Interlinear mode" />
 
@@ -140,10 +141,108 @@ If a paragraph's translation outruns every strip above it, the remainder is
 drawn as small-type lines directly below the paragraph, with no source line
 between them.
 
+### Word Lens
+
+Shows a short gloss in your language above the hard words of the book, in a
+small strip over each line, like Kindle's Word Wise. No translation is needed:
+the glosses come from a **gloss pack** for the language pair (the book's
+language → your hint language), downloaded once.
+
+*Setup.* Pick **Display Mode → Word Lens** in the Lingua menu. Under it:
+
+- **Gloss Pack** — shows whether the pack for this book is installed; select it
+  to open the pack list (Wi-Fi), where packs can be downloaded or deleted. Each
+  row names the pair; the line under it shows the size, or "Installed". The
+  device restarts into the book when you leave the list.
+- **Level** — A1, A2, B1, B2, C1 or C2. A word is glossed when it is rarer than
+  the vocabulary of that level, so A1 glosses the most words and C2 only the
+  rarest. The levels are **word-frequency bands named after CEFR levels**, not a
+  real CEFR grading of each word: A1 glosses everything outside the 1000
+  commonest words, A2 outside 2000, B1 4000, B2 8000, C1 14000 and C2 24000. The
+  1000 commonest words are never glossed. An inflected form uses its lemma's rank
+  ("whispered" counts as "whisper").
+- **Hint Language** — the language of the glosses. The list offers only
+  languages with a pack for the book's language (installed, or in the pack list
+  last fetched). **Automatic** uses the translator's Target Language when such a
+  pack exists, then the device's UI language, then any installed pack for the
+  book. Choosing a hint language does not change the translator's Target
+  Language.
+- **Book Language** — only for a book that declares no language.
+- **Translation Colour** and **Translation Size** — the strip's colour and type
+  size, shared with Interlinear.
+- **Empty Strips** — **Keep** (default) gives every line a strip, so the line
+  pitch stays even; **Hide** gives a strip only to lines with a glossed word, so
+  a page holds more text.
+- **Page Turn Buttons** — which button pair turns pages (default: the side
+  buttons). The other pair steps through the hard words of the page.
+- **At Last Word** — whether stepping past the last (or first) hard word wraps
+  around (**Loop**) or turns the page (**Page Turn**).
+- **Toggle by Longpress** — a long press of the stepping pair hides or shows
+  the strips (their space stays), separately from Interlinear's own toggle.
+
+*Reading.* The source text is laid out exactly as in Original Only; each line
+gets a strip above it (blank strips keep the line pitch even, unless Empty
+Strips is set to Hide), so a page holds fewer lines. A gloss sits centred over its word. When two would overlap, the
+rarer word keeps its gloss and the other is shortened with "…" or, if fewer than
+three letters would fit, left out. Capitalised words in mid-sentence are taken
+for names and not glossed (except in German, which capitalises every noun), and
+words inside real `<ruby>` keep their own annotation.
+
+*Looking a word up.* Press the stepping pair: the first press focuses the first
+(or, backwards, the last) hard word of the page, underlined — including words
+whose gloss was shortened or left out. **Confirm** opens the word in your
+dictionary when one is installed (Settings → Dictionary) and has it, trying the
+word as written and then its lemma; otherwise it shows the full gloss with the
+lemma. **Back** clears the focus. On touch screens, tap a glossed word or its
+gloss. Turning the page clears the focus.
+
+*Packs.* Packs exist for English → Arabic, Chinese, English (simple
+definitions), French, German, Hungarian, Portuguese, Russian, Spanish,
+Ukrainian, Vietnamese, and for German, French, Italian, Portuguese, Russian and
+Spanish → English (0.5 – 1.7 MB each, `/.crosspoint/wordlens/` on the card). They
+are attached to every CrossLingua release (`word-lens-<pair>.lens`) and fetched
+from the latest release; if GitHub cannot be reached, the device downloads
+Readest's original JSON pack from `cdn.readest.com` and converts it itself: it
+switches Wi-Fi off first, shows the progress, and **Back** cancels (a minute or
+two; picking another pack afterwards reconnects). English → Ukrainian is only on
+our releases. Changing the pack, the hint language, the level or Empty Strips
+re-lays the chapter out.
+
+The data is Readest's Word Lens data (WikDict / Wiktionary glosses and
+FrequencyWords ranks, CC-BY-SA; ECDICT, MIT); the English → Ukrainian glosses are
+the English → Russian ones machine-translated into Ukrainian. See
+`lingua-data/wordlens/ATTRIBUTION.md`; each pack also carries its own notice.
+
+## Word Lens pack maintenance
+
+The packs are committed under `lingua-data/wordlens/` as one reproducible
+archive, `word-lens-packs.tar.xz` (not part of the firmware image), and are
+refreshed with one script:
+
+```bash
+python3 scripts/wordlens/update_packs.py --dry-run          # what would change
+python3 scripts/wordlens/update_packs.py                    # refresh changed packs
+python3 scripts/wordlens/update_packs.py --pairs en-ru,en-uk
+```
+
+It fetches Readest's manifest and packs from `cdn.readest.com/wordlens`, checks
+their sha256, re-converts only the packs whose source changed (the conversion is
+deterministic), rebuilds `en-uk` from the refreshed `en-ru` (Russian glosses
+already in `scripts/wordlens/en-uk.translations.tsv` are reused, only new ones
+are machine-translated; `--offline` never calls out, `--retry-failed` retries
+earlier failures), rewrites the archive (packs, manifest, attribution) and
+`ATTRIBUTION.md`, prints what changed, and leaves the commit to you. The release
+workflow unpacks the archive, checks every pack against the manifest and
+attaches the packs, the manifest and the attribution to the next release. Tests: `python3 -m unittest test_wordlens`
+in `scripts/wordlens/` (also run by `ctest`). Format details:
+[`.lens` in file-formats.md](file-formats.md#word-lens-pack-lens).
+
 ## Mode switching with no translation
 
 If you switch to any non-Normal mode but the current chapter hasn't been
-translated, the device shows a notice and reverts to Normal mode. Translate
+translated, the device shows a notice and reverts to Normal mode. Word Lens is
+the exception: it never needs a translation, and a book without an installed
+pack is shown plain with a one-time notice. Translate
 the chapter (or the book) before selecting a translation-dependent mode.
 
 ## Re-translating

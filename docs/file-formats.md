@@ -146,7 +146,110 @@ a chapter laid out from a sidecar, an offset lookup resolves that tie to the
 caller's saved page when it is one of them, otherwise to the first. Committing a
 sidecar deletes the chapter's `.bin`, `.bin.part` and `.pairs`.
 
+## Word Lens pack (`.lens`)
+
+### Version 1
+
+A per-language-pair gloss pack for the Word Lens display mode, stored at
+`/.crosspoint/wordlens/word-lens-<source>-<target>.lens` and queried straight from
+the SD card. Built by `scripts/wordlens/update_packs.py` (reference writer:
+`scripts/wordlens/lens_format.py`) from Readest's Word Lens JSON packs, or on the
+device by `LensBuilder` when only Readest's CDN is reachable; both writers produce
+byte-identical files from the same JSON. All integers little-endian.
+
+```c
+// header, 64 bytes
+char magic[4];          // "LENS"
+u8   version;           // 1
+u8   flags;             // bit 0: monolingual (source == target)
+u16  headerSize;        // 64
+char source[8];         // ISO 639-1, NUL-padded ("en")
+char target[8];         // ("uk")
+u32  recordCount;       // keys: headwords + inflected forms folded onto them
+u32  headwordCount;
+u16  bucketCount;       // power of two, <= 1024
+u8   bucketLog2;
+u8   rankScale;         // 0 frequency rank, 1 HSK-derived (zh)
+u32  tableOffset;       // = 64
+u32  recordsOffset;     // = 64 + 4 * (bucketCount + 1)
+u32  poolOffset;
+u32  poolSize;
+u32  attributionOffset; // = poolOffset + poolSize
+u16  attributionLength; // UTF-8 licence / source notice, shown on the device
+u16  maxBucketBytes;    // size of the largest bucket: the reader's slot buffer size
+u32  contentHash;       // FNV-1a 32 of every byte after the header (pack identity)
+
+u32 bucketTable[bucketCount + 1];   // offsets into the records section
+
+// records, globally sorted by (fnv1a32(key), key bytes)
+struct Record {
+    u8  keyLen;
+    u8  key[keyLen];   // lowercase NFC UTF-8 word
+    u16 rank;          // frequency rank of the word (its lemma's, for an inflected form)
+    u24 entryOffset;   // into the pool
+};
+
+// pool: one entry per headword, in the JSON's entry order
+struct Entry {
+    u8 headLen;  u8 head[headLen];    // the lemma
+    u8 glossLen; u8 gloss[glossLen];  // up to 3 cleaned senses joined by "; ", <= 240 bytes
+};
+
+u8 attribution[attributionLength];
+```
+
+A key's bucket is `fnv1a32(key) >> (32 - bucketLog2)`; its records lie in
+`[bucketTable[b], bucketTable[b + 1])`. Lookup cost: one contiguous SD read of
+that bucket (typically 0.5 - 1.5 KB) and a linear scan; the device keeps the
+bucket table (<= 4100 bytes), two LRU bucket buffers and a 256-entry result cache
+in RAM while the Word Lens mode is active. An inflected form ("whispered") has its
+own record pointing at its lemma's entry, so it resolves in the same single read;
+the entry names the lemma for the reader's dictionary fallback.
+
+Glosses are cleaned at build time: Wiktionary link markup kept as text,
+`[...]` annotations, `(...)` qualifiers, `|{}` and leading part-of-speech tags
+removed, Cyrillic stress marks and other combining diacritics
+(U+0300-036F, U+0483-0487) and Arabic vowel signs (U+064B-0652, U+0670)
+stripped, first near-synonym of each sense kept. Entries left with no gloss are
+dropped together with their inflections. The strip shows the first sense capped
+at 24 codepoints; the gloss popup shows all of it.
+
+`word-lens-manifest.json` lists the packs of a release:
+
+```json
+{"schemaVersion": 1, "formatVersion": 1, "dataVersion": 1, "readestCdn": "...",
+ "packs": [{"pair": "en-uk", "source": "en", "target": "uk", "file": "word-lens-en-uk.lens",
+            "bytes": 797859, "sha256": "...", "entries": 31691, "headwords": 14914,
+            "version": 1, "contentHash": "1a2b3c4d",
+            "readest": {"file": "en-ru.json", "bytes": 1270231, "sha256": "..."}}]}
+```
+
+`readest` (or `derivedFrom` + `translationCacheSha256` for en-uk) records the
+source the pack was made from, which is what `update_packs.py` compares to decide
+whether a pack needs rebuilding.
+
 ## `section.bin`
+
+### Version 60
+
+CrossLingua Word Lens. One field joins the Lingua block, after `annotationFontId`:
+
+```
+s32 translationFontId; s32 annotationFontId; u32 wordLensKey; u8 linguaLayout;  // Lingua
+bool translatedSource; bool embeddedTranslation;                                // Lingua
+```
+
+`linguaLayout` gains `5 = WordLens`: the source is broken exactly as under
+OriginalOnly and every source line is preceded by one annotation strip
+(`LineFontRole::Annotation`, an ordinary `PageLine` whose TextBlock words are the
+glosses at their centred x); a strip with nothing on it emits no `PageLine` and
+only advances y, unless Empty Strips is set to Hide, in which case a line with no
+hard word gets no strip and no space at all. `wordLensKey` identifies the gloss
+pack (its content hash), the reader level and the Empty Strips choice
+(`wordLensCacheKey`); it is non-zero only under the WordLens layout, and
+`annotationFontId` is keyed under WordLens as well as Interlinear. Unlike the
+other bilingual layouts, WordLens does not fall back to Both on an untranslated
+chapter. Every v59 file is rejected and rebuilt.
 
 ### Version 59
 
@@ -358,7 +461,7 @@ import std.mem;
 import std.string;
 import std.core;
 
-#define EXPECTED_VERSION 58
+#define EXPECTED_VERSION 60
 #define MAX_STRING_LENGTH 65535
 #define FOOTNOTE_NUMBER_LEN 32
 #define FOOTNOTE_HREF_LEN 256
@@ -537,6 +640,7 @@ struct SectionBin {
 
     s32 translationFontId;    // Lingua
     s32 annotationFontId;     // Lingua
+    u32 wordLensKey;          // Lingua (Word Lens pack + level)
     u8 linguaLayout;          // Lingua
     bool translatedSource;    // Lingua
     bool embeddedTranslation; // Lingua (memo, not a cache key)

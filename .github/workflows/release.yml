@@ -7,6 +7,11 @@ name: Compile Release
 #   firmware.bin / firmware-<board>.bin              what CrossLingua <= 1.4.x
 #                                                    requests (legacy OTA)
 # Both names carry the same binary, so devices on any release can update.
+#
+# Every release also carries the Word Lens gloss packs, committed as one archive
+# (lingua-data/wordlens/word-lens-packs.tar.xz) and published unpacked: word-lens-<pair>.lens,
+# word-lens-manifest.json and word-lens-ATTRIBUTION.md. Devices fetch them from
+# releases/latest/download/, so they must be on the latest (non-prerelease) release.
 
 on:
   push:
@@ -168,6 +173,21 @@ jobs:
           path: dist/firmware
           merge-multiple: true
 
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Stage Word Lens packs
+        # Unpacks the archive and checks every pack against the manifest's sha256/size before it is
+        # published: one asset per manifest pack, plus the manifest and the attribution.
+        run: |
+          set -euo pipefail
+          expected="$(python3 -c 'import json, tarfile; t = tarfile.open("lingua-data/wordlens/word-lens-packs.tar.xz"); print(len(json.load(t.extractfile("word-lens-manifest.json"))["packs"]) + 2)')"
+          staged="$(python3 scripts/wordlens/stage_release_assets.py --out dist/wordlens)"
+          test "$staged" -eq "$expected"
+          test "$(find dist/wordlens -maxdepth 1 -type f | wc -l)" -eq "$expected"
+          test "$(find dist/wordlens -maxdepth 1 -type f -name 'word-lens-*.lens' | wc -l)" -eq "$((expected - 2))"
+
       - name: Verify firmware assets
         run: |
           set -euo pipefail
@@ -202,4 +222,6 @@ jobs:
           prerelease: false
           make_latest: true
           fail_on_unmatched_files: true
-          files: dist/firmware/*.bin
+          files: |
+            dist/firmware/*.bin
+            dist/wordlens/*
