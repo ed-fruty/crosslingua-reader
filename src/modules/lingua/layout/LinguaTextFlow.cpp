@@ -63,6 +63,7 @@ bool ChapterHtmlSlimParser::wordIsFiltered() const {
   const bool inTranslatedBlock = !inlineStyleStack.empty() && inlineStyleStack.back().isTranslatedBlock;
   switch (linguaLayout) {
     case LinguaLayout::OriginalOnly:
+    case LinguaLayout::WordLens:
       return inTranslatedBlock;
     case LinguaLayout::TranslationOnly:
       return !inTranslatedBlock;
@@ -124,6 +125,7 @@ LineFontRole ChapterHtmlSlimParser::currentLineRole() const {
     case LinguaLayout::TranslationOnly:
     case LinguaLayout::SideBySide:
     case LinguaLayout::Interlinear:
+    case LinguaLayout::WordLens:
       break;
   }
   return LineFontRole::Body;

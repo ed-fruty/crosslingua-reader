@@ -194,6 +194,8 @@ class Section {
   // and never pays it twice, because the inflate is promoted to the html cache startBuild() reuses.
   // Call it from a context that can afford (and indicate) that inflate; see EpubReaderActivity.
   void resolveTranslationPresence();
+  // Lingua: the book's dc:language, for the Word Lens pack choice.
+  std::string linguaBookLanguage() const;
 
   // Incremental build: lay out the section a few pages at a time so a large chapter
   // can show its first page immediately and keep the UI responsive while the rest

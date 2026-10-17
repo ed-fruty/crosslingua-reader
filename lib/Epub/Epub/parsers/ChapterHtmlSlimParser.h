@@ -19,6 +19,7 @@
 #include "Epub/css/CssStyle.h"
 #include "modules/lingua/layout/LinguaLayout.h"
 #include "modules/lingua/modes/interlinear/InterlinearAnnotation.h"
+#include "modules/lingua/modes/word_lens/WordLensGlossSource.h"
 
 class Page;
 class PageLine;
@@ -91,6 +92,21 @@ class ChapterHtmlSlimParser {
   // (INTERLINEAR_MAX_ANNOTATIONS entries, 300 bytes) and reused for every paragraph after it -- no
   // per-paragraph allocation, and nothing allocated at all under any other layout.
   std::vector<InterlinearAnnotation> interlinearAnnotations;
+  // Lingua (LinguaLayout::WordLens): the app's gloss decision, or nullptr for a chapter laid out
+  // with no strips (no pack installed). Set by Section::startBuild through setWordLensSource().
+  WordLensGlossSource* wordLensSource = nullptr;
+  // Lingua (LinguaLayout::WordLens): the hard words of the block being laid out -- the token each
+  // starts at and its strip gloss, stored in wordLensGlossText. Reused block after block, so their
+  // capacity is paid once per chapter. See makePagesWordLens.
+  struct WordLensPending {
+    uint16_t token;
+    uint16_t tokenCount;
+    uint16_t rank;
+    uint32_t textOffset;
+    uint8_t textLength;
+  };
+  std::vector<WordLensPending> wordLensPending;
+  std::string wordLensGlossText;
   // Monotonic index over ORIGINAL content paragraphs. Advances once per content-bearing original
   // block regardless of nesting depth, matching the per-content-paragraph granularity of the
   // PageTranslationOverlay/TooltipOverlay reparsers (ParagraphBoundary.h SSOT). Empty/whitespace-only blocks
@@ -338,6 +354,10 @@ class ChapterHtmlSlimParser {
   // source line, one strip, one line, all the way down. An unpaired original falls back to plain
   // makePages() (via flushBufferedOriginal), i.e. no annotation and no marker.
   void makePagesInterlinearMode();
+  // Lingua (LinguaLayout::WordLens): makePages() for the Word Lens layout. The block is broken
+  // exactly as makePages() breaks it; every resulting line is then emitted with one annotation
+  // strip above it holding the glosses of its hard words (modes/word_lens/WordLensLayout.cpp).
+  void makePagesWordLens(bool includeLastLine);
   void renderInterlinear(std::unique_ptr<ParsedText> origBlock, std::unique_ptr<ParsedText> transBlock);
   // One fragment of translation sitting on one annotation strip. A strip normally carries exactly
   // one of these; it carries two when a source line holds the tail of one sentence and the head of
@@ -457,6 +477,8 @@ class ChapterHtmlSlimParser {
   void setParagraphIndentSpaces(const uint8_t spaces) { paragraphIndentSpaces = spaces; }
   // Lingua: the file is our `.translated.html` sidecar, whose inserted blocks are not original text.
   void setLinguaTranslatedSidecar(const bool sidecar) { linguaTranslatedSidecar = sidecar; }
+  // Lingua: gloss source for LinguaLayout::WordLens (see ReaderRenderSpec::wordLensSource).
+  void setWordLensSource(WordLensGlossSource* source) { wordLensSource = source; }
 
   // One-shot parse: builds every page before returning (begin + step* + finish).
   bool parseAndBuildPages();

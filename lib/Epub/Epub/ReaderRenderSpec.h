@@ -3,11 +3,12 @@
 
 #include "modules/lingua/layout/LinguaLayout.h"
 #include "modules/lingua/modes/interlinear/InterlinearAnnotation.h"
+#include "modules/lingua/modes/word_lens/WordLensGlossSource.h"
 
 // The resolved text-rendering configuration a reader hands to the layout
 // engine. Section-cache validation keys on every VALUE field: a section file built
-// with a different spec is discarded and rebuilt. (interlinearPairFn is the one
-// exception and is documented as such below.)
+// with a different spec is discarded and rebuilt. (interlinearPairFn and wordLensSource are the
+// exceptions and are documented as such below.)
 //
 // Build one via CrossPointSettings::readerRenderSpec(width, height), which
 // fills every field: the settings-derived ones from the store, the viewport
@@ -58,11 +59,18 @@ struct ReaderRenderSpec {
   // the layout engine. nullptr disables annotation emission (the source paragraph then lays out
   // exactly as under Original Only). See the Lingua InterlinearAnnotation contract.
   InterlinearPairFn interlinearPairFn = nullptr;
+  // Lingua (LinguaLayout::WordLens): identity of the gloss pack plus the reader level, 0 when no
+  // pack is open. A cache key -- a different pack or level glosses different words -- normalized to
+  // 0 by Section for every other layout (keyedWordLensKey).
+  uint32_t wordLensKey = 0;
+  // Lingua (LinguaLayout::WordLens): the app's gloss decision. NOT a cache key: what it answers is
+  // fully determined by wordLensKey. nullptr lays the chapter out with no strips.
+  WordLensGlossSource* wordLensSource = nullptr;
 
   // True when a chapter laid out under `other` can be served under this spec without a
   // re-layout, i.e. both specs key the SAME section.bin. Compares every VALUE field and
-  // deliberately omits interlinearPairFn, the one field documented above as not a cache
-  // key. Lives here, next to the fields, so a new keyed field has exactly one place to be
+  // deliberately omits interlinearPairFn and wordLensSource, the fields documented above as not
+  // cache keys. Lives here, next to the fields, so a new keyed field has exactly one place to be
   // added rather than a second list in a caller.
   //
   // Slightly STRICTER than Section's on-disk header check, which first normalizes the two
@@ -80,7 +88,7 @@ struct ReaderRenderSpec {
            hyphenationEnabled == other.hyphenationEnabled && embeddedStyle == other.embeddedStyle &&
            imageRendering == other.imageRendering && focusReadingEnabled == other.focusReadingEnabled &&
            linguaLayout == other.linguaLayout && translationFontId == other.translationFontId &&
-           annotationFontId == other.annotationFontId;
+           annotationFontId == other.annotationFontId && wordLensKey == other.wordLensKey;
   }
 };
 
@@ -108,5 +116,8 @@ inline uint32_t readerRenderSpecSignature(const ReaderRenderSpec& spec) {
   mix(static_cast<uint8_t>(spec.linguaLayout));
   mix(static_cast<uint32_t>(spec.translationFontId));
   mix(static_cast<uint32_t>(spec.annotationFontId));
+  // Lingua: Word Lens strips move lines between pages. Mixed in only when set, so every signature
+  // stored before Word Lens existed stays valid.
+  if (spec.wordLensKey != 0) mix(spec.wordLensKey);
   return signature == 0 ? 1 : signature;
 }

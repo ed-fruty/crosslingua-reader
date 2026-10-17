@@ -254,12 +254,15 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     // Each sentence's translation on its own small line ABOVE the source line it starts on. The one
     // mode with a layout that is not shared with any other (LinguaLayout::Interlinear).
     LINGUA_INTERLINEAR = 9,
+    // Short glosses of the hard words of the source above them, from a language-pair pack; needs no
+    // translation (LinguaLayout::WordLens).
+    LINGUA_WORD_LENS = 10,
   };
   // LOAD-TIME VALIDITY BOUND ONLY: fromJson() clamps a stored translationDisplayMode >= this to
   // LINGUA_NORMAL. It is deliberately NOT an enumerator and NOT a UI iteration count — the retired
   // holes at 1 and 2 make the value range non-contiguous, so every UI list and cycle walks
   // LINGUA_SELECTABLE_MODES instead (modules/lingua/LinguaModeCatalog.h).
-  static constexpr uint8_t LINGUA_MODE_COUNT = LINGUA_INTERLINEAR + 1;
+  static constexpr uint8_t LINGUA_MODE_COUNT = LINGUA_WORD_LENS + 1;
 
   // Lingua: colour of translated text in Interleaved mode (LINGUA_INTERLEAVED). It selects the
   // renderer's gray level for words flagged as translated text.
@@ -379,6 +382,14 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     TOOLTIP_NAV_LOOP = 0,       // wrap to the first/last sentence, stay on the page
     TOOLTIP_NAV_TURN_PAGE = 1,  // turn the page and continue stepping on the next page
     TOOLTIP_NAVIGATION_COUNT
+  };
+
+  // Word Lens: whether a source line with no hard word keeps its blank strip.
+  // VALUE STABILITY: persisted as an integer; append only, never renumber.
+  enum WORD_LENS_EMPTY_STRIPS : uint8_t {
+    WORD_LENS_KEEP_EMPTY_STRIPS = 0,  // every line has a strip: an even line pitch
+    WORD_LENS_HIDE_EMPTY_STRIPS = 1,  // only lines with a hard word: more text per page
+    WORD_LENS_EMPTY_STRIPS_COUNT
   };
 
   // Sleep screen settings
@@ -595,6 +606,23 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // under the "pageTranslationButtons" key (legacy files stored it as "modalButtons"; fromJson
   // reads that as a fallback and resaves).
   uint8_t pageTranslationButtons = OVERLAY_BUTTONS_SIDE;
+  // Word Lens display mode (LINGUA_WORD_LENS). wordLensLevel is a lingua::wordlens::Level (A1..C2,
+  // frequency bands): a LAYOUT input through WordLensService::cacheKey. The strip's size and colour
+  // are Interlinear's interlinearAnnotationSize / interlinearAnnotationShade.
+  // wordLensHint: the gloss language (ISO 639-1, "" = automatic: the translator's Target Language
+  // when a pack exists for it, see WordLensService::wantedTarget). Independent of the translator.
+  // wordLensPageButtons: the pair that turns pages (OVERLAY_BUTTONS); the other pair steps through
+  // the page's hard words. wordLensNavigation: what stepping does past the last / first one
+  // (TOOLTIP_NAVIGATION). Persisted manually in toJson/fromJson; edited from the Lingua submenu.
+  uint8_t wordLensLevel = 2;  // lingua::wordlens::DEFAULT_LEVEL (B1)
+  uint8_t wordLensPageButtons = OVERLAY_BUTTONS_SIDE;
+  uint8_t wordLensNavigation = TOOLTIP_NAV_TURN_PAGE;
+  // wordLensEmptyStrips: WORD_LENS_EMPTY_STRIPS, a LAYOUT input (part of the Word Lens cache key).
+  // wordLensToggleByLongPress: a long press of the stepping pair hides / shows the strips (drawing
+  // only; the strips keep their space), independent of Interlinear's own toggle.
+  uint8_t wordLensEmptyStrips = WORD_LENS_KEEP_EMPTY_STRIPS;
+  uint8_t wordLensToggleByLongPress = 1;
+  char wordLensHint[8] = "";
 
   static constexpr uint8_t MIN_SLEEP_TIMEOUT_MINUTES = 1;
   static constexpr uint8_t SLEEP_TIMEOUT_NEVER_MINUTES = 31;

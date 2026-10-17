@@ -17,6 +17,7 @@
 #include "modules/lingua/activities/LanguagePickerActivity.h"
 #include "modules/lingua/modes/LinguaModeRegistry.h"
 #include "modules/lingua/modes/interlinear/InterlinearPairing.h"
+#include "modules/lingua/wordlens/WordLensService.h"
 #include "util/ParagraphIndentMigration.h"
 
 namespace {
@@ -160,6 +161,12 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   doc["tooltipButtons"] = tooltipButtons;
   doc["tooltipBehavior"] = tooltipBehavior;
   doc["pageTranslationButtons"] = pageTranslationButtons;
+  doc["wordLensLevel"] = wordLensLevel;
+  doc["wordLensPageButtons"] = wordLensPageButtons;
+  doc["wordLensNavigation"] = wordLensNavigation;
+  doc["wordLensEmptyStrips"] = wordLensEmptyStrips;
+  doc["wordLensToggleByLongPress"] = wordLensToggleByLongPress;
+  doc["wordLensHint"] = wordLensHint;
   // A uint16_t mask, so it does not fit the uint8_t generic loop. Omitted while
   // unconfigured, so the default keeps following the UI language.
   if (keyboardLayouts != 0) {
@@ -398,6 +405,23 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   }
   pageTranslationButtons = clamp(doc["pageTranslationButtons"] | legacyPageTranslationButtons,
                                  (uint8_t)OVERLAY_BUTTONS_COUNT, (uint8_t)OVERLAY_BUTTONS_SIDE);
+  // Word Lens. An absent key (every install before the mode existed) adopts the default.
+  wordLensLevel = clamp(doc["wordLensLevel"] | (uint8_t)2, (uint8_t)6, (uint8_t)2);
+  wordLensPageButtons = clamp(doc["wordLensPageButtons"] | (uint8_t)OVERLAY_BUTTONS_SIDE,
+                              (uint8_t)OVERLAY_BUTTONS_COUNT, (uint8_t)OVERLAY_BUTTONS_SIDE);
+  wordLensNavigation = clamp(doc["wordLensNavigation"] | (uint8_t)TOOLTIP_NAV_TURN_PAGE,
+                             (uint8_t)TOOLTIP_NAVIGATION_COUNT, (uint8_t)TOOLTIP_NAV_TURN_PAGE);
+  wordLensEmptyStrips = clamp(doc["wordLensEmptyStrips"] | (uint8_t)WORD_LENS_KEEP_EMPTY_STRIPS,
+                              (uint8_t)WORD_LENS_EMPTY_STRIPS_COUNT, (uint8_t)WORD_LENS_KEEP_EMPTY_STRIPS);
+  wordLensToggleByLongPress = clamp(doc["wordLensToggleByLongPress"] | (uint8_t)1, (uint8_t)2, (uint8_t)1);
+  copyToField(wordLensHint, doc["wordLensHint"] | "", sizeof(wordLensHint));
+  // A language code only (it names a pack file); anything else means automatic.
+  for (const char* c = wordLensHint; *c; c++) {
+    if (*c < 'a' || *c > 'z') {
+      wordLensHint[0] = '\0';
+      break;
+    }
+  }
   // Absent means unconfigured, which is the default.
   if (doc["keyboardLayouts"].is<uint16_t>()) {
     keyboardLayouts = doc["keyboardLayouts"].as<uint16_t>();
@@ -470,7 +494,8 @@ int CrossPointSettings::getInterlinearAnnotationFontId() const {
   // unconditionally at startup (src/main.cpp), so no build gains a font for this setting that it did
   // not already carry and the slim build has every option; SD-card font families register their own
   // faces under the same ids (SdCardFontSystem), so this follows the active family there too.
-  if (translationDisplayMode != LINGUA_INTERLINEAR) return 0;
+  // Word Lens strips are annotation rows too, and share Interlinear's Annotation Size.
+  if (translationDisplayMode != LINGUA_INTERLINEAR && translationDisplayMode != LINGUA_WORD_LENS) return 0;
   if (!interlinearAnnotationScriptSupported()) return 0;
   switch (static_cast<INTERLINEAR_ANNOTATION_SIZE>(interlinearAnnotationSize)) {
     case ANNOTATION_10PT:
@@ -557,6 +582,11 @@ ReaderRenderSpec CrossPointSettings::readerRenderSpec(const uint16_t viewportWid
   // Not a cache key: the app's sentence aligner, injected so lib/Epub owns the geometry and the app
   // owns the alignment heuristic it shares with the Tooltip mode.
   spec.interlinearPairFn = &interlinearPairSentences;
+  // Word Lens: the open pack and level (0 / nullptr in every other mode). The service opens the pack
+  // when the reader prepares a section; reading it here has no side effects.
+  auto& wordLens = lingua::wordlens::WordLensService::instance();
+  spec.wordLensKey = wordLens.cacheKey();
+  spec.wordLensSource = wordLens.glossSource();
   return spec;
 }
 

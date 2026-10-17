@@ -90,6 +90,8 @@ void Section::resolveTranslationPresence() {
   }
 }
 
+std::string Section::linguaBookLanguage() const { return epub->getLanguage(); }
+
 bool Section::isTextless() const {
   // Both scan sites record textPresence_, so a caller that has already resolved translation
   // presence -- which every caller does, the fallback gate included -- answers from memory here.
@@ -103,14 +105,21 @@ LinguaLayout Section::effectiveLayout(const LinguaLayout requested, const bool t
   // therefore both the request and the fallback, which is exactly why it says nothing about the
   // source the pages came from and why the caller pairs this with the translatedSource flag in the
   // cache key. See the declaration comment in Section.h.
+  //
+  // Word Lens is the exception: its glosses come from a language-pair pack, not from a translation,
+  // so an untranslated chapter is exactly what it is for. With a translation present it still drops
+  // the translated words (wordIsFiltered), so the layout never needs the downgrade.
+  if (requested == LinguaLayout::WordLens) return requested;
   return translatedSource ? requested : LinguaLayout::Both;
 }
 
 void Section::writeLinguaHeaderFields(const ReaderRenderSpec& spec, const bool translatedSource,
                                       const bool embeddedTranslation) {
   serialization::writePod(file, spec.translationFontId);  // translated-text font (cache key)
-  // Annotation-row font (cache key). Non-zero only under LinguaLayout::Interlinear.
+  // Annotation-row font (cache key). Non-zero only under LinguaLayout::Interlinear and WordLens.
   serialization::writePod(file, spec.annotationFontId);
+  // Word Lens pack + level (cache key). Non-zero only under LinguaLayout::WordLens.
+  serialization::writePod(file, spec.wordLensKey);
   serialization::writePod(file, static_cast<uint8_t>(spec.linguaLayout));  // page layout (cache key)
   // Whether the HTML these pages were laid out from contained translations (cache key). The layout
   // byte cannot express it: Both is stamped both by an untranslated chapter and by one that simply
@@ -131,11 +140,13 @@ void Section::writeLinguaHeaderFields(const ReaderRenderSpec& spec, const bool t
 bool Section::readLinguaHeaderFields(const ReaderRenderSpec& spec) {
   int fileTranslationFontId;
   int fileAnnotationFontId;
+  uint32_t fileWordLensKey;
   uint8_t fileLinguaLayout;
   bool fileTranslatedSource;
   bool fileEmbeddedTranslation;
   serialization::readPod(file, fileTranslationFontId);
   serialization::readPod(file, fileAnnotationFontId);
+  serialization::readPod(file, fileWordLensKey);
   serialization::readPod(file, fileLinguaLayout);
   serialization::readPod(file, fileTranslatedSource);
   serialization::readPod(file, fileEmbeddedTranslation);
@@ -171,6 +182,7 @@ bool Section::readLinguaHeaderFields(const ReaderRenderSpec& spec) {
   const LinguaLayout layout = effectiveLayout(spec.linguaLayout, translatedSource);
   return lingua::keyedTranslationFontId(spec.translationFontId, layout) == fileTranslationFontId &&
          lingua::keyedAnnotationFontId(spec.annotationFontId, layout) == fileAnnotationFontId &&
+         lingua::keyedWordLensKey(spec.wordLensKey, layout) == fileWordLensKey &&
          translatedSource == fileTranslatedSource && static_cast<uint8_t>(layout) == fileLinguaLayout;
 }
 

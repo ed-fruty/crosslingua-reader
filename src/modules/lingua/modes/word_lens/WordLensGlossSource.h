@@ -20,4 +20,7 @@ class WordLensGlossSource {
   // is hard at the configured level, and if so its strip gloss. `sentenceInitial` tells the
   // proper-noun rule a capital letter may just open the sentence.
   virtual bool glossFor(const char* word, size_t length, bool sentenceInitial, WordLensGloss& out) = 0;
+  // Whether a source line with no hard word still gets its (blank) strip: an even line pitch, or
+  // more text per page. Part of the same cache key as the glosses.
+  virtual bool keepEmptyStrips() const { return true; }
 };

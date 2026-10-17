@@ -8,6 +8,7 @@
 #include "modules/lingua/modes/side_by_side/SideBySideMode.h"
 #include "modules/lingua/modes/tooltip/TooltipMode.h"
 #include "modules/lingua/modes/translation_only/TranslationOnlyMode.h"
+#include "modules/lingua/modes/word_lens/WordLensMode.h"
 
 class LinguaModeRegistry {
  public:
@@ -29,4 +30,5 @@ class LinguaModeRegistry {
   TooltipMode tooltip_;
   PageTranslationMode pageTranslation_;
   InterlinearMode interlinear_;
+  WordLensMode wordLens_;
 };

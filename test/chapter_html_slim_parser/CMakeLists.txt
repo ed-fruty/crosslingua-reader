@@ -29,6 +29,9 @@ add_executable(ChapterHtmlSlimParserTest
   ${REPO_ROOT}/src/modules/lingua/parsers/TranslationPairWalker.cpp
   ${REPO_ROOT}/src/modules/lingua/services/TranslatedContentDetector.cpp
   ${REPO_ROOT}/src/modules/lingua/engines/TranslationEnginePolicy.cpp
+  ${REPO_ROOT}/src/modules/lingua/modes/word_lens/WordLensLayout.cpp
+  ${REPO_ROOT}/src/modules/lingua/modes/word_lens/WordLensStrip.cpp
+  ${REPO_ROOT}/src/modules/lingua/wordlens/LensText.cpp
 )
 
 target_include_directories(ChapterHtmlSlimParserTest PRIVATE

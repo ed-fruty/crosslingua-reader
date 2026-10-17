@@ -52,9 +52,9 @@ namespace {
 //   paragraphIndentSpaces:uint8, paragraphAlignment:uint8, viewportWidth:uint16, viewportHeight:uint16,
 //   hyphenationEnabled:bool, embeddedStyle:bool, imageRendering:uint8, focusReadingEnabled:bool,
 //   characterSpacing:int8, wordSpacingPercent:uint8), then the Lingua fields (translationFontId:int,
-//   annotationFontId:int, linguaLayout:uint8, translatedSource:bool, embeddedTranslation:bool), then
-//   pageCount:uint16 and five uint32 LUT offsets. The Lingua fields sit in one block so the upstream
-//   header code stays verbatim and an upstream header change merges as an insertion.
+//   annotationFontId:int, wordLensKey:uint32, linguaLayout:uint8, translatedSource:bool, embeddedTranslation:bool),
+//   then pageCount:uint16 and five uint32 LUT offsets. The Lingua fields sit in one block so the upstream header code
+//   stays verbatim and an upstream header change merges as an insertion.
 // Every field except embeddedTranslation is part of the cache key.
 //
 // The substantive properties this format has accumulated, and why each one is load-bearing:
@@ -212,7 +212,9 @@ namespace {
 // v59: v58 without the sourceKind byte. A translated sidecar's inserted translation blocks
 //      (data-translation="true") count no visible-text offset and no XPath paragraph / list item, and
 //      their words carry no source range, so offsets mean the same position as in the chapter itself.
-constexpr uint8_t SECTION_FILE_VERSION = 59;
+// v60: (CrossLingua) Word Lens: LinguaLayout::WordLens and a wordLensKey:uint32 (pack identity, reader
+//      level, empty-strip choice) in the Lingua header block, after annotationFontId.
+constexpr uint8_t SECTION_FILE_VERSION = 60;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
@@ -236,15 +238,16 @@ constexpr uint8_t SECTION_FILE_INCOMPLETE_VERSION = 0;
 // one-off invalidation a version bump costs finalized files.
 constexpr uint8_t SECTION_FILE_PARTIAL_VERSION = 0xFE - (SECTION_FILE_VERSION - 28);
 // The derivation only stays a distinct sentinel while the two ranges have not met; assert it rather
-// than trusting a future bump to notice. At 53 the sentinel is 0xE5 (229) = 0xFE - (53 - 28):
+// than trusting a future bump to notice. At 60 the sentinel is 0xDE (222) = 0xFE - (60 - 28):
 // comfortably above the version, and only a version past 140 could close the gap.
 static_assert(SECTION_FILE_PARTIAL_VERSION > SECTION_FILE_VERSION &&
                   SECTION_FILE_PARTIAL_VERSION != SECTION_FILE_INCOMPLETE_VERSION,
               "Partial sentinel collides with a real version");
 // Lingua: the fork's header fields, written between wordSpacingPercent and pageCount by
 // writeLinguaHeaderFields() (LinguaSectionSupport.cpp): translationFontId, annotationFontId,
-// linguaLayout, translatedSource, embeddedTranslation.
-constexpr uint32_t LINGUA_HEADER_SIZE = sizeof(int) + sizeof(int) + sizeof(uint8_t) + sizeof(bool) + sizeof(bool);
+// wordLensKey, linguaLayout, translatedSource, embeddedTranslation.
+constexpr uint32_t LINGUA_HEADER_SIZE =
+    sizeof(int) + sizeof(int) + sizeof(uint32_t) + sizeof(uint8_t) + sizeof(bool) + sizeof(bool);
 constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) + sizeof(int) + sizeof(float) + sizeof(bool) + sizeof(uint8_t) +
                                  sizeof(uint16_t) + sizeof(uint16_t) + sizeof(uint16_t) + sizeof(bool) + sizeof(bool) +
                                  sizeof(uint8_t) + sizeof(bool) + sizeof(uint32_t) + sizeof(uint32_t) +
@@ -650,6 +653,7 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   // keyedTranslationFontId(). loadSectionFile() normalizes the lookup the same way.
   effectiveSpec.translationFontId = lingua::keyedTranslationFontId(spec.translationFontId, effectiveLinguaLayout);
   effectiveSpec.annotationFontId = lingua::keyedAnnotationFontId(spec.annotationFontId, effectiveLinguaLayout);
+  effectiveSpec.wordLensKey = lingua::keyedWordLensKey(spec.wordLensKey, effectiveLinguaLayout);
 
   if (!Storage.openFileForWrite("SCT", binTmpPath(), file)) {
     if (!reusedHtml) Storage.remove(tmpHtmlPath.c_str());
@@ -743,6 +747,8 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   }
 
   ctx->parser->setTextSpacing(spec.characterSpacing, spec.wordSpacingPercent);
+  // Lingua: Word Lens glosses only with a pack behind the key (keyedWordLensKey normalizes it).
+  ctx->parser->setWordLensSource(effectiveSpec.wordLensKey != 0 ? spec.wordLensSource : nullptr);
   ctx->parser->setParagraphIndentSpaces(spec.paragraphIndentSpaces);
   ctx->parser->setLinguaTranslatedSidecar(usingTranslatedSidecar);  // Lingua: our inserted blocks
   Hyphenator::setPreferredLanguage(epub->getLanguage());

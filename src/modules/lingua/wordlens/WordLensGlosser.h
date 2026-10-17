@@ -24,13 +24,14 @@ class WordLensGlosser final : public WordLensGlossSource {
   };
 
   // `reader` must be open and outlive this object. `level` is a Level value.
-  void configure(LensReader* reader, uint8_t level);
+  void configure(LensReader* reader, uint8_t level, bool keepEmptyStrips = true);
   bool ready() const { return reader_ != nullptr && reader_->isOpen(); }
 
   // The full decision for a laid-out token. False when it is not a hard word at this level.
   bool evaluate(const char* word, size_t length, bool sentenceInitial, Decision& out);
 
   bool glossFor(const char* word, size_t length, bool sentenceInitial, WordLensGloss& out) override;
+  bool keepEmptyStrips() const override { return keepEmptyStrips_; }
 
   // The pack entry of a token, with no hard-word rules: for a word the layout already chose.
   bool lookupEntry(const char* word, size_t length, Decision& out);
@@ -50,6 +51,7 @@ class WordLensGlosser final : public WordLensGlossSource {
   bool englishSource_ = false;
   // Proper nouns: German capitalises every noun, so the rule is off for it.
   bool capitalsMarkNames_ = true;
+  bool keepEmptyStrips_ = true;
   // Scratch for one decision, kept here rather than on the stack: a decision runs inside the
   // section build on the reader task, and together these are ~1.8 KB.
   char key_[LOOKUP_KEY_MAX_BYTES + 1] = {};

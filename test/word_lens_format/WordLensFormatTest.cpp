@@ -11,6 +11,8 @@
 #include <string>
 #include <vector>
 
+#include "Epub/ReaderRenderSpec.h"
+#include "modules/lingua/services/LinguaCacheKey.h"
 #include "modules/lingua/wordlens/GlossClean.h"
 #include "modules/lingua/wordlens/LensBuilder.h"
 #include "modules/lingua/wordlens/LensFormat.h"
@@ -442,8 +444,93 @@ TEST(LensBuilder, Cancels) {
   EXPECT_EQ(buildLensFromJson(fs, json.c_str(), (dir + "/o.lens").c_str(), options), LensBuildStatus::Cancelled);
 }
 
+TEST(LensBuilder, StepsReportProgressAndMatchTheWholeBuild) {
+  const std::string dir = tempDir();
+  const std::string out = dir + "/out.lens";
+  StdioFs fs;
+  LensBuildOptions options;
+  options.workDir = dir.c_str();
+  options.partitionLog2 = 3;
+  options.writeBufferBytes = 16;
+  const std::string json = fixture("mini-en-ru.json");
+  LensConverter converter;
+  ASSERT_EQ(converter.begin(fs, json.c_str(), out.c_str(), options), LensBuildStatus::Ok);
+  int steps = 0;
+  uint8_t last = 0;
+  while (!converter.done()) {
+    ASSERT_EQ(converter.step(), LensBuildStatus::Ok);
+    EXPECT_GE(converter.percent(), last);
+    last = converter.percent();
+    ASSERT_LT(++steps, 10000);
+  }
+  EXPECT_EQ(converter.percent(), 100);
+  EXPECT_GT(steps, 8);  // at least one step per partition and pass
+  EXPECT_TRUE(readFile(out) == readLensFixture("mini-en-ru.lens"));
+  std::remove(out.c_str());
+}
+
+TEST(LensBuilder, AbortMidwayLeavesNothingBehind) {
+  for (int stopAfter = 0; stopAfter < 40; stopAfter += 3) {
+    const std::string dir = tempDir();
+    const std::string out = dir + "/out.lens";
+    StdioFs fs;
+    LensBuildOptions options;
+    options.workDir = dir.c_str();
+    options.partitionLog2 = 2;
+    const std::string json = fixture("mini-en-ru.json");
+    {
+      LensConverter converter;
+      ASSERT_EQ(converter.begin(fs, json.c_str(), out.c_str(), options), LensBuildStatus::Ok);
+      for (int i = 0; i < stopAfter && !converter.done(); i++) ASSERT_EQ(converter.step(), LensBuildStatus::Ok);
+      if (converter.done()) break;
+      converter.abort();
+      EXPECT_EQ(converter.step(), LensBuildStatus::BadPack);  // over; no more work
+    }
+    const std::string listing = "test -z \"$(ls -A '" + dir + "')\"";
+    EXPECT_EQ(std::system(listing.c_str()), 0) << "stopped after " << stopAfter;
+  }
+}
+
 TEST(LensBuilder, PartitionRecommendation) {
   EXPECT_EQ(recommendedPartitionLog2(100 * 1024), 3);
   EXPECT_EQ(recommendedPartitionLog2(1300 * 1024), 7);
   EXPECT_EQ(recommendedPartitionLog2(800 * 1024), 6);
+}
+
+// ── Section cache key ────────────────────────────────────────────────────────
+
+TEST(WordLensCacheKey, ChangesWithThePackAndTheLevel) {
+  const uint32_t base = wordLensCacheKey(0x12345678u, 2);
+  EXPECT_NE(base, 0u);
+  EXPECT_NE(wordLensCacheKey(0x12345679u, 2), base);                             // another pack (or a rebuilt one)
+  EXPECT_NE(wordLensCacheKey(0x12345678u, 3), base);                             // another level
+  EXPECT_NE(wordLensCacheKey(0x12345678u, 2, /*keepEmptyStrips=*/false), base);  // hidden empty strips
+  EXPECT_EQ(wordLensCacheKey(0x12345678u, 2), base);                             // and nothing else moves it
+  for (uint8_t a = 0; a < LEVEL_COUNT; a++)
+    for (uint8_t b = a + 1; b < LEVEL_COUNT; b++) EXPECT_NE(wordLensCacheKey(7, a), wordLensCacheKey(7, b));
+}
+
+TEST(WordLensCacheKey, KeyedOnlyUnderTheWordLensLayout) {
+  EXPECT_EQ(lingua::keyedWordLensKey(42, LinguaLayout::WordLens), 42u);
+  for (const auto layout : {LinguaLayout::Both, LinguaLayout::OriginalOnly, LinguaLayout::TranslationOnly,
+                            LinguaLayout::SideBySide, LinguaLayout::Interlinear}) {
+    EXPECT_EQ(lingua::keyedWordLensKey(42, layout), 0u);
+  }
+  // The strip face is an annotation font: keyed under Word Lens as under Interlinear.
+  EXPECT_EQ(lingua::keyedAnnotationFontId(5, LinguaLayout::WordLens), 5);
+  EXPECT_EQ(lingua::keyedAnnotationFontId(5, LinguaLayout::OriginalOnly), 0);
+}
+
+TEST(WordLensCacheKey, RenderSpecsWithAnotherKeyDoNotShareASection) {
+  ReaderRenderSpec a;
+  a.linguaLayout = LinguaLayout::WordLens;
+  a.wordLensKey = wordLensCacheKey(1, 2);
+  ReaderRenderSpec b = a;
+  EXPECT_TRUE(a.layoutEquals(b));
+  b.wordLensKey = wordLensCacheKey(1, 3);
+  EXPECT_FALSE(a.layoutEquals(b));
+  // The gloss source is not a key: the key already says which pack and level it answers for.
+  b = a;
+  b.wordLensSource = reinterpret_cast<WordLensGlossSource*>(0x1);
+  EXPECT_TRUE(a.layoutEquals(b));
 }

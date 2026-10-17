@@ -4,12 +4,14 @@
 #include <Epub/PageFontSet.h>
 #include <Epub/Section.h>
 #include <FontCacheManager.h>
+#include <I18n.h>
 
 #include <cstdint>
 #include <optional>
 #include <string>
 
 #include "modules/lingua/modes/LinguaModeRegistry.h"
+#include "modules/lingua/modes/word_lens/WordLensReader.h"
 
 class MappedInputManager;
 
@@ -17,7 +19,8 @@ class MappedInputManager;
 // EpubReaderActivity translates the returned intent into its native page-turn/render operations.
 class LinguaReaderIntegration {
  public:
-  enum class InputAction : uint8_t { None, Consumed, Render, PageBack, PageForward };
+  // OpenDefinition: Word Lens looked a word up; takeWordLensDefinition() has the result.
+  enum class InputAction : uint8_t { None, Consumed, Render, PageBack, PageForward, OpenDefinition };
 
   InputAction handleInput(MappedInputManager& input, bool hasSection);
   static void configureRenderer(GfxRenderer& renderer);
@@ -42,6 +45,7 @@ class LinguaReaderIntegration {
   void onReaderExit();
 
   bool pageTranslationActive() const { return modes_.pageTranslation().active(); }
+  WordLensReader::Definition takeWordLensDefinition() { return wordLens_.takeDefinition(); }
   bool fallbackDialogActive() const { return fallbackDialogActive_; }
 
  private:
@@ -50,9 +54,13 @@ class LinguaReaderIntegration {
   InputAction handleTooltipInput(MappedInputManager& input, bool hasSection);
   InputAction handlePageTranslationInput(MappedInputManager& input, bool hasSection);
   InputAction handleInterlinearInput(MappedInputManager& input, bool hasSection);
+  InputAction handleWordLensInput(MappedInputManager& input, bool hasSection);
+  // Whether the active mode's annotation rows are shown (its long-press hide toggle).
+  bool annotationRowsVisible() const;
   void clearOverlayPrewarm();
 
   LinguaModeRegistry modes_;
+  WordLensReader wordLens_;
 
   std::optional<FontCacheManager::PrewarmScope> overlayPrewarm_;
   int overlayPrewarmSpine_ = -1;
@@ -68,4 +76,8 @@ class LinguaReaderIntegration {
   bool fallbackDialogDrawn_ = false;
   bool showNoTranslationsToast_ = false;
   unsigned long noTranslationsToastTime_ = 0;
+  // Which message the toast above shows: Page Translation's "no translations for this page", or
+  // Word Lens's "no gloss pack for this book" (shown once per book).
+  StrId toastMessage_ = StrId::STR_NO_TRANSLATIONS_FOR_PAGE;
+  bool wordLensNoPackNotified_ = false;
 };

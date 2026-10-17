@@ -42,4 +42,10 @@ enum class LinguaLayout : uint8_t {
   // body pitch and nothing else. It does NOT degrade with short-sentence prose, because no sentence
   // ends its line early.
   Interlinear = 4,
+  // Word Lens: the source flows exactly as under OriginalOnly (translated words, if the chapter has
+  // any, are dropped) and every source line gets one annotation strip above it carrying short
+  // glosses of its hard words, each centred over its word (renderWordLens). Needs no translation:
+  // the glosses come from a per-language-pair pack, so unlike the layouts above it never degrades
+  // to Both on an untranslated chapter. The pack and the reader level are part of the cache key.
+  WordLens = 5,
 };

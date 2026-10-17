@@ -2439,6 +2439,10 @@ void ChapterHtmlSlimParser::makePages(const bool includeLastLine) {
     LOG_ERR("EHP", "!! No text block to make pages for !!");
     return;
   }
+  if (linguaLayout == LinguaLayout::WordLens && wordLensSource) {  // Lingua
+    makePagesWordLens(includeLastLine);
+    return;
+  }
 
   // Latch before layout: startNewTextBlock() replaces the block right after
   // this returns, which would otherwise lose its dropped-words flag before

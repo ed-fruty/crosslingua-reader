@@ -197,8 +197,9 @@ bool glossMentionsWord(const char* gloss, const char* word) {
   return false;
 }
 
-void WordLensGlosser::configure(LensReader* reader, const uint8_t level) {
+void WordLensGlosser::configure(LensReader* reader, const uint8_t level, const bool keepEmptyStrips) {
   reader_ = reader;
+  keepEmptyStrips_ = keepEmptyStrips;
   cutoff_ = 0;
   englishSource_ = false;
   capitalsMarkNames_ = true;

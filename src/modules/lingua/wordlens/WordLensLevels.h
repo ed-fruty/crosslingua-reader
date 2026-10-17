@@ -35,13 +35,16 @@ constexpr bool isDifficult(const uint16_t rank, const uint16_t cutoff) {
   return rank >= cutoff && rank >= MIN_GLOSS_RANK;
 }
 
-// Section cache key of a pack (its content hash) read at `level`: never 0, which means "no pack".
-constexpr uint32_t wordLensCacheKey(const uint32_t contentHash, const uint8_t level) {
-  const uint8_t bytes[6] = {static_cast<uint8_t>(contentHash),
+// Section cache key of a pack (its content hash) read at `level`, with or without blank strips over
+// lines that have no hard word: never 0, which means "no pack".
+constexpr uint32_t wordLensCacheKey(const uint32_t contentHash, const uint8_t level,
+                                    const bool keepEmptyStrips = true) {
+  const uint8_t bytes[7] = {static_cast<uint8_t>(contentHash),
                             static_cast<uint8_t>(contentHash >> 8),
                             static_cast<uint8_t>(contentHash >> 16),
                             static_cast<uint8_t>(contentHash >> 24),
                             level,
+                            static_cast<uint8_t>(keepEmptyStrips ? 1 : 0),
                             'W'};
   const uint32_t key = fnv1a32(bytes, sizeof(bytes));
   return key != 0 ? key : 1;

@@ -9,6 +9,7 @@
 #include "components/WrappedPopup.h"
 #include "fontIds.h"
 #include "modules/lingua/parsers/TranslationPairWalker.h"
+#include "modules/lingua/wordlens/WordLensService.h"
 
 namespace {
 // Interlinear annotation visibility as the reader last drew it (pageFontSet()). The upstream
@@ -37,6 +38,9 @@ LinguaReaderIntegration::InputAction LinguaReaderIntegration::handleInput(Mapped
   action = handleFallbackDialog(input);
   if (action != InputAction::None) return action;
 
+  action = handleWordLensInput(input, hasSection);
+  if (action != InputAction::None) return action;
+
   action = handleTooltipInput(input, hasSection);
   if (action != InputAction::None) return action;
 
@@ -63,6 +67,28 @@ LinguaReaderIntegration::InputAction LinguaReaderIntegration::handleFallbackDial
     return InputAction::Render;
   }
   return InputAction::Consumed;
+}
+
+LinguaReaderIntegration::InputAction LinguaReaderIntegration::handleWordLensInput(MappedInputManager& input,
+                                                                                  const bool hasSection) {
+  const WordLensReader::Action action = wordLens_.handleInput(input, hasSection);
+  // A long press may have toggled the strips; upstream's PageFontSet resolver reads this too.
+  readerAnnotationsVisible = annotationRowsVisible();
+  switch (action) {
+    case WordLensReader::Action::None:
+      return InputAction::None;
+    case WordLensReader::Action::Consumed:
+      return InputAction::Consumed;
+    case WordLensReader::Action::Render:
+      return InputAction::Render;
+    case WordLensReader::Action::PageBack:
+      return InputAction::PageBack;
+    case WordLensReader::Action::PageForward:
+      return InputAction::PageForward;
+    case WordLensReader::Action::OpenDefinition:
+      return InputAction::OpenDefinition;
+  }
+  return InputAction::None;
 }
 
 LinguaReaderIntegration::InputAction LinguaReaderIntegration::handleTooltipInput(MappedInputManager& input,
@@ -138,8 +164,16 @@ LinguaReaderIntegration::InputAction LinguaReaderIntegration::handleInterlinearI
   return InputAction::None;
 }
 
+bool LinguaReaderIntegration::annotationRowsVisible() const {
+  // Each mode with annotation rows has its own long-press hide toggle; the two never share state.
+  const auto mode = SETTINGS.translationDisplayMode;
+  if (mode == CrossPointSettings::LINGUA_INTERLINEAR) return modes_.interlinear().translationVisible();
+  if (mode == CrossPointSettings::LINGUA_WORD_LENS) return wordLens_.stripsVisible();
+  return true;
+}
+
 PageFontSet LinguaReaderIntegration::pageFontSet() const {
-  readerAnnotationsVisible = modes_.interlinear().translationVisible();
+  readerAnnotationsVisible = annotationRowsVisible();
   return resolvePageFontSet(readerAnnotationsVisible);
 }
 
@@ -171,6 +205,7 @@ void LinguaReaderIntegration::renderOverlay(GfxRenderer& renderer, const Page& p
                                     viewportWidth, viewportHeight);
     if (!modes_.pageTranslation().active()) {
       showNoTranslationsToast_ = true;
+      toastMessage_ = StrId::STR_NO_TRANSLATIONS_FOR_PAGE;
       noTranslationsToastTime_ = millis();
     }
   }
@@ -178,6 +213,7 @@ void LinguaReaderIntegration::renderOverlay(GfxRenderer& renderer, const Page& p
     modes_.tooltip().render(renderer, page, bodyFont, getTooltipFontId(), xOffset, yOffset, viewportWidth,
                             viewportHeight);
   }
+  wordLens_.renderOverlay(renderer, page, xOffset, yOffset);
 }
 
 void LinguaReaderIntegration::onDisplayModeChanged() {
@@ -186,6 +222,7 @@ void LinguaReaderIntegration::onDisplayModeChanged() {
   // overlays, so an open tooltip or translation panel would survive into the new mode.
   modes_.pageTranslation().onPageChanged();
   modes_.tooltip().onPageChanged();
+  wordLens_.onPageChanged();
   clearOverlayPrewarm();
 }
 
@@ -231,14 +268,31 @@ bool LinguaReaderIntegration::prepareOverlayFonts(GfxRenderer& renderer, const P
 
 void LinguaReaderIntegration::drawTransientUi(GfxRenderer& renderer) const {
   if (showNoTranslationsToast_) {
-    drawWrappedPopup(renderer, tr(STR_NO_TRANSLATIONS_FOR_PAGE));
+    drawWrappedPopup(renderer, I18N.get(toastMessage_));
   }
+  wordLens_.drawTransientUi(renderer);
 }
 
 bool LinguaReaderIntegration::prepareSection(Section& section) {
-  if (SETTINGS.translationDisplayMode == CrossPointSettings::LINGUA_NORMAL) return false;
+  // No section is building here (the reader is about to create one), the one moment the Word Lens
+  // pack may be opened or closed. A changed pack or level changes the render spec.
+  auto& wordLens = lingua::wordlens::WordLensService::instance();
+  const bool wordLensChanged = wordLens.sync(section.linguaBookLanguage());
+  if (SETTINGS.translationDisplayMode == CrossPointSettings::LINGUA_WORD_LENS) {
+    // Word Lens needs a pack, not a translation. Without one the chapter is shown plain, and the
+    // reader is told once per book where to get it.
+    const auto state = wordLens.state();
+    if (state != lingua::wordlens::WordLensService::State::Ready && !wordLensNoPackNotified_) {
+      wordLensNoPackNotified_ = true;
+      showNoTranslationsToast_ = true;
+      toastMessage_ = StrId::STR_WORD_LENS_NO_PACK_FOR_BOOK;
+      noTranslationsToastTime_ = millis();
+    }
+    return wordLensChanged;
+  }
+  if (SETTINGS.translationDisplayMode == CrossPointSettings::LINGUA_NORMAL) return wordLensChanged;
   if (!section.isTranslationPresenceKnown()) section.resolveTranslationPresence();
-  if (section.hasTranslation() || section.isTextless()) return false;
+  if (section.hasTranslation() || section.isTextless()) return wordLensChanged;
 
   SETTINGS.translationDisplayMode = CrossPointSettings::LINGUA_NORMAL;
   SETTINGS.saveToFile();
@@ -272,6 +326,7 @@ void LinguaReaderIntegration::drawFallbackDialog(GfxRenderer& renderer, const Ma
 void LinguaReaderIntegration::onPageChanged() {
   modes_.pageTranslation().onPageChanged();
   modes_.tooltip().onPageChanged();
+  wordLens_.onPageChanged();
   clearOverlayPrewarm();
 }
 
@@ -308,6 +363,9 @@ void LinguaReaderIntegration::buildPairCacheIfNeeded() {
 void LinguaReaderIntegration::onReaderExit() {
   readerAnnotationsVisible = true;
   clearOverlayPrewarm();
+  wordLens_.onReaderExit();
+  lingua::wordlens::WordLensService::instance().close();
+  wordLensNoPackNotified_ = false;
   modes_.pageTranslation().onSectionChanged();
   modes_.tooltip().onPageChanged();
   translationSourcePath_.clear();

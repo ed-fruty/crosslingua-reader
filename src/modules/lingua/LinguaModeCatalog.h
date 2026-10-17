@@ -18,12 +18,14 @@
 // LINGUA_MODE never move, so reordering here cannot change what an existing setting means.
 //
 // Interlinear sits second, right after Normal, because it is the mode that reads like a book with
-// help rather than a two-language document; Interleaved is the heavier of the two and sits last.
+// help rather than a two-language document, and Word Lens -- help without any translation -- follows
+// it; Interleaved is the heavier of the two and sits last.
 inline constexpr CrossPointSettings::LINGUA_MODE LINGUA_SELECTABLE_MODES[] = {
-    CrossPointSettings::LINGUA_NORMAL,           CrossPointSettings::LINGUA_INTERLINEAR,
-    CrossPointSettings::LINGUA_SIDE_BY_SIDE,     CrossPointSettings::LINGUA_ORIGINAL_ONLY,
-    CrossPointSettings::LINGUA_TRANSLATION_ONLY, CrossPointSettings::LINGUA_TOOLTIP,
-    CrossPointSettings::LINGUA_PAGE_TRANSLATION, CrossPointSettings::LINGUA_INTERLEAVED,
+    CrossPointSettings::LINGUA_NORMAL,        CrossPointSettings::LINGUA_INTERLINEAR,
+    CrossPointSettings::LINGUA_WORD_LENS,     CrossPointSettings::LINGUA_SIDE_BY_SIDE,
+    CrossPointSettings::LINGUA_ORIGINAL_ONLY, CrossPointSettings::LINGUA_TRANSLATION_ONLY,
+    CrossPointSettings::LINGUA_TOOLTIP,       CrossPointSettings::LINGUA_PAGE_TRANSLATION,
+    CrossPointSettings::LINGUA_INTERLEAVED,
 };
 
 inline constexpr size_t LINGUA_SELECTABLE_MODE_COUNT =
@@ -55,6 +57,8 @@ constexpr StrId linguaModeLabel(const CrossPointSettings::LINGUA_MODE mode) {
       return StrId::STR_PT_PAGE_TRANSLATION;
     case CrossPointSettings::LINGUA_INTERLINEAR:
       return StrId::STR_PT_INTERLINEAR;
+    case CrossPointSettings::LINGUA_WORD_LENS:
+      return StrId::STR_PT_WORD_LENS;
     // Retired holes. Unreachable through the UI (never selectable) and unreachable from settings
     // (fromJson migrates them away), but labelled so the switch stays exhaustive without a
     // `default:`. The strings are the ones those modes used to show.

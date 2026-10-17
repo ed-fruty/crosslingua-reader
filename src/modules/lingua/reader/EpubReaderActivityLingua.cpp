@@ -8,10 +8,12 @@
 #include "CrossPointSettings.h"
 #include "activities/ActivityManager.h"
 #include "activities/ActivityResult.h"
+#include "activities/reader/DictionaryDefinitionActivity.h"
 #include "activities/reader/EpubReaderActivity.h"
 #include "modules/lingua/activities/BookTranslationActivity.h"
 #include "modules/lingua/activities/ChapterTranslationActivity.h"
 #include "modules/lingua/activities/LinguaSubmenuActivity.h"
+#include "modules/lingua/activities/WordLensPacksActivity.h"
 
 // Overlay-specific input state lives in LinguaReaderIntegration; returns true
 // when Lingua consumed this loop tick.
@@ -28,6 +30,14 @@ bool EpubReaderActivity::handleLinguaInput() {
     case LinguaReaderIntegration::InputAction::PageForward:
       if (pageTurn(true)) requestUpdate();
       return true;
+    case LinguaReaderIntegration::InputAction::OpenDefinition: {
+      auto definition = lingua.takeWordLensDefinition();
+      startActivityForResult(
+          std::make_unique<DictionaryDefinitionActivity>(renderer, mappedInput, std::move(definition.headword),
+                                                         std::move(definition.text), definition.html),
+          [this](const ActivityResult&) { requestUpdate(); });
+      return true;
+    }
     case LinguaReaderIntegration::InputAction::None:
       break;
   }
@@ -55,7 +65,8 @@ void EpubReaderActivity::openLinguaMenu() {
         LinguaResult translation = LinguaResult::NONE;
         if (const auto* menu = std::get_if<MenuResult>(&result.data)) {
           if (menu->action == static_cast<int>(LinguaResult::TRANSLATE_CHAPTER) ||
-              menu->action == static_cast<int>(LinguaResult::TRANSLATE_BOOK)) {
+              menu->action == static_cast<int>(LinguaResult::TRANSLATE_BOOK) ||
+              menu->action == static_cast<int>(LinguaResult::MANAGE_WORD_LENS_PACKS)) {
             translation = static_cast<LinguaResult>(menu->action);
           }
         }
@@ -93,14 +104,20 @@ void EpubReaderActivity::launchTranslation(const LinguaResult kind) {
     return;
   }
 
-  lingua.onReaderExit();
+  // The book language decides which pack the manager offers first; read it before the Epub goes.
+  const std::string bookLanguage = epub->getLanguage();
   {
     RenderLock lock;
     ImageBlock::setExtractor(nullptr, nullptr);
     section.reset();
+    // After the section: a build in progress holds the Word Lens pack this closes.
+    lingua.onReaderExit();
     epub.reset();
   }
-  if (kind == LinguaResult::TRANSLATE_BOOK) {
+  if (kind == LinguaResult::MANAGE_WORD_LENS_PACKS) {
+    activityManager.replaceActivity(
+        std::make_unique<WordLensPacksActivity>(renderer, mappedInput, epubPath, bookLanguage));
+  } else if (kind == LinguaResult::TRANSLATE_BOOK) {
     activityManager.replaceActivity(std::make_unique<BookTranslationActivity>(renderer, mappedInput, epubPath));
   } else {
     activityManager.replaceActivity(std::make_unique<ChapterTranslationActivity>(

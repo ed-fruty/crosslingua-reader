@@ -22,6 +22,8 @@ enum class LinguaResult : uint8_t {
   NONE = 0,
   TRANSLATE_CHAPTER = 1,
   TRANSLATE_BOOK = 2,
+  // Word Lens pack download / delete. Leaves the reader for the same heap reason as translation.
+  MANAGE_WORD_LENS_PACKS = 3,
 };
 
 /**
@@ -76,6 +78,15 @@ class LinguaSubmenuActivity final : public UiListActivity {
     // above: its stored field is an absolute point size (INTERLINEAR_ANNOTATION_SIZE), not a
     // relation to the body text, so it neither shares their value space nor their availability rule.
     CYCLE_INTERLINEAR_SIZE,
+    // Word Lens (LINGUA_WORD_LENS). Its strip colour and size are the two Interlinear rows above;
+    // these are its own (the hint language is chosen apart from the translator's target).
+    CYCLE_WORD_LENS_LEVEL,
+    PICK_WORD_LENS_HINT,
+    MANAGE_WORD_LENS_PACKS,
+    CYCLE_WORD_LENS_PAGE_BUTTONS,
+    CYCLE_WORD_LENS_NAVIGATION,
+    CYCLE_WORD_LENS_EMPTY_STRIPS,
+    CYCLE_WORD_LENS_TOGGLE_LONG_PRESS,
   };
 
   explicit LinguaSubmenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::shared_ptr<Epub> epub,
@@ -108,6 +119,11 @@ class LinguaSubmenuActivity final : public UiListActivity {
   // never holds both at once.
   char shadeLabelText[64]{};
   OptionPopup optionPopup;
+  // The Word Lens hint languages the open popup offers, after its "Automatic" row.
+  struct HintCode {
+    char code[8];
+  };
+  std::vector<HintCode> hintCodes;
   // Same press-to-close / release-to-swallow bridge as EpubReaderMenuActivity.
   bool popupClosing = false;
 
@@ -181,6 +197,8 @@ class LinguaSubmenuActivity final : public UiListActivity {
   // Value label for Interlinear's Size row. Not translationSizeLabel(): different value space, and
   // the point sizes are unit-suffixed numerals rather than translated words.
   const char* interlinearSizeLabel() const;
+  // Value label of the Gloss Pack row: whether the pack for this book's language is on the card.
+  const char* wordLensPackLabel() const;
   // Writes a masked representation of the API key into `out`.
   void maskedApiKey(char* out, size_t outSize) const;
 

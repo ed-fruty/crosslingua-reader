@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #include "modules/lingua/layout/LinguaLayout.h"
 
 // Section-cache key normalization for the Lingua font ids (section.bin header, see Section.cpp).
@@ -33,14 +35,21 @@ constexpr int keyedTranslationFontId(const int translationFontId, const LinguaLa
   return effectiveLayout == LinguaLayout::Both ? translationFontId : 0;
 }
 
-// Same rule, same reasoning, for the annotation font: it only reaches a page under the ONE layout
-// that emits LineFontRole::Annotation rows (Interlinear), where it decides both the row's wrap and
-// its pitch. Under every other layout no line is measured in it, so stamping the real id there would
+// Same rule, same reasoning, for the annotation font: it only reaches a page under the two layouts
+// that emit LineFontRole::Annotation rows (Interlinear, Word Lens), where it decides both the row's
+// wrap and its pitch. Under every other layout no line is measured in it, so stamping the real id there would
 // let a future annotation-size row invalidate every cached chapter of a mode that draws no
 // annotations at all. Applied in all three places the translation one is -- the header write, the
 // lookup compare and the id handed to the parser -- so the key and the layout can never disagree.
 constexpr int keyedAnnotationFontId(const int annotationFontId, const LinguaLayout effectiveLayout) {
-  return effectiveLayout == LinguaLayout::Interlinear ? annotationFontId : 0;
+  return (effectiveLayout == LinguaLayout::Interlinear || effectiveLayout == LinguaLayout::WordLens) ? annotationFontId
+                                                                                                     : 0;
+}
+
+// The Word Lens key (pack identity + reader level, see WordLensService::cacheKey) shapes pages only
+// under the Word Lens layout, so every other layout keys 0 for it.
+constexpr uint32_t keyedWordLensKey(const uint32_t wordLensKey, const LinguaLayout effectiveLayout) {
+  return effectiveLayout == LinguaLayout::WordLens ? wordLensKey : 0;
 }
 
 }  // namespace lingua

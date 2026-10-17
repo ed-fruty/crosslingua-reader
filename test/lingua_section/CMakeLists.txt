@@ -22,6 +22,9 @@ add_executable(LinguaSectionTest
   ${REPO_ROOT}/src/modules/lingua/layout/ParsedTextLingua.cpp
   ${REPO_ROOT}/src/modules/lingua/modes/interlinear/InterlinearLayout.cpp
   ${REPO_ROOT}/src/modules/lingua/modes/side_by_side/SideBySideLayout.cpp
+  ${REPO_ROOT}/src/modules/lingua/modes/word_lens/WordLensLayout.cpp
+  ${REPO_ROOT}/src/modules/lingua/modes/word_lens/WordLensStrip.cpp
+  ${REPO_ROOT}/src/modules/lingua/wordlens/LensText.cpp
 )
 
 target_include_directories(LinguaSectionTest PRIVATE

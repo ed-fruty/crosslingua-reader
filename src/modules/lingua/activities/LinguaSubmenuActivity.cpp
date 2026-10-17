@@ -23,6 +23,8 @@
 #include "modules/lingua/activities/LanguagePickerActivity.h"
 #include "modules/lingua/engines/ParagraphTranslator.h"  // ParagraphTranslator::engineNeedsApiKey()
 #include "modules/lingua/services/TranslatedContentDetector.h"
+#include "modules/lingua/wordlens/WordLensLevels.h"
+#include "modules/lingua/wordlens/WordLensService.h"
 
 namespace fui = freeink::ui;
 
@@ -175,6 +177,21 @@ void LinguaSubmenuActivity::appendModeChildren() {
       child(Action::CYCLE_INTERLINEAR_TOGGLE_LONG_PRESS, StrId::STR_TOGGLE_BY_LONGPRESS);
       child(Action::CYCLE_INTERLINEAR_TOGGLE_BUTTONS, StrId::STR_TOGGLE_BUTTONS);
       return;
+    case CrossPointSettings::LINGUA_WORD_LENS:
+      // Pack and level first: they decide which words are glossed at all. The hint language lists
+      // only languages with a pack for the book, and the book language row only exists for a book
+      // that does not declare one. Colour and size are Interlinear's (the strip is an annotation row).
+      child(Action::MANAGE_WORD_LENS_PACKS, StrId::STR_WORD_LENS_PACK);
+      child(Action::CYCLE_WORD_LENS_LEVEL, StrId::STR_WORD_LENS_LEVEL);
+      child(Action::PICK_WORD_LENS_HINT, StrId::STR_WORD_LENS_HINT_LANGUAGE);
+      if (epub && epub->getLanguage().empty()) child(Action::PICK_SOURCE_LANG, StrId::STR_WORD_LENS_BOOK_LANGUAGE);
+      child(Action::CYCLE_INTERLINEAR_COLOUR, StrId::STR_TRANSLATION_COLOUR);
+      child(Action::CYCLE_INTERLINEAR_SIZE, StrId::STR_TRANSLATION_SIZE);
+      child(Action::CYCLE_WORD_LENS_EMPTY_STRIPS, StrId::STR_WORD_LENS_EMPTY_STRIPS);
+      child(Action::CYCLE_WORD_LENS_PAGE_BUTTONS, StrId::STR_WORD_LENS_PAGE_BUTTONS);
+      child(Action::CYCLE_WORD_LENS_NAVIGATION, StrId::STR_WORD_LENS_AT_LAST_WORD);
+      child(Action::CYCLE_WORD_LENS_TOGGLE_LONG_PRESS, StrId::STR_TOGGLE_BY_LONGPRESS);
+      return;
     // No sub-settings. Normal is NOT "no translated text": it maps to LinguaLayout::Both exactly as
     // Interleaved does, so its pages are byte-identical and do carry the translation inline. What
     // makes it Normal is the gray level -- InterleavedMode::translatedWordInk() hands the renderer 0 for every
@@ -261,8 +278,10 @@ void LinguaSubmenuActivity::onActionSelected(Action a) {
       optionPopup.show(StrId::STR_DISPLAY_MODE, modeLabels, static_cast<int>(LINGUA_SELECTABLE_MODE_COUNT),
                        static_cast<int>(linguaSelectableIndex(SETTINGS.translationDisplayMode)), [this](int idx) {
                          const uint8_t newMode = static_cast<uint8_t>(LINGUA_SELECTABLE_MODES[idx]);
-                         // A bilingual mode with no translation would render an empty page.
-                         if (newMode != CrossPointSettings::LINGUA_NORMAL && !chapterHasTranslation) {
+                         // A bilingual mode with no translation would render an empty page. Word Lens
+                         // glosses from a pack and needs no translation.
+                         if (newMode != CrossPointSettings::LINGUA_NORMAL &&
+                             newMode != CrossPointSettings::LINGUA_WORD_LENS && !chapterHasTranslation) {
                            showToast(tr(STR_NO_TRANSLATION_SWITCH_NORMAL), DEFAULT_TOAST_MS);
                            return;
                          }
@@ -461,6 +480,86 @@ void LinguaSubmenuActivity::onActionSelected(Action a) {
       requestUpdate();
       return;
 
+    case Action::CYCLE_WORD_LENS_LEVEL:
+      // A LAYOUT input: the reader's result handler re-lays the chapter out on the layoutEquals()
+      // comparison (the level is part of the Word Lens cache key).
+      SETTINGS.wordLensLevel = static_cast<uint8_t>((SETTINGS.wordLensLevel + 1) % lingua::wordlens::LEVEL_COUNT);
+      SETTINGS.saveToFile();
+      requestUpdate();
+      return;
+
+    case Action::PICK_WORD_LENS_HINT: {
+      // Only languages with a pack for this book's language, so every choice can gloss it. A LAYOUT
+      // input through the Word Lens cache key; the translator's own target is left alone.
+      auto& wordLens = lingua::wordlens::WordLensService::instance();
+      lingua::wordlens::WordLensService::LanguageCode targets[lingua::wordlens::WordLensService::MAX_TARGETS];
+      const size_t count = lingua::wordlens::WordLensService::availableTargets(
+          wordLens.wantedSource(), targets, lingua::wordlens::WordLensService::MAX_TARGETS);
+      hintCodes.clear();
+      hintCodes.reserve(count);
+      for (size_t i = 0; i < count; i++) {
+        HintCode h;
+        std::memcpy(h.code, targets[i], sizeof(h.code));
+        hintCodes.push_back(h);
+      }
+      std::vector<std::string> labels;
+      labels.reserve(count + 1);
+      labels.push_back(std::string(tr(STR_WORD_LENS_HINT_AUTO)));
+      int current = 0;
+      for (size_t i = 0; i < count; i++) {
+        labels.push_back(lingua::wordlens::WordLensService::languageName(targets[i]));
+        if (std::strcmp(targets[i], SETTINGS.wordLensHint) == 0) current = static_cast<int>(i + 1);
+      }
+      optionPopup.show(StrId::STR_WORD_LENS_HINT_LANGUAGE, labels, current, [this](const int idx) {
+        const char* code = idx > 0 && idx <= static_cast<int>(hintCodes.size()) ? hintCodes[idx - 1].code : "";
+        if (std::strcmp(SETTINGS.wordLensHint, code) != 0) {
+          std::snprintf(SETTINGS.wordLensHint, sizeof(SETTINGS.wordLensHint), "%s", code);
+          SETTINGS.saveToFile();
+        }
+        requestUpdate();
+      });
+      requestUpdate();
+      return;
+    }
+
+    case Action::MANAGE_WORD_LENS_PACKS: {
+      if (!epub) return;
+      // Like translation, the download runs after the reader has released the book (TLS heap).
+      ActivityResult result;
+      result.data = MenuResult{static_cast<int>(LinguaResult::MANAGE_WORD_LENS_PACKS)};
+      setResult(std::move(result));
+      finish();
+      return;
+    }
+
+    case Action::CYCLE_WORD_LENS_PAGE_BUTTONS:
+      SETTINGS.wordLensPageButtons =
+          static_cast<uint8_t>((SETTINGS.wordLensPageButtons + 1) % CrossPointSettings::OVERLAY_BUTTONS_COUNT);
+      SETTINGS.saveToFile();
+      requestUpdate();
+      return;
+
+    case Action::CYCLE_WORD_LENS_EMPTY_STRIPS:
+      // A LAYOUT input like the level: part of the Word Lens cache key, so the chapter re-lays out.
+      SETTINGS.wordLensEmptyStrips =
+          static_cast<uint8_t>((SETTINGS.wordLensEmptyStrips + 1) % CrossPointSettings::WORD_LENS_EMPTY_STRIPS_COUNT);
+      SETTINGS.saveToFile();
+      requestUpdate();
+      return;
+
+    case Action::CYCLE_WORD_LENS_TOGGLE_LONG_PRESS:
+      SETTINGS.wordLensToggleByLongPress = SETTINGS.wordLensToggleByLongPress ? 0 : 1;
+      SETTINGS.saveToFile();
+      requestUpdate();
+      return;
+
+    case Action::CYCLE_WORD_LENS_NAVIGATION:
+      SETTINGS.wordLensNavigation =
+          static_cast<uint8_t>((SETTINGS.wordLensNavigation + 1) % CrossPointSettings::TOOLTIP_NAVIGATION_COUNT);
+      SETTINGS.saveToFile();
+      requestUpdate();
+      return;
+
     case Action::ENTER_API_KEY: {
       // Use the existing on-screen keyboard activity. Persist on confirm; ignore
       // on cancel. Password input mode masks the field while typing.
@@ -621,6 +720,21 @@ const char* LinguaSubmenuActivity::interlinearSizeLabel() const {
   return "8 pt";  // ANNOTATION_8PT, and the out-of-range answer
 }
 
+const char* LinguaSubmenuActivity::wordLensPackLabel() const {
+  switch (lingua::wordlens::WordLensService::instance().state()) {
+    case lingua::wordlens::WordLensService::State::Ready:
+      return I18N.get(StrId::STR_INSTALLED);
+    case lingua::wordlens::WordLensService::State::NoLanguage:
+      return I18N.get(StrId::STR_WORD_LENS_NO_BOOK_LANGUAGE);
+    case lingua::wordlens::WordLensService::State::OpenFailed:
+      return I18N.get(StrId::STR_WORD_LENS_UNREADABLE);
+    case lingua::wordlens::WordLensService::State::NotInstalled:
+    case lingua::wordlens::WordLensService::State::Inactive:
+      break;
+  }
+  return I18N.get(StrId::STR_WORD_LENS_NOT_INSTALLED);
+}
+
 const char* LinguaSubmenuActivity::engineLabel() const {
   // Positional: index == CrossPointSettings::TRANSLATION_ENGINE value. Append only.
   static const StrId labels[] = {
@@ -738,6 +852,24 @@ const char* LinguaSubmenuActivity::rowValue(const int index) {
       return translationSizeLabel(SETTINGS.pageTranslationSize);
     case Action::CYCLE_INTERLINEAR_SIZE:
       return interlinearSizeLabel();
+    case Action::CYCLE_WORD_LENS_LEVEL:
+      return lingua::wordlens::LEVEL_LABELS[lingua::wordlens::clampLevel(SETTINGS.wordLensLevel)];
+    case Action::MANAGE_WORD_LENS_PACKS:
+      return wordLensPackLabel();
+    case Action::PICK_WORD_LENS_HINT:
+      return lingua::wordlens::WordLensService::languageName(
+          lingua::wordlens::WordLensService::instance().wantedTarget());
+    case Action::CYCLE_WORD_LENS_PAGE_BUTTONS:
+      return overlayButtonsLabel(SETTINGS.wordLensPageButtons);
+    case Action::CYCLE_WORD_LENS_EMPTY_STRIPS:
+      return I18N.get(SETTINGS.wordLensEmptyStrips == CrossPointSettings::WORD_LENS_HIDE_EMPTY_STRIPS
+                          ? StrId::STR_WORD_LENS_HIDE
+                          : StrId::STR_WORD_LENS_KEEP);
+    case Action::CYCLE_WORD_LENS_TOGGLE_LONG_PRESS:
+      return I18N.get(SETTINGS.wordLensToggleByLongPress ? StrId::STR_ON : StrId::STR_OFF);
+    case Action::CYCLE_WORD_LENS_NAVIGATION:
+      return I18N.get(SETTINGS.wordLensNavigation == CrossPointSettings::TOOLTIP_NAV_TURN_PAGE ? StrId::STR_PAGE_TURN
+                                                                                               : StrId::STR_LOOP);
     case Action::PICK_TARGET_LANG:
       return targetLangLabel();
     case Action::PICK_SOURCE_LANG:

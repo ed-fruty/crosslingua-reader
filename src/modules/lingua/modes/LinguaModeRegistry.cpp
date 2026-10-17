@@ -16,6 +16,8 @@ LinguaLayout LinguaModeRegistry::layoutFor(const CrossPointSettings::LINGUA_MODE
       return InterleavedMode::layoutValue();
     case CrossPointSettings::LINGUA_INTERLINEAR:
       return InterlinearMode::layoutValue();
+    case CrossPointSettings::LINGUA_WORD_LENS:
+      return WordLensMode::layoutValue();
     case CrossPointSettings::LINGUA_LEGACY_DIMMED:
     case CrossPointSettings::LINGUA_LEGACY_DIMMED_LIGHT:
     case CrossPointSettings::LINGUA_NORMAL:
@@ -40,6 +42,8 @@ LinguaMode& LinguaModeRegistry::active() {
       return interleaved_;
     case CrossPointSettings::LINGUA_INTERLINEAR:
       return interlinear_;
+    case CrossPointSettings::LINGUA_WORD_LENS:
+      return wordLens_;
     case CrossPointSettings::LINGUA_LEGACY_DIMMED:
     case CrossPointSettings::LINGUA_LEGACY_DIMMED_LIGHT:
     case CrossPointSettings::LINGUA_NORMAL:
