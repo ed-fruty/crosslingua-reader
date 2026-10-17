@@ -3,10 +3,10 @@
 #include <string>
 #include <string_view>
 
-// Gloss cleaning for Word Lens packs. A C++ mirror of clean_gloss() in
-// scripts/wordlens/lens_format.py: the on-device JSON -> .lens converter must turn Readest's raw
-// glosses into the same bytes the release build stores, so any change here is a change there too
-// (test/word_lens_format compares the two on a fixture).
+// Gloss cleaning for Word Lens packs. A C++ mirror of clean_gloss() in scripts/lens_format.py of
+// https://github.com/ed-fruty/crosslingua-wordlens: the on-device JSON -> .lens converter must turn
+// Readest's raw glosses into the same bytes the released packs store, so any change here is a change
+// there too (test/word_lens_format compares the two on fixtures generated there).
 //
 // The stored gloss is up to GLOSS_MAX_SENSES cleaned senses joined by GLOSS_SENSE_JOINER: the
 // annotation strip shows the first one (wordLensDisplayGloss), the gloss popup shows all of them.

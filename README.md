@@ -382,6 +382,8 @@ Conversion runs the firmware repo's `lib/EpdFont/scripts/fontconvert_sdcard.py` 
 - [Web server usage](./docs/webserver.md)
 - [Web server endpoints](./docs/webserver-endpoints.md)
 - [Project scope](./SCOPE.md)
+- [Lingua guide](./docs/lingua.md) - translation modes, Word Lens and pack maintenance
+- [Word Lens gloss packs](https://github.com/ed-fruty/crosslingua-wordlens) - pack data, tooling and the releases the device downloads packs from
 - [Contributing docs](./docs/contributing/README.md)
 - [Touch and UI development](./docs/contributing/touch-and-ui.md) - how to build new screens on the FreeInkUI activity bases (UiListActivity and friends), plus build envs for the non-Xteink touch devices
 

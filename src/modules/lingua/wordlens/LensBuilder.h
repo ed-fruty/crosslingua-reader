@@ -6,9 +6,9 @@
 
 #include "modules/lingua/wordlens/LensFs.h"
 
-// On-device Readest JSON pack -> .lens converter: the fallback when our release assets cannot be
+// On-device Readest JSON pack -> .lens converter: the fallback when the pack release cannot be
 // reached but Readest's CDN can (it only serves the JSON packs). Produces the same bytes as
-// scripts/wordlens/lens_format.py's build_lens() for the same input.
+// build_lens() in crosslingua-wordlens' scripts/lens_format.py for the same input.
 //
 // BOUNDED RAM. The JSON (1-2.5 MB) and the pack never sit in memory. Records are sorted by
 // (fnv1a32(key), key), so the global order is a concatenation of hash-prefix partitions:

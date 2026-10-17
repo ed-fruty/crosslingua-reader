@@ -4,8 +4,9 @@
 #include <cstdint>
 #include <cstring>
 
-// Word Lens pack format (.lens). The reference writer is scripts/wordlens/lens_format.py; the
-// on-device converter (LensBuilder) writes the same bytes. See docs/file-formats.md.
+// Word Lens pack format (.lens). The reference writer is scripts/lens_format.py of
+// https://github.com/ed-fruty/crosslingua-wordlens; the on-device converter (LensBuilder) writes
+// the same bytes. See docs/file-formats.md.
 //
 //   header        64 bytes (LensHeader)
 //   bucket table  (bucketCount + 1) x u32, offsets into the records section

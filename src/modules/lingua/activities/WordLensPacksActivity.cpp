@@ -35,9 +35,9 @@ namespace {
 
 constexpr char MANIFEST_TMP[] = "/.crosspoint/wordlens/manifest.tmp";
 constexpr char JSON_TMP[] = "/.crosspoint/wordlens/readest-pack.tmp";
-constexpr char RELEASE_MANIFEST_NAME[] = "word-lens-manifest.json";
 
-// Source languages the Word Lens tokenizer handles (the same list update_packs.py builds).
+// Source languages the Word Lens tokenizer handles (the same list crosslingua-wordlens'
+// update_packs.py builds).
 bool supportedSource(const char* code) {
   static constexpr const char* SOURCES[] = {"en", "de", "es", "fr", "it", "pt", "ru"};
   for (const char* s : SOURCES) {
@@ -252,16 +252,16 @@ bool WordLensPacksActivity::loadManifest() {
     return false;
   }
   Storage.mkdir(PACK_DIR);
-  // Our release first. No redirect downgrade: this response carries the sha256 values that are the
-  // integrity anchor for the (plain-HTTP-redirected) pack downloads.
-  if (HttpDownloader::downloadToFile(WORD_LENS_RELEASE_BASE + std::string(RELEASE_MANIFEST_NAME), MANIFEST_TMP) ==
+  // The pack release first. No redirect downgrade: this response carries the sha256 values that are
+  // the integrity anchor for the (plain-HTTP-redirected) pack downloads.
+  if (HttpDownloader::downloadToFile(std::string(PACK_RELEASE_BASE) + PACK_RELEASE_MANIFEST, MANIFEST_TMP) ==
           HttpDownloader::OK &&
       parseManifest(MANIFEST_TMP, false)) {
     Storage.replaceFile(MANIFEST_TMP, MANIFEST_PATH);
     return true;
   }
   LOG_ERR("WLENS", "Release manifest unavailable; trying the Readest CDN");
-  if (HttpDownloader::downloadToFile(WORD_LENS_READEST_CDN + std::string("manifest.json"), MANIFEST_TMP) ==
+  if (HttpDownloader::downloadToFile(std::string(READEST_CDN_BASE) + READEST_CDN_MANIFEST, MANIFEST_TMP) ==
           HttpDownloader::OK &&
       parseManifest(MANIFEST_TMP, true)) {
     Storage.replaceFile(MANIFEST_TMP, READEST_MANIFEST_PATH);
@@ -382,7 +382,7 @@ void WordLensPacksActivity::pollCancel() {
 }
 
 bool WordLensPacksActivity::downloadLens(const Pack& pack, const char* destination) {
-  const std::string url = std::string(WORD_LENS_RELEASE_BASE) + pack.file;
+  const std::string url = std::string(PACK_RELEASE_BASE) + pack.file;
   const auto result = HttpDownloader::downloadToFile(
       url, destination,
       [this](const size_t done, const size_t total) {
@@ -404,7 +404,7 @@ bool WordLensPacksActivity::downloadLens(const Pack& pack, const char* destinati
 }
 
 bool WordLensPacksActivity::downloadJson(const Pack& pack) {
-  const std::string url = std::string(WORD_LENS_READEST_CDN) + pack.file + "?v=" + std::string(pack.sha256, 8);
+  const std::string url = std::string(READEST_CDN_BASE) + pack.file + "?v=" + std::string(pack.sha256, 8);
   const auto result = HttpDownloader::downloadToFile(
       url, JSON_TMP,
       [this](const size_t done, const size_t total) {

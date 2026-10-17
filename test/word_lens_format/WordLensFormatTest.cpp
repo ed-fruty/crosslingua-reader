@@ -1,5 +1,6 @@
 // CrossLingua Word Lens: the .lens pack format, its lookup, gloss cleaning, level cutoffs and the
-// on-device JSON -> .lens converter (byte-identical to scripts/wordlens/lens_format.py).
+// on-device JSON -> .lens converter (byte-identical to scripts/lens_format.py of
+// https://github.com/ed-fruty/crosslingua-wordlens, which generates fixtures/).
 #include <gtest/gtest.h>
 
 #include <cstdio>

@@ -12,19 +12,19 @@
 namespace lingua::wordlens {
 class LensConverter;
 class HalLensFs;
-}  // namespace lingua::wordlens
 
-// Release assets: every CrossLingua firmware release carries the Word Lens packs and their manifest
-// (.github/workflows/release.yml). GitHub's "latest" URL follows the newest non-prerelease release
-// and redirects to objects.githubusercontent.com.
-#ifndef WORD_LENS_RELEASE_BASE
-#define WORD_LENS_RELEASE_BASE "https://github.com/ed-fruty/crosslingua-reader/releases/latest/download/"
-#endif
-// Fallback when the release cannot be reached: Readest's CDN, which serves the JSON packs our
-// .lens files are made from (no en-uk there). The device converts them itself (LensBuilder).
-#ifndef WORD_LENS_READEST_CDN
-#define WORD_LENS_READEST_CDN "https://cdn.readest.com/wordlens/"
-#endif
+// Pack sources, tried in this order.
+// 1. The pack repository's releases (https://github.com/ed-fruty/crosslingua-wordlens): .lens
+//    files and word-lens-manifest.json. GitHub's "latest" URL follows the newest non-prerelease
+//    release and redirects to objects.githubusercontent.com.
+inline constexpr char PACK_RELEASE_BASE[] =
+    "https://github.com/ed-fruty/crosslingua-wordlens/releases/latest/download/";
+inline constexpr char PACK_RELEASE_MANIFEST[] = "word-lens-manifest.json";
+// 2. Readest's CDN, which serves the JSON packs our .lens files are made from (no en-uk there).
+//    The device converts them itself (LensBuilder).
+inline constexpr char READEST_CDN_BASE[] = "https://cdn.readest.com/wordlens/";
+inline constexpr char READEST_CDN_MANIFEST[] = "manifest.json";
+}  // namespace lingua::wordlens
 
 // Lingua > Word Lens > Gloss Pack: list the packs the manifest offers, download (with progress and
 // a sha256 check) or delete them. Launched by the reader after it has released the book, like the
