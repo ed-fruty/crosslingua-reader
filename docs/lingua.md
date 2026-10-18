@@ -196,23 +196,28 @@ word as written and then its lemma; otherwise it shows the full gloss with the
 lemma. **Back** clears the focus. On touch screens, tap a glossed word or its
 gloss. Turning the page clears the focus.
 
-*Packs.* Packs exist for English → Arabic, Chinese, English (simple
-definitions), French, German, Hungarian, Portuguese, Russian, Spanish,
-Ukrainian, Vietnamese, and for German, French, Italian, Portuguese, Russian and
-Spanish → English (0.5 – 1.7 MB each, `/.crosspoint/wordlens/` on the card). They
-are published as releases of
+*Packs.* A pack is one language pair, `word-lens-<book language>-<hint language>.lens`
+(0.5 – 2 MB each, `/.crosspoint/wordlens/` on the card). Any book language written
+with spaces between words can have a pack (Latin, Cyrillic and similar scripts); Chinese,
+Japanese, Korean and Thai books are not, as they need a word segmenter. The pack
+list on the device shows what is available; the current set — Readest's packs
+(English to and from many languages), English → Ukrainian, and Romanian → Ukrainian
+/ Russian built by [ua-dict](https://github.com/ed-fruty/ua-dict) — is listed in the
+[pack repository's README](https://github.com/ed-fruty/crosslingua-wordlens#readme).
+Packs are published as releases of
 [crosslingua-wordlens](https://github.com/ed-fruty/crosslingua-wordlens)
 (`word-lens-<pair>.lens` and `word-lens-manifest.json`) and fetched from its
 latest release; if GitHub cannot be reached, the device downloads Readest's
 original JSON pack from `cdn.readest.com` and converts it itself: it switches
 Wi-Fi off first, shows the progress, and **Back** cancels (a minute or two;
-picking another pack afterwards reconnects). English → Ukrainian is only on the
-pack releases. Changing the pack, the hint language, the level or Empty Strips
+picking another pack afterwards reconnects). English → Ukrainian and the
+Romanian packs exist only on the pack releases. Changing the pack, the hint language, the level or Empty Strips
 re-lays the chapter out.
 
-The data is Readest's Word Lens data (WikDict / Wiktionary glosses and
+Most data is Readest's Word Lens data (WikDict / Wiktionary glosses and
 FrequencyWords ranks, CC-BY-SA; ECDICT, MIT); the English → Ukrainian glosses are
-the English → Russian ones machine-translated into Ukrainian. See the
+the English → Russian ones machine-translated into Ukrainian, and the Romanian
+packs come from ua-dict's dictionary graph (used with the source authors' permission). See the
 `word-lens-ATTRIBUTION.md` asset of the pack release; each pack also carries its
 own notice.
 
