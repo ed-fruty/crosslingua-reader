@@ -44,10 +44,13 @@ bool EpubReaderActivity::handleLinguaInput() {
   return false;
 }
 
-// Memoize this chapter's translation pairs once, off the render path. Gated on the same
-// RenderLock and heap check as the section build, and a no-op in every non-overlay mode.
-void EpubReaderActivity::tickLinguaPairCache() {
-  if (section && !section->isBuilding() && !RenderLock::peek() && buildTickHeapGate()) {
+// Memoize this chapter's translation pairs once, off the render path. Called only in idle frames,
+// after backgroundBuildTick, and gated like it: input waiting to be handled goes first, then the
+// RenderLock and heap check. A no-op in every non-overlay mode.
+void EpubReaderActivity::tickLinguaPairCache(bool (*contactClosed)()) {
+  if (contactClosed() || anyButtonPressed() || pendingManualTurn != 0) return;
+  if (section && !section->isBuilding() && !lingua.overlayBlocksBackgroundWork() && !RenderLock::peek() &&
+      buildTickHeapGate()) {
     RenderLock lock;
     lingua.buildPairCacheIfNeeded();
   }

@@ -79,9 +79,9 @@ bool ParsedText::extractNextLine(const GfxRenderer& renderer, const int fontId, 
   // defined by what the lines after it can do with what is left — and a sentence's translation is a
   // few dozen tokens, so the repeated work is bounded and small.
   const std::vector<size_t> lineBreakIndices =
-      hyphenationEnabled
-          ? computeHyphenatedLineBreaks(renderer, fontId, pageWidth, wordWidths, wordContinues, wordNoSpaceBefore)
-          : computeLineBreaks(renderer, fontId, pageWidth, wordWidths, wordContinues, wordNoSpaceBefore);
+      hyphenationEnabled ? computeHyphenatedLineBreaks(renderer, fontId, pageWidth, wordWidths, wordContinues,
+                                                       wordNoSpaceBefore, SIZE_MAX)
+                         : computeLineBreaks(renderer, fontId, pageWidth, wordWidths, wordContinues, wordNoSpaceBefore);
   if (lineBreakIndices.empty()) return false;
 
   const bool emitted = extractLine(

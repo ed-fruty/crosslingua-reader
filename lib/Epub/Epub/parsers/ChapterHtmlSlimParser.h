@@ -5,6 +5,7 @@
 
 #include <array>
 #include <climits>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <string>
@@ -130,6 +131,12 @@ class ChapterHtmlSlimParser {
   // Set after breakTextLine in startElement's <br> branch; cleared by its first word and at the same
   // fresh-block sites as currentBlockIndexAssigned.
   bool currentBlockOpenedByBr = false;
+  // Lingua: words the active layout has dropped so far. Monotonic, so a border box can tell a block
+  // whose words were dropped from one that is empty on purpose (see closeBoxScope).
+  uint32_t linguaFilteredWords = 0;
+  // Lingua: the current block dropped a word since its element opened, so a <br> in it is not a
+  // blank line. Cleared where an element opens or a fresh block is installed.
+  bool currentBlockDroppedWord = false;
   bool currentBlockIsTranslated = false;  // True when the currently-open block has lang= differing from bookPrimaryLang
   std::string bookPrimaryLang;            // Book's content.opf language; a differing lang= marks a translated block
   std::string translatedHyphenLang;       // Last lang= applied to the Hyphenator's translated slot; avoids re-resolving
@@ -235,8 +242,8 @@ class ChapterHtmlSlimParser {
     bool shaded = false;
     int16_t top = -1;  // content extent on the current page
     int16_t bottom = -1;
-    bool continued = false;       // sliced onto an earlier page
-    bool linguaFiltered = false;  // Lingua: the active layout drops the block's words, so it has no frame
+    bool continued = false;             // sliced onto an earlier page
+    uint32_t linguaFilteredAtOpen = 0;  // Lingua: linguaFilteredWords when the box opened
   };
   static constexpr size_t MAX_BOX_SCOPES = 8;
 
@@ -306,9 +313,11 @@ class ChapterHtmlSlimParser {
   };
   std::vector<ListContext> listStack;
 
-  // Anchor-to-page mapping: tracks which page each HTML id attribute lands on
+  // Anchor-to-page mapping: tracks which page each HTML id attribute lands on. A deque grows in
+  // small chunks, so a long chapter never needs one large free block (a vector doubling past 512
+  // anchors needs ~28 KB contiguous, and a failed allocation aborts).
   int completedPageCount = 0;
-  std::vector<std::pair<std::string, uint16_t>> anchorData;
+  std::deque<std::pair<std::string, uint16_t>> anchorData;
   std::string pendingAnchorId;          // deferred until after previous text block is flushed
   std::vector<std::string> tocAnchors;  // the list of anchors that are TOC chapter boundaries
   uint16_t xpathParagraphIndex = 0;
@@ -616,7 +625,7 @@ class ChapterHtmlSlimParser {
   // Lingua: `role` is the role the caller MEASURED this line with (see makePages); it decides both
   // the vertical advance and the byte stamped on the emitted PageLine.
   void addLineToPage(std::unique_ptr<TextBlock> line, uint32_t visibleOffset, LineFontRole role = LineFontRole::Body);
-  const std::vector<std::pair<std::string, uint16_t>>& getAnchors() const { return anchorData; }
+  const std::deque<std::pair<std::string, uint16_t>>& getAnchors() const { return anchorData; }
 
   // Byte progress of the in-flight parse, used to estimate a still-building section's total page
   // count (a giant single-spine book never fully lays out, so its real count is unknown). Valid

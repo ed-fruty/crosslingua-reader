@@ -48,6 +48,11 @@ class LinguaReaderIntegration {
   bool pageTranslationActive() const { return modes_.pageTranslation().active(); }
   WordLensReader::Definition takeWordLensDefinition() { return wordLens_.takeDefinition(); }
   bool fallbackDialogActive() const { return fallbackDialogActive_; }
+  // A Page Translation / Tooltip overlay or the fallback dialog is drawn over the page: the reader's
+  // idle work (section build, pair cache) waits, as it does under the reader's own overlays.
+  bool overlayBlocksBackgroundWork() const {
+    return modes_.pageTranslation().active() || modes_.tooltip().active() || fallbackDialogActive_;
+  }
 
  private:
   InputAction handleTransientUi();

@@ -411,6 +411,44 @@ TEST_F(LinguaLayoutHooksTest, BreakInAFilteredBlockAddsNoBlankLine) {
   EXPECT_EQ(nextY(true), nextY(false));
 }
 
+// Content that is empty on purpose stays, even where the layout filters the text around it: a
+// decorative bordered rule in an original context, and a scene-break <br> paragraph between
+// translations, both under TranslationOnly.
+TEST_F(LinguaLayoutHooksTest, IntentionallyEmptyContentSurvivesAFilteredContext) {
+  start(LinguaLayout::TranslationOnly);
+  open("p", nullptr, "uk");
+  text("Перший");
+  close("p");
+  open("div", "border-top: 1px solid");
+  close("div");
+  open("p", nullptr, "uk");
+  text("Другий");
+  close("p");
+  finish();
+  EXPECT_EQ(elementsWithTag(TAG_PageBorderBox).size(), 1u);
+
+  const auto secondY = [this](const bool withSeparator) {
+    start(LinguaLayout::TranslationOnly);
+    open("p", nullptr, "uk");
+    text("Перший");
+    close("p");
+    if (withSeparator) {
+      open("p");
+      open("br");
+      close("br");
+      close("p");
+    }
+    open("p", nullptr, "uk");
+    text("Другий");
+    close("p");
+    finish();
+    const PageLine* line = lineStarting("Другий");
+    return line ? static_cast<int>(line->yPos) : -1;
+  };
+  EXPECT_GT(secondY(false), 0);
+  EXPECT_GT(secondY(true), secondY(false));
+}
+
 // An original the pairing layout buffered is laid out at its OWN inline size when it turns out to
 // be unpaired, not at the size of the block that was open when it was flushed.
 TEST_F(LinguaLayoutHooksTest, BufferedOriginalKeepsItsInlineSize) {

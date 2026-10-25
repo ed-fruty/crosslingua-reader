@@ -236,10 +236,10 @@ rebuilding. The device reads only `source`, `target`, `file`, `bytes` and
 
 ## `section.bin`
 
-### Version 65 (CrossLingua)
+### Version 69 (CrossLingua)
 
-CrossLingua merge of upstream version 64. The serialized layout is upstream's
-version 64 layout plus the CrossLingua additions:
+CrossLingua merge of upstream version 68. The serialized layout is upstream's
+version 68 layout plus the CrossLingua additions:
 
 - a Lingua block in the header, before `pageCount` (the version 53
   (CrossLingua) header below, with `wordLensKey` added in fork version 60):
@@ -269,7 +269,33 @@ fall back to Both on an untranslated chapter.
 Earlier CrossLingua versions, all rebuilt: 57 (merge of upstream 56, the
 translated-word record above), 58 (development only), 59 (sidecar offset rules,
 see the sidecar format above), 60 (`wordLensKey`), 61 (a word buffered when a
-block opens ends in the block before it; upstream 60 makes the same fix).
+block opens ends in the block before it; upstream 60 makes the same fix), 65
+(merge of upstream 64; upstream later used 65 for its own layout fix).
+
+### Version 68
+
+Version 68 preserves the binary layout but rebuilds completed and partial
+sections to remove mid-line hyphens left by drop-cap layout. The lines beside
+the drop cap use bounded greedy wrapping; the rest keep their usual wrapping.
+Book metadata and saved progress are kept.
+
+### Version 67
+
+Version 67 preserves the binary layout but rebuilds completed and partial
+sections for corrected justification of visually reordered text with attached
+spaces. Book metadata and saved progress are kept.
+
+### Version 66
+
+Version 66 preserves the binary layout but rebuilds completed and partial
+sections to remove leading non-breaking spaces carried across soft line wraps.
+Explicit paragraph-leading spaces, book metadata, and saved progress are kept.
+
+### Version 65
+
+Version 65 preserves the binary layout but rebuilds completed and partial
+sections for corrected justification of non-breaking spaces after hyphens and
+ellipses. Book metadata and reading progress are unchanged.
 
 ### Version 64
 
@@ -557,7 +583,7 @@ import std.mem;
 import std.string;
 import std.core;
 
-#define EXPECTED_VERSION 65
+#define EXPECTED_VERSION 69
 #define MAX_STRING_LENGTH 65535
 #define FOOTNOTE_NUMBER_LEN 32
 #define FOOTNOTE_HREF_LEN 256

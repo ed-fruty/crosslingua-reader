@@ -1,6 +1,8 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -120,6 +122,9 @@ class SdCardFont {
   // Number of styles present in this font file.
   uint8_t styleCount() const { return styleCount_; }
 
+  // Lingua: size the on-demand overflow cache for the reader-size face (READER_OVERFLOW_CAPACITY).
+  void useReaderOverflowCapacity();
+
   // Returns true if the glyph pointer points into the overflow buffer.
   bool isOverflowGlyph(const EpdGlyph* glyph) const;
 
@@ -129,6 +134,9 @@ class SdCardFont {
   // Extract SdCardFont* from an opaque glyphMissCtx pointer.
   // Used by GfxRenderer::getGlyphBitmap() to recover the SdCardFont from EpdFontData::glyphMissCtx.
   static SdCardFont* fromMissCtx(void* ctx);
+
+  // True once after a loaded font first hits a corrupt glyph entry, so the UI can tell the user.
+  static bool takeCorruptGlyphNotice() { return corruptGlyphNotice_.exchange(false); }
 
   struct Stats {
     uint32_t prewarmTotalMs = 0;
@@ -186,11 +194,7 @@ class SdCardFont {
     static_assert(sizeof(BmpInterval16) == 6, "BmpInterval16 must remain compact");
     BmpInterval16* bmpIntervals = nullptr;
     bool intervalsAreBmp16 = false;
-    // True when bmpIntervals/fullIntervals above points at another style's table rather than
-    // this style's own allocation. Regular/bold/italic weights of the same family almost always
-    // cover the identical codepoint set, so a CJK font's multi-KB-per-style table is otherwise
-    // paid for once per style. Only the owning style frees it -- see freeStyleAll().
-    bool intervalsShared = false;
+    // The table may be shared with other styles and other loaded fonts; see releaseIntervals().
 
     // Ligature table (lazy-loaded on first prewarm). No kern table is resident:
     // buildMiniKernMatrix reads the class-table blocks (~3KB per side per style
@@ -270,11 +274,14 @@ class SdCardFont {
 
     // The EpdFont whose data pointer we manage
     EpdFont epdFont{&stubData};
-
-    bool present = false;
   };
 
-  PerStyle styles_[MAX_STYLES] = {};
+  // Allocated once per load; EpdFont pointers remain stable until unload.
+  std::unique_ptr<PerStyle[]> styles_;
+  // Zero means absent; present styles store their array slot plus one.
+  uint8_t styleSlots_[MAX_STYLES] = {};
+  PerStyle& styleData(uint8_t style) { return styles_[styleSlots_[style] - 1]; }
+  const PerStyle& styleData(uint8_t style) const { return styles_[styleSlots_[style] - 1]; }
   uint8_t styleCount_ = 0;
 
   char filePath_[128] = {};
@@ -287,17 +294,15 @@ class SdCardFont {
   OverflowContext overflowCtx_[MAX_STYLES] = {};
 
   // Shared on-demand overflow cache: glyphs a page's prewarm did not cover, loaded one at a time via
-  // glyphMissHandler. This is now a rare-miss safety net: a translation overlay's whole alphabet is
-  // prewarmed per page (EpubReaderActivity::renderOverlayFrame), and a normal page prewarms its own
-  // text, so in steady state almost nothing lands here. Sized to hold a full alphabet-plus-punctuation
-  // working set (~40-60 codepoints) so a fallback burst never evicts a glyph it is about to redraw;
-  // eviction is LRU, not round-robin, so when the working set does exceed capacity the hot glyphs stay
-  // resident instead of cycling. Fixed cost: 64 * sizeof(OverflowEntry) (~28 B) = ~1.8 KB per loaded SD
-  // font, and exactly ONE point size is resident at a time (SdCardFontManager loads a single size), so
-  // ~1.8 KB total. Bitmaps are heap-allocated only for slots actually filled: <= 64 * largest-glyph
-  // bitmap (~130 B for an 18pt 2-bit glyph) ~= 8 KB worst case, reached only under sustained misses that
-  // the per-page overlay prewarm is designed to eliminate.
-  static constexpr uint32_t OVERFLOW_CAPACITY = 64;
+  // glyphMissHandler, evicted least-recently-used. The slots are one heap block allocated on the
+  // first miss (most fonts never miss, so they pay nothing) and freed with the font's caches.
+  // sizeof(OverflowEntry) is 32 B on RV32, plus the bitmap of each filled slot.
+  static constexpr uint32_t OVERFLOW_CAPACITY = 8;
+  // Lingua: the reader-size face (SdCardFontManager::loadFamily) holds a whole alphabet-plus-
+  // punctuation working set (~40-60 codepoints), so a translation overlay's fallback burst never
+  // evicts a glyph it is about to redraw: 64 slots = 2 KB, against 256 B for the sized variants and
+  // UI fallback faces, which several of can be resident at once.
+  static constexpr uint32_t READER_OVERFLOW_CAPACITY = 64;
   struct OverflowEntry {
     EpdGlyph glyph;
     uint8_t* bitmap = nullptr;
@@ -305,7 +310,8 @@ class SdCardFont {
     uint8_t styleIdx = 0;
     uint32_t lastUsed = 0;  // LRU stamp (value of lruClock_ at last hit/load); 0 = never used
   };
-  OverflowEntry overflow_[OVERFLOW_CAPACITY] = {};
+  OverflowEntry* overflow_ = nullptr;  // overflowCapacity_ slots once allocated (psramNewArray)
+  uint32_t overflowCapacity_ = OVERFLOW_CAPACITY;
   uint32_t overflowCount_ = 0;
   uint32_t lruClock_ = 0;           // monotonic tick, stamped into OverflowEntry::lastUsed on access
   uint32_t overflowLoadCount_ = 0;  // on-demand SD loads since the last clearOverflow(); logged as one
@@ -337,6 +343,9 @@ class SdCardFont {
 
   Stats stats_;
   uint32_t contentHash_ = 0;
+  uint32_t fileSize_ = 0;  // bounds glyph bitmap offsets (glyphEntryValid)
+  uint8_t corruptGlyphsLogged_ = 0;
+  static inline std::atomic<bool> corruptGlyphNotice_{false};
   bool loaded_ = false;
 
   // Per-style helpers
@@ -353,6 +362,11 @@ class SdCardFont {
   void applyKernLigaturePointers(PerStyle& s, EpdFontData& data) const;
   void applyGlyphMissCallback(uint8_t styleIdx);
   int32_t findGlobalGlyphIndex(const PerStyle& s, uint32_t codepoint) const;
+  // Drops this style's reference to its interval table and frees the table with the last one.
+  static void releaseIntervals(PerStyle& s);
+  // False for a glyph entry the file cannot back (a corrupt .cpfont): its data length must be the
+  // packed size of its pixels and its bitmap must lie inside the file. Logs the first few per font.
+  bool glyphEntryValid(const PerStyle& s, const EpdGlyph& glyph, uint32_t codepoint);
   int fetchAdvancesForCodepoints(uint32_t* codepoints, uint32_t cpCount, uint8_t styleMask);
   int prewarmStyle(uint8_t styleIdx, const uint32_t* codepoints, uint32_t cpCount, bool metadataOnly, bool loadKernLig,
                    bool accumulate);
@@ -360,6 +374,7 @@ class SdCardFont {
   // Global helpers
   void freeAll();
   void clearOverflow();
+  void releaseOverflowStorage();  // clearOverflow() and free the slot block
   static void computeStyleFileOffsets(PerStyle& s, uint32_t baseOffset);
 
   // Static callback for EpdFontData::glyphMissHandler (per-style via OverflowContext)

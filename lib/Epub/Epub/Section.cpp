@@ -206,15 +206,20 @@ namespace {
 // Earlier GIF/table development builds also used versions 60 through 62.
 // v63: Rebuild for corrected paragraph boundaries and supported static GIF images.
 // v64: Explicit font inheritance preserves parent emphasis and changes text layout.
+// v65: Count literal spaces after hyphens and ellipses when justifying text.
+// v66: Omit carried no-break spaces at the start of wrapped lines.
+// v67: Count only stretchable literal spaces after visual text reordering.
+// v68: Leave text below drop caps unsplit until it is laid out at full width.
 // (CrossLingua) Fork versions, each a full rebuild: v46/v47 (superseded by v53); v53 merge of upstream
 //      v52, adding the Lingua header block (translationFontId, annotationFontId, linguaLayout,
 //      translatedSource, embeddedTranslation) before pageCount and paragraphIdx/fontRole on PageLine;
 //      v57 merge of upstream v56, translated-word flag moved out of the style byte; v58 dev-only;
 //      v59 sidecar inserted translations count no offset/XPath and carry no source range; v60 Word Lens
-//      wordLensKey after annotationFontId; v61 block-start word flush.
-// v65: (CrossLingua) merge of upstream v64: upstream's v64 layout plus the fork's Lingua header block and
+//      wordLensKey after annotationFontId; v61 block-start word flush; v65 merge of upstream v64 (the
+//      number upstream later reused, so the fork's v65 caches rebuild as well).
+// v69: (CrossLingua) merge of upstream v68: upstream's v68 layout plus the fork's Lingua header block and
 //      PageLine fields. A later upstream merge takes max(ours, upstream) + 1.
-constexpr uint8_t SECTION_FILE_VERSION = 65;
+constexpr uint8_t SECTION_FILE_VERSION = 69;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
@@ -238,7 +243,7 @@ constexpr uint8_t SECTION_FILE_INCOMPLETE_VERSION = 0;
 // one-off invalidation a version bump costs finalized files.
 constexpr uint8_t SECTION_FILE_PARTIAL_VERSION = 0xFE - (SECTION_FILE_VERSION - 28);
 // The derivation only stays a distinct sentinel while the two ranges have not met; assert it rather
-// than trusting a future bump to notice. At 65 the sentinel is 0xD9 (217) = 0xFE - (65 - 28):
+// than trusting a future bump to notice. At 69 the sentinel is 0xD5 (213) = 0xFE - (69 - 28):
 // comfortably above the version, and only a version past 140 could close the gap.
 static_assert(SECTION_FILE_PARTIAL_VERSION > SECTION_FILE_VERSION &&
                   SECTION_FILE_PARTIAL_VERSION != SECTION_FILE_INCOMPLETE_VERSION,
@@ -766,7 +771,7 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   return true;
 }
 
-bool Section::buildSomeMore(const int maxPages) {
+bool Section::buildSomeMore(const int maxPages, bool (*yieldNow)()) {
   if (!build_ || !build_->parser) {
     LOG_ERR("SCT", "buildSomeMore with no active build");
     return false;
@@ -785,8 +790,9 @@ bool Section::buildSomeMore(const int maxPages) {
     if (status == ChapterHtmlSlimParser::ParseStatus::Done) {
       return finalizeBuild();
     }
-    // ParseStatus::More: yield once we've laid out the requested number of pages.
-    if (maxPages > 0 && (builtPageCount_ - startCount) >= maxPages) {
+    // ParseStatus::More: yield once we've laid out the requested number of pages, or as soon
+    // as the caller has something more urgent to do.
+    if ((maxPages > 0 && (builtPageCount_ - startCount) >= maxPages) || (yieldNow && yieldNow())) {
       build_->bytesConsumed = build_->parser->parseBytesConsumed();
       return true;
     }

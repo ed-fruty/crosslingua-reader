@@ -406,14 +406,15 @@ void ChapterHtmlSlimParser::openBoxScope(BlockStyle& ownStyle, const CssStyle& c
   pad(ownStyle.paddingLeft, box.sides[3]);
   box.padTop = ownStyle.paddingTop;
   box.padBottom = ownStyle.paddingBottom;
-  box.linguaFiltered = wordIsFiltered();  // Lingua: the block's translated-state marker is on the stack
+  box.linguaFilteredAtOpen = linguaFilteredWords;  // Lingua
   boxScopes.push_back(box);
 }
 
 void ChapterHtmlSlimParser::closeBoxScope() {
   BoxScope box = boxScopes.back();
   boxScopes.pop_back();
-  if (box.top < 0 && box.linguaFiltered) return;  // Lingua: no frame around a block the layout dropped
+  // Lingua: no frame around a block whose words the layout dropped; an empty one still draws.
+  if (box.top < 0 && linguaFilteredWords != box.linguaFilteredAtOpen) return;
   if (box.top < 0 && !box.continued) {
     // An element without content (a rule drawn with borders) gets its own height.
     // Its spacing still sits on the empty text block; consume it here instead.
@@ -698,6 +699,10 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
   // CJK MAX_WORD_SIZE split intact, since both halves of a split word carry the same block state
   // and are filtered identically).
   if (wordIsFiltered()) {
+    if (partWordBufferIndex > 0) {
+      linguaFilteredWords++;
+      currentBlockDroppedWord = true;
+    }
     partWordBufferIndex = 0;
     nextWordContinues = false;
     return;
@@ -784,7 +789,7 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
 void ChapterHtmlSlimParser::breakTextLine(const BlockStyle& style) {
   const bool hasText = currentTextBlock && !currentTextBlock->isEmpty();
   // Lingua: a block emptied by the layout's word filter is not a blank line.
-  if (!hasText && !wordIsFiltered() && currentPage && !currentPage->elements.empty()) {
+  if (!hasText && !currentBlockDroppedWord && currentPage && !currentPage->elements.empty()) {
     const int lineHeight = renderer.getLineHeight(fontId, lineCompression);
     currentPageNextY = static_cast<int16_t>(std::min<int>(viewportHeight, currentPageNextY + lineHeight));
   }
@@ -795,7 +800,8 @@ void ChapterHtmlSlimParser::breakTextLine(const BlockStyle& style) {
 // start a new text block if needed
 void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle, const bool paragraphEnd) {
   if (stopRequested) return;
-  nextWordContinues = false;  // New block = new paragraph, no continuation
+  if (paragraphEnd) currentBlockDroppedWord = false;  // Lingua: an element boundary, not a <br>
+  nextWordContinues = false;                          // New block = new paragraph, no continuation
   if (currentTextBlock) {
     // already have a text block running and it is empty - just reuse it
     if (currentTextBlock->isEmpty()) {
@@ -853,6 +859,7 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle, cons
   // and inherit the index, so exactly one index is consumed per distinct content block.
   currentBlockIndexAssigned = false;
   currentBlockOpenedByBr = false;
+  currentBlockDroppedWord = false;
 }
 
 void ChapterHtmlSlimParser::emitHorizontalRule(const BlockStyle& blockStyle) {
@@ -1555,6 +1562,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     // two paragraphs under one index, which the overlays then group as one.
     self->currentBlockIndexAssigned = false;
     self->currentBlockOpenedByBr = false;
+    self->currentBlockDroppedWord = false;
     self->flushPendingAnchor();
     self->inlineSize = InlineSizeState{};
     self->dropCap.firstLetterPending = false;
@@ -2875,6 +2883,7 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
     // inherits the pre-table index.
     self->currentBlockIndexAssigned = false;
     self->currentBlockOpenedByBr = false;
+    self->currentBlockDroppedWord = false;
     self->wordsExtractedInBlock = 0;
   }
 
