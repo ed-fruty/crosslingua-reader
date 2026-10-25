@@ -60,6 +60,5 @@ class CoverGridHomeUi final : public UiAppHost {
   freeink::ui::CoverGridProps grid;
   freeink::ui::Rect gridBounds{};
   freeink::ui::TabBarProps tabs;
-  std::array<freeink::ui::TabItem, 6>
-      tabItems;  // HomeActivity menu: FB, BookShelf, Library, [Plugins/OPDS], Transfer, Settings
+  std::array<freeink::ui::TabItem, 5> tabItems;
 };

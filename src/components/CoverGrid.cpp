@@ -118,10 +118,13 @@ void drawCell(GfxRenderer& renderer, const CoverGridStyle& style, Rect rect, int
     if (isPending(index)) {
       drawLoadingGlyph(renderer, thumbX, thumbY, thumbWidth, thumbHeight, inkState);
     } else {
-      // A processed book without a drawable cover gets the same placeholder as the home screen. Its
-      // white part needs a white ground on a black selection fill.
-      if (!inkState) renderer.fillRect(thumbX, thumbY, thumbWidth, thumbHeight, false);
-      BaseTheme::drawCoverPlaceholder(renderer, Rect{thumbX, thumbY, thumbWidth, thumbHeight});
+      // A processed book without a drawable cover gets the same placeholder as the home screen, sized
+      // like a generated thumb (Epub/Xtc thumbs are 0.6 x height wide). Its white part needs a white
+      // ground on a black selection fill.
+      const int placeholderWidth = std::min(thumbWidth, thumbHeight * 3 / 5);
+      const Rect placeholder{thumbX + (thumbWidth - placeholderWidth) / 2, thumbY, placeholderWidth, thumbHeight};
+      if (!inkState) renderer.fillRect(placeholder.x, placeholder.y, placeholder.width, placeholder.height, false);
+      BaseTheme::drawCoverPlaceholder(renderer, placeholder);
     }
   }
 

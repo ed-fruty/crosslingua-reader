@@ -224,6 +224,7 @@ void FileBrowserActivity::onEnter() {
   } else {
     loadFiles();
   }
+  BrowseView::restoreListSelection(*this);  // CrossLingua: selection carried over from the cover view
 }
 
 void FileBrowserActivity::onExit() {
@@ -376,6 +377,7 @@ void FileBrowserActivity::activateSelected() {
 }
 
 void FileBrowserActivity::showEntryActions() {
+  if (BrowseView::showListActions(*this)) return;  // CrossLingua: shared menu with the view switch
   if (mode != Mode::Books || files.empty() || optionPopup.isActive() || nav.selected < 0 ||
       nav.selected >= listCount()) {
     return;
@@ -516,6 +518,7 @@ void FileBrowserActivity::renameSelectedFile(const std::string& oldPath, const s
 
 bool FileBrowserActivity::handleCustomInput() {
   if (optionPopup.handleInput(mappedInput, [this] { requestUpdate(); })) return true;
+  if (BrowseView::handleListInput(*this)) return true;  // CrossLingua: long-press in an empty folder
 
   // Long press BACK (1s+) goes to root folder (Books mode only).
   // In firmware-pick mode we keep navigation simple: short Back = up dir / cancel.

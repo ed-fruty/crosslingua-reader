@@ -447,7 +447,6 @@ STR_FIRMWARE_UPDATE_DO_NOT_POWER_OFF: "Jangan matikan daya!"
 STR_RECOVERY_MODE: "Mode Pemulihan"
 STR_RECOVERY_MODE_HINT: "Tempatkan firmware.bin di akar kartu SD lalu pilih"
 
-STR_BOOKSHELF: "BookShelf"
 STR_NO_BOOKS_FOUND: "Tidak ada buku ditemukan"
 STR_EDSLAB: "EdsLab"
 STR_LINGUA: "Lingua"

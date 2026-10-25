@@ -447,7 +447,6 @@ STR_FIRMWARE_UPDATE_DO_NOT_POWER_OFF: "NEIŠJUNKITE ĮRENGINIO!"
 STR_RECOVERY_MODE: "Atkūrimo režimas"
 STR_RECOVERY_MODE_HINT: "Įkelkite firmware.bin į SD kortelės šaknį ir pasirinkite"
 
-STR_BOOKSHELF: "BookShelf"
 STR_NO_BOOKS_FOUND: "Knygų nerasta"
 STR_EDSLAB: "EdsLab"
 STR_LINGUA: "Lingua"

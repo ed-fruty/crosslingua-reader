@@ -28,8 +28,8 @@ device-specific display, touch, key, power, and frontlight integrations.
       <sub>Two languages, aligned in parallel columns.</sub>
     </td>
     <td align="center" width="33%">
-      <img src="./docs/images/crosslingua/bookshelf.jpg" alt="CrossLingua Bookshelf with book cover previews" /><br/>
-      <strong>Bookshelf</strong><br/>
+      <img src="./docs/images/crosslingua/bookshelf.jpg" alt="CrossLingua Browse Files covers view" /><br/>
+      <strong>Covers view</strong><br/>
       <sub>Browse books visually by their covers.</sub>
     </td>
   </tr>
@@ -164,12 +164,13 @@ Render the source and translation together in the EPUB's normal flow, using
 the same text colour. This is the neutral compatibility mode for already
 bilingual EPUBs.
 
-## Bookshelf with cover previews
+## Covers view in Browse Files
 
-**Bookshelf** is a visual alternative to the file browser and to CrossPoint's
-list-based **Library** (both stay on the home screen). It renders a 3×3
-grid, generates and caches EPUB cover thumbnails in the background, preserves
-folder navigation, and lets you open a book directly from its cover.
+**Browse Files** can show a folder as a 3×3 grid of book covers instead of a
+list. Hold **Confirm** on an entry (or in an empty folder) and choose **Covers
+view**; choose **List view** to go back. Both views offer the same Open,
+Delete and Rename actions, and the last view you used is remembered. Cover
+thumbnails are generated and cached in the background.
 
 <table>
   <tr>

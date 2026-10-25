@@ -20,7 +20,6 @@
 #include "boot_sleep/SleepActivity.h"
 #include "browser/OpdsBookBrowserActivity.h"
 #include "components/HeaderBackTapTarget.h"
-#include "home/BookShelfActivity.h"
 #include "home/CrashActivity.h"
 #include "home/FileBrowserActivity.h"
 #include "home/HomeActivity.h"
@@ -301,16 +300,8 @@ void ActivityManager::goToSettings(const SettingsSection openSection) {
 }
 
 void ActivityManager::goToFileBrowser(std::string path) {
+  if (BrowseView::openRemembered(renderer, mappedInput, path)) return;  // CrossLingua: remembered cover view
   replaceActivity(std::make_unique<FileBrowserActivity>(renderer, mappedInput, std::move(path)));
-}
-
-void ActivityManager::goToBookShelf(std::string path) {
-  auto activity = makeUniqueNoThrow<BookShelfActivity>(renderer, mappedInput, std::move(path));
-  if (!activity) {
-    LOG_ERR("ACT", "OOM: bookshelf activity");
-    return;
-  }
-  replaceActivity(std::move(activity));
 }
 
 void ActivityManager::goToLibrary() {
@@ -375,8 +366,6 @@ void ActivityManager::goHome(HomeMenuItem initialMenuItem, bool cleanInitialRefr
     const auto& activityName = currentActivity->name;
     if (activityName == "FileBrowser") {
       initialMenuItem = HomeMenuItem::FILE_BROWSER;
-    } else if (activityName == "BookShelf") {
-      initialMenuItem = HomeMenuItem::BOOKSHELF;
     } else if (activityName == "Library") {
       initialMenuItem = HomeMenuItem::LIBRARY;
     } else if (activityName == "OpdsBookBrowser" || activityName == "PluginCatalog") {

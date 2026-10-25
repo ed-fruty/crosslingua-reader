@@ -457,7 +457,6 @@ STR_FIRMWARE_UPDATE_DO_NOT_POWER_OFF: "لا تطفئ الجهاز!"
 STR_RECOVERY_MODE: "وضع الاستعادة"
 STR_RECOVERY_MODE_HINT: "ضع الملف firmware.bin في المجلد الرئيسي لبطاقة SD ثم اختره"
 
-STR_BOOKSHELF: "BookShelf"
 STR_NO_BOOKS_FOUND: "لم يتم العثور على كتب"
 STR_EDSLAB: "EdsLab"
 STR_LINGUA: "Lingua"

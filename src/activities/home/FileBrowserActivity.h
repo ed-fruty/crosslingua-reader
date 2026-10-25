@@ -5,9 +5,11 @@
 #include <vector>
 
 #include "activities/UiListActivity.h"
+#include "activities/home/BrowseView.h"  // CrossLingua
 #include "components/OptionPopup.h"
 
 class FileBrowserActivity final : public UiListActivity {
+  friend struct BrowseView;  // CrossLingua: list/cover view switch, reuses the file actions
  public:
   // Books = standard reader browser; PickFirmware = filter to .bin only and return path via ActivityResult.
   enum class Mode { Books, PickFirmware };

@@ -447,7 +447,6 @@ STR_FIRMWARE_UPDATE_DO_NOT_POWER_OFF: "Ne izklapljaj naprave!"
 STR_RECOVERY_MODE: "Obnovitveni način"
 STR_RECOVERY_MODE_HINT: "Postavi firmware.bin v koren kartice SD in ga izberi"
 
-STR_BOOKSHELF: "BookShelf"
 STR_NO_BOOKS_FOUND: "Ni najdenih knjig"
 STR_EDSLAB: "EdsLab"
 STR_LINGUA: "Lingua"

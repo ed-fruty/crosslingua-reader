@@ -7,8 +7,10 @@
 #include <string>
 #include <vector>
 
+#include "FileBrowserActivity.h"
 #include "activities/Activity.h"
 #include "components/CoverGridLayout.h"
+#include "components/OptionPopup.h"
 #include "util/ButtonNavigator.h"
 
 struct BookShelfEntry {
@@ -22,15 +24,16 @@ struct BookShelfEntry {
 
 // Ported from the fork's cover-grid browser: a 3x3 cover-thumbnail grid browser over the SD card
 // (folders + epub/xtc/txt/md), with lazy per-page thumbnail generation, a full-framebuffer page
-// cache for fast selection moves, long-press Confirm to toggle title/filename, long-press Back to
-// jump to root, and folder navigation. Adapted to develop's ActivityManager navigation, HalFile
-// storage, develop image/thumb pipeline, and nothrow heap discipline.
+// cache for fast selection moves, long-press Back to jump to root, and folder navigation. It is the
+// cover view of "Browse Files" (see BrowseView.h): a long-press opens the same entry menu as the
+// list view, whose Delete/Rename code it reuses.
 class BookShelfActivity final : public Activity {
  private:
   ButtonNavigator buttonNavigator;
 
   size_t selectorIndex = 0;
   std::string basepath = "/";
+  std::string selectName;  // entry to select on enter; cleared there
 
   std::vector<BookShelfEntry> entries;
   std::unique_ptr<char[]> fileNameBuffer;
@@ -74,6 +77,20 @@ class BookShelfActivity final : public Activity {
   void resolveCachedCovers();         // render task: adopt thumbs the worker produced
   bool pageHasPendingCovers() const;  // any visible entry still awaiting a cover
 
+  // Entry long-press menu (BrowseView::showMenu), drawn over the grid.
+  OptionPopup optionPopup;
+  // Hidden list view running upstream's Delete/Rename flow while its dialog is open.
+  std::unique_ptr<FileBrowserActivity> fileOps;
+  // Set from the start of a Delete/Rename until entries[] is reloaded: render() draws nothing, so
+  // the list code's own repaint request cannot show the half-updated folder.
+  bool fileActionBusy = false;
+
+  void openSelected();
+  void showEntryActions();
+  void startFileAction(bool rename);
+  void reloadAfterFileAction(const std::string& selectName);
+  Rect gridRect() const;
+
   // True when this activity was entered while Confirm was still held (typical when launched from
   // the home menu); swallow that first release so we don't immediately open entry 0.
   bool lockNextConfirmRelease = false;
@@ -90,9 +107,6 @@ class BookShelfActivity final : public Activity {
   // size.
   static constexpr int GRID_PAGE_ITEMS = covergrid::GRID_PAGE_ITEMS;
   static constexpr unsigned long GO_HOME_MS = 1000;
-  static constexpr unsigned long TOGGLE_DISPLAY_MS = 1000;
-
-  bool showTitles = true;  // Toggle between metadata titles and filenames
 
   int thumbHeight = 0;  // Computed from actual grid layout for 1:1 cover rendering
 
@@ -103,8 +117,13 @@ class BookShelfActivity final : public Activity {
   size_t findEntry(const std::string& name) const;
 
  public:
-  explicit BookShelfActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string initialPath = "/")
-      : Activity("BookShelf", renderer, mappedInput), basepath(initialPath.empty() ? "/" : std::move(initialPath)) {}
+  // initialPath may name a file (selected, as in the list view); selectName selects an entry of the
+  // folder. The activity name is the list's, so Home and the status-bar tap treat both views alike.
+  explicit BookShelfActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string initialPath = "/",
+                             std::string selectName = {})
+      : Activity("FileBrowser", renderer, mappedInput),
+        basepath(initialPath.empty() ? "/" : std::move(initialPath)),
+        selectName(std::move(selectName)) {}
   void onEnter() override;
   void onExit() override;
   void loop() override;

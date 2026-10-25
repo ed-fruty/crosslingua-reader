@@ -530,7 +530,6 @@ STR_DELETE_CLIPPING_CONFIRM: "Diese Textstelle löschen?"
 STR_STATE_SWIPE: "Wischen"
 STR_STATE_INVERTED_TAP: "Invertiertes Tippen"
 
-STR_BOOKSHELF: "BookShelf"
 STR_NO_BOOKS_FOUND: "Keine Bücher gefunden"
 STR_EDSLAB: "EdsLab"
 STR_LINGUA: "Lingua"

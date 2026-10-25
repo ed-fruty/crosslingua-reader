@@ -450,7 +450,6 @@ STR_UPDATE_AVAILABLE: "Güncelle"
 STR_VALIDATING_FIRMWARE: "Firmware doğrulanıyor..."
 STR_XTC_STATUS_BAR: "XTC Durum Çubuğu"
 
-STR_BOOKSHELF: "BookShelf"
 STR_NO_BOOKS_FOUND: "Kitap bulunamadı"
 STR_EDSLAB: "EdsLab"
 STR_LINGUA: "Lingua"

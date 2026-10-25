@@ -147,8 +147,7 @@ enum UIIcon {
   Hotspot,
   Bookmark,
   Usb,
-  Blocks,
-  BookShelf  // fork: appended, so upstream enumerators keep their values
+  Blocks
 };
 
 // Default theme implementation (Classic Theme)

@@ -449,7 +449,6 @@ STR_USERNAME_TAKEN: "Uživatelské jméno je již zaregistrováno"
 STR_VALIDATING_FIRMWARE: "Ověřování firmwaru..."
 STR_XTC_STATUS_BAR: "Stavový řádek XTC"
 
-STR_BOOKSHELF: "BookShelf"
 STR_NO_BOOKS_FOUND: "Nebyly nalezeny žádné knihy"
 STR_EDSLAB: "EdsLab"
 STR_LINGUA: "Lingua"

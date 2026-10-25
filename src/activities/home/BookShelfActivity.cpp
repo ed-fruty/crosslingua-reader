@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstring>
 
+#include "BrowseView.h"
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "activities/RenderLock.h"
@@ -94,7 +95,7 @@ std::string BookShelfActivity::getDisplayTitle(int index) const {
   if (index < 0 || index >= static_cast<int>(entries.size())) return "";
   const auto& entry = entries[index];
   if (entry.isDirectory) return entry.filename;
-  if (showTitles && !entry.title.empty()) return entry.title;
+  if (!entry.title.empty()) return entry.title;
   // Strip extension from filename
   const auto dotPos = entry.filename.rfind('.');
   if (dotPos != std::string::npos) return entry.filename.substr(0, dotPos);
@@ -364,16 +365,25 @@ void BookShelfActivity::onEnter() {
   }
 
   // Compute thumb height from the actual grid layout so covers are generated at display size
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int contentHeight =
-      renderer.getScreenHeight() - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
-  const int cellHeight = contentHeight / covergrid::GRID_ROWS;
+  const int cellHeight = gridRect().height / covergrid::GRID_ROWS;
   thumbHeight = cellHeight - covergrid::GRID_CELL_PADDING * 2 - covergrid::GRID_TITLE_AREA;
 
+  // Like the list view: a missing path falls back to the root, a file path opens its folder with
+  // the file selected.
+  if (auto root = Storage.open(basepath.c_str()); !root) {
+    basepath = "/";
+  } else {
+    if (!root.isDirectory()) {
+      selectName = basepath.substr(basepath.find_last_of('/') + 1);
+      basepath = FsHelpers::extractFolderPath(basepath);
+    }
+    root.close();
+  }
+
   loadFiles();
-  selectorIndex = 0;
-  lastSelectorIndex = 0;
+  selectorIndex = selectName.empty() ? 0 : findEntry(selectName);
+  std::string().swap(selectName);
+  lastSelectorIndex = selectorIndex;
   lastInteractionMs = millis();
   gridBufferPage = -1;
   coverWorkerPending = true;  // loop() launches the worker once the first paint is done
@@ -411,8 +421,111 @@ void BookShelfActivity::onExit() {
   // The worker never takes the RenderLock, so this join is safe even though onExit() holds it.
   joinCoverWorker();
   freeGridBuffer();
+  fileOps.reset();  // release the hidden list view if its Delete/Rename dialog was still open
   entries.clear();
   fileNameBuffer.reset();
+}
+
+Rect BookShelfActivity::gridRect() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int contentHeight =
+      renderer.getScreenHeight() - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
+  return Rect{0, contentTop, renderer.getScreenWidth(), contentHeight};
+}
+
+void BookShelfActivity::openSelected() {
+  if (selectorIndex >= entries.size()) return;
+  const auto& entry = entries[selectorIndex];
+  if (entry.isDirectory) {
+    const std::string newPath = entry.fullPath;  // copy before the vector it points into is cleared
+    joinCoverWorker();                           // stop background gen before entries[] is rebuilt
+    {
+      // requestUpdate() is deferred, so a previous render can still be mid-flight on the render
+      // task reading entries[]; rebuilding the vector under it is UB. Block it out for the rebuild.
+      RenderLock lock;
+      basepath = newPath;
+      loadFiles();
+      selectorIndex = 0;
+      gridBufferPage = -1;
+    }
+    coverWorkerPending = true;
+    requestUpdate();
+  } else {
+    // Join first: the reader needs a clean heap, and no cover work must run while it allocates.
+    joinCoverWorker();
+    onSelectBook(entry.fullPath);
+  }
+}
+
+void BookShelfActivity::showEntryActions() {
+  if (optionPopup.isActive()) return;
+  const bool hasEntry = selectorIndex < entries.size();
+  const bool isDirectory = hasEntry && entries[selectorIndex].isDirectory;
+  BrowseView::showMenu(optionPopup, hasEntry, isDirectory, /*inCoverView=*/true,
+                       [this](const BrowseView::Action action) {
+                         switch (action) {
+                           case BrowseView::Action::Open:
+                             openSelected();
+                             break;
+                           case BrowseView::Action::Delete:
+                             startFileAction(/*rename=*/false);
+                             break;
+                           case BrowseView::Action::Rename:
+                             startFileAction(/*rename=*/true);
+                             break;
+                           case BrowseView::Action::SwitchView: {
+                             const bool hasSelection = selectorIndex < entries.size();
+                             BrowseView::switchToList(renderer, mappedInput, basepath,
+                                                      hasSelection ? entries[selectorIndex].filename : std::string(),
+                                                      hasSelection && entries[selectorIndex].isDirectory);
+                             break;
+                           }
+                         }
+                       });
+  requestUpdate();
+}
+
+// Delete and Rename run the list view's own code (BrowseView::beginListFileAction), so the dialogs,
+// validation and side effects (book cache, bookmarks, clippings, recent books) match it exactly.
+void BookShelfActivity::startFileAction(const bool rename) {
+  if (selectorIndex >= entries.size()) return;
+  const std::string name = entries[selectorIndex].filename;
+  const bool isDirectory = entries[selectorIndex].isDirectory;
+
+  // The worker reads entries[] and may be writing a thumb of the file being changed; stop it first.
+  joinCoverWorker();
+  {
+    // Give the dialog and the list code the grid snapshot's and the listing's heap; both are
+    // rebuilt afterwards anyway.
+    RenderLock lock;
+    fileActionBusy = true;
+    freeGridBuffer();
+    std::vector<BookShelfEntry>().swap(entries);
+  }
+
+  fileOps = BrowseView::beginListFileAction(renderer, mappedInput, basepath, name, isDirectory, rename);
+  if (!fileOps) {
+    reloadAfterFileAction(name);
+    return;
+  }
+  // The dialog was pushed over this activity; its result comes back here.
+  resultHandler = [this](const ActivityResult& result) {
+    reloadAfterFileAction(BrowseView::finishListFileAction(fileOps, result));
+  };
+}
+
+void BookShelfActivity::reloadAfterFileAction(const std::string& selectName) {
+  {
+    RenderLock lock;
+    loadFiles();  // fresh entries: no thumb path of a deleted or renamed book survives
+    selectorIndex = selectName.empty() ? 0 : findEntry(selectName);
+    lastSelectorIndex = selectorIndex;
+    gridBufferPage = -1;
+    fileActionBusy = false;
+  }
+  coverWorkerPending = true;
+  requestUpdate();
 }
 
 void BookShelfActivity::loop() {
@@ -423,9 +536,38 @@ void BookShelfActivity::loop() {
     startCoverWorker();
   }
 
-  // Long press BACK (1s+) jumps to the root folder
-  if (mappedInput.isPressed(MappedInputManager::Button::Back) && mappedInput.getHeldTime() >= GO_HOME_MS &&
-      basepath != "/") {
+  if (optionPopup.handleInput(mappedInput, [this] { requestUpdate(); })) return;
+
+  // Touch long-press: the entry menu for the pressed cell, or the view switch in an empty folder.
+  if (int x = 0, y = 0; mappedInput.wasScreenLongPress(x, y)) {
+    if (entries.empty()) {
+      showEntryActions();
+      return;
+    }
+    const Rect grid = gridRect();
+    const int cellWidth = grid.width / covergrid::GRID_COLS;
+    const int cellHeight = grid.height / covergrid::GRID_ROWS;
+    if (x >= grid.x && y >= grid.y && cellWidth > 0 && cellHeight > 0) {
+      const int col = (x - grid.x) / cellWidth;
+      const int row = (y - grid.y) / cellHeight;
+      const int index = getPageOffset() + row * covergrid::GRID_COLS + col;
+      if (col < covergrid::GRID_COLS && row < covergrid::GRID_ROWS && index < static_cast<int>(entries.size())) {
+        selectorIndex = static_cast<size_t>(index);
+        showEntryActions();
+      }
+    }
+    return;
+  }
+
+  // Long-press Confirm: entry menu, as in the list view (wasLongPressed suppresses the release).
+  if (!lockNextConfirmRelease && mappedInput.wasLongPressed(MappedInputManager::Button::Confirm, GO_HOME_MS)) {
+    showEntryActions();
+    return;
+  }
+
+  // Long press BACK (1s+) jumps to the root folder. wasLongPressed fires once per press, so a Back
+  // still held from the reader's own long-press (which opened this view) does not jump again.
+  if (mappedInput.wasLongPressed(MappedInputManager::Button::Back, GO_HOME_MS) && basepath != "/") {
     joinCoverWorker();  // stop background gen before entries[] is rebuilt
     {
       // requestUpdate() is deferred, so a previous render can still be mid-flight on the render
@@ -447,35 +589,7 @@ void BookShelfActivity::loop() {
       lockNextConfirmRelease = false;
       return;
     }
-    if (entries.empty()) return;
-
-    // Long-press Confirm: toggle title/filename display
-    if (mappedInput.getHeldTime() >= TOGGLE_DISPLAY_MS) {
-      showTitles = !showTitles;
-      gridBufferPage = -1;
-      requestUpdate();
-      return;
-    }
-
-    // Short press: open directory or book
-    const auto& entry = entries[selectorIndex];
-    if (entry.isDirectory) {
-      const std::string newPath = entry.fullPath;  // copy before the vector it points into is cleared
-      joinCoverWorker();                           // stop background gen before entries[] is rebuilt
-      {
-        RenderLock lock;  // see go-home handler: no vector rebuild under an in-flight render
-        basepath = newPath;
-        loadFiles();
-        selectorIndex = 0;
-        gridBufferPage = -1;
-      }
-      coverWorkerPending = true;
-      requestUpdate();
-    } else {
-      // Join first: the reader needs a clean heap, and no cover work must run while it allocates.
-      joinCoverWorker();
-      onSelectBook(entry.fullPath);
-    }
+    openSelected();
     return;
   }
 
@@ -562,13 +676,15 @@ void BookShelfActivity::loop() {
 }
 
 void BookShelfActivity::render(RenderLock&&) {
+  if (fileActionBusy) return;
+  // The popup draws over the grid already in the framebuffer.
+  if (optionPopup.processRender(renderer, mappedInput)) return;
+
   const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
   const auto& metrics = UITheme::getInstance().getMetrics();
 
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
-  const Rect gridRect{0, contentTop, pageWidth, contentHeight};
+  const Rect gridRect = this->gridRect();
+  const int contentTop = gridRect.y;
   const int pageOffset = getPageOffset();
 
   auto getTitle = [this](int index) { return getDisplayTitle(index); };
@@ -609,8 +725,7 @@ void BookShelfActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
   // Own a std::string for the header so its c_str() outlives the drawHeader call
-  std::string headerTitle =
-      (basepath == "/") ? std::string(tr(STR_BOOKSHELF)) : basepath.substr(basepath.rfind('/') + 1);
+  std::string headerTitle = (basepath == "/") ? std::string(tr(STR_SD_CARD)) : basepath.substr(basepath.rfind('/') + 1);
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, headerTitle.c_str());
 
   if (entries.empty()) {

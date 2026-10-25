@@ -449,7 +449,6 @@ STR_RECOVERY_MODE_HINT: "Помістіть firmware.bin у корінь SD-ка
 STR_ADD_HIDDEN_NETWORK: "Додати приховану мережу..."
 STR_ENTER_WIFI_SSID: "Введіть назву мережі (SSID)"
 
-STR_BOOKSHELF: "BookShelf"
 STR_NO_BOOKS_FOUND: "Книги не знайдено"
 STR_EDSLAB: "EdsLab"
 STR_LINGUA: "Lingua"

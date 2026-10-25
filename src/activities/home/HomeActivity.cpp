@@ -28,7 +28,6 @@
 
 int HomeActivity::getMenuItemCount() const {
   int count = 4;  // File Browser, Library, File transfer, Settings
-  count++;        // CrossLingua: BookShelf
   if (!recentBooks.empty()) {
     count += recentBooks.size();
   }
@@ -316,9 +315,6 @@ void HomeActivity::loop() {
       case HomeMenuItem::FILE_BROWSER:
         onFileBrowserOpen();
         break;
-      case HomeMenuItem::BOOKSHELF:
-        onBookShelfOpen();
-        break;
       case HomeMenuItem::LIBRARY:
         onLibraryOpen();
         break;
@@ -537,10 +533,6 @@ void HomeActivity::render(RenderLock&&) {
     menuIcons.insert(menuIcons.begin() + 2, Plugins);
   }
 
-  // CrossLingua: BookShelf under Browse Files (index 1); HomeActivity.h's ladders mirror this.
-  menuItems.insert(menuItems.begin() + 1, tr(STR_BOOKSHELF));
-  menuIcons.insert(menuIcons.begin() + 1, BookShelf);
-
   if (metrics.homeContinueReadingInMenu && !recentBooks.empty()) {
     // Insert Continue Reading at the top if enabled in theme
     menuItems.insert(menuItems.begin(), tr(STR_CONTINUE_READING));
@@ -576,8 +568,6 @@ void HomeActivity::render(RenderLock&&) {
 void HomeActivity::onRecentBookSelected(const std::string& path) { activityManager.goToReader(path); }
 
 void HomeActivity::onFileBrowserOpen() { activityManager.goToFileBrowser(); }
-
-void HomeActivity::onBookShelfOpen() { activityManager.goToBookShelf(); }
 
 void HomeActivity::onLibraryOpen() { activityManager.goToLibrary(); }
 

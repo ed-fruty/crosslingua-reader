@@ -447,7 +447,6 @@ STR_RECOVERY_MODE_HINT: "Змясціце firmware.bin у корань SD-кар
 STR_ADD_HIDDEN_NETWORK: "Дадаць схаваную сетку..."
 STR_ENTER_WIFI_SSID: "Увядзіце назву сеткі (SSID)"
 
-STR_BOOKSHELF: "BookShelf"
 STR_NO_BOOKS_FOUND: "Кнігі не знойдзены"
 STR_EDSLAB: "EdsLab"
 STR_LINGUA: "Lingua"

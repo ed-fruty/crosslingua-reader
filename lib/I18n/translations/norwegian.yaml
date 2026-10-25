@@ -449,7 +449,6 @@ STR_FIRMWARE_UPDATE_DO_NOT_POWER_OFF: "Ikke slå av!"
 STR_RECOVERY_MODE: "Gjenopprettingsmodus"
 STR_RECOVERY_MODE_HINT: "Legg firmware.bin i roten av SD-kortet og velg den"
 
-STR_BOOKSHELF: "BookShelf"
 STR_NO_BOOKS_FOUND: "Ingen bøker funnet"
 STR_EDSLAB: "EdsLab"
 STR_LINGUA: "Lingua"
