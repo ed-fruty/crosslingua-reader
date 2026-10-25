@@ -35,6 +35,7 @@ void ParsedText::reserveAdditionalWords(const size_t additionalTokens) {
   wordNoSpaceBefore.reserve(newCapacity);
   wordFocusBoundary.reserve(newCapacity);
   wordLinkIds.reserve(newCapacity);
+  wordSizeSlots.reserve(newCapacity);
   wordVisibleOffsetDeltas.reserve(newCapacity);
 }
 
@@ -43,6 +44,7 @@ void ParsedText::consumeWords(const size_t consumed) {
   const size_t take = std::min(consumed, words.size());
   // Lines after this one are continuations: no first-line indent.
   firstLineConsumed = true;
+  paragraphStartEmitted = true;
   for (size_t i = 0; i < take; ++i) {
     wordStore.release(words[i]);  // retires arena chunks as lines are consumed
   }
@@ -52,6 +54,7 @@ void ParsedText::consumeWords(const size_t consumed) {
   wordNoSpaceBefore.erase(wordNoSpaceBefore.begin(), wordNoSpaceBefore.begin() + take);
   wordFocusBoundary.erase(wordFocusBoundary.begin(), wordFocusBoundary.begin() + take);
   wordLinkIds.erase(wordLinkIds.begin(), wordLinkIds.begin() + take);
+  wordSizeSlots.erase(wordSizeSlots.begin(), wordSizeSlots.begin() + std::min(take, wordSizeSlots.size()));
   linguaErasePrefix(take);
   eraseVisibleOffsetPrefix(take);
   if (!rubyTexts.empty()) {

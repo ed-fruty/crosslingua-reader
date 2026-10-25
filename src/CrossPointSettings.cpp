@@ -92,10 +92,10 @@ uint8_t CrossPointSettings::sleepTimeoutEnumToMinutes(const uint8_t legacyValue)
 void CrossPointSettings::toJson(JsonDocument& doc) const {
   const CrossPointSettings& s = *this;
 
-  for (const auto& info : getSettingsList(nullptr, nullptr, /*forPersistence=*/true)) {
-    if (!info.key) continue;
+  auto visit = [&](const SettingInfo& info) {
+    if (!info.key) return;
     // Dynamic entries (KOReader etc.) are stored in their own files — skip.
-    if (!info.valuePtr && !info.stringOffset) continue;
+    if (!info.valuePtr && !info.stringOffset) return;
 
     if (info.stringOffset) {
       const char* strPtr = (const char*)&s + info.stringOffset;
@@ -109,7 +109,8 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
     } else {
       doc[info.key] = s.*(info.valuePtr);
     }
-  }
+  };
+  forEachBaseSetting(visit);
 
   // Front button remap — managed by RemapFrontButtons sub-activity, not in SettingsList.
   doc["frontButtonBack"] = frontButtonBack;
@@ -184,10 +185,10 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
 
   auto clamp = [](uint8_t val, uint8_t maxVal, uint8_t def) -> uint8_t { return val < maxVal ? val : def; };
 
-  for (const auto& info : getSettingsList(nullptr, nullptr, /*forPersistence=*/true)) {
-    if (!info.key) continue;
+  auto visit = [&](const SettingInfo& info) {
+    if (!info.key) return;
     // Dynamic entries (KOReader etc.) are stored in their own files — skip.
-    if (!info.valuePtr && !info.stringOffset) continue;
+    if (!info.valuePtr && !info.stringOffset) return;
 
     if (info.stringOffset) {
       // destPtr starts out holding the struct-initializer default; it stays that
@@ -197,7 +198,7 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
         LOG_ERR("CPS", "Misconfigured SettingInfo: stringMaxLen is 0 for key '%s'", info.key);
         destPtr[0] = '\0';
         needsResave = true;
-        continue;
+        return;
       }
 
       bool loaded = false;
@@ -243,7 +244,8 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
       }
       s.*(info.valuePtr) = v;
     }
-  }
+  };
+  forEachBaseSetting(visit);
 
   // Plugin System did not exist in older settings files. Preserve the behavior
   // of users who already have SD plugins installed, while keeping the new
@@ -337,7 +339,7 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
     // stored index already resolves to the right family and the file needs no
     // rewrite. Logged rather than silently reinterpreted, because the reader font
     // visibly changes for these users and their section cache is invalidated (the
-    // font id is part of the cache key — see getReaderFontId / Section.cpp:195).
+    // font id is part of the cache key — see getReaderFontId and the section.bin header Section writes).
     LOG_DBG("CPS", "Font family 0 (was Noto Serif) now resolves to EdsLab");
   }
   // Dictionary folder name — uses dynamic getter/setter in SettingsList, load manually
@@ -626,34 +628,32 @@ float CrossPointSettings::getReaderLineCompression() const {
     }
   }
 
-  switch (fontFamily) {
-    // EdsLab keeps the neutral spacing Noto Serif used in this slot; the values are
-    // unchanged from that family, not retuned for EdsLab's metrics.
-    case EDSLAB:
+  // CrossLingua: EdsLab keeps the neutral spacing Noto Serif used in this slot;
+  // the values are unchanged from that family, not retuned for EdsLab's metrics.
+  if (fontFamily == EDSLAB) {
+    switch (lineSpacing) {
+      case TIGHT:
+        return 0.95f;
+      case NORMAL:
+      default:
+        return 1.0f;
+      case WIDE:
+        return 1.1f;
+      case EXTRA_WIDE:
+        return 1.2f;
+    }
+  }
+
+  switch (lineSpacing) {
+    case TIGHT:
+      return 0.90f;
+    case NORMAL:
     default:
-      switch (lineSpacing) {
-        case TIGHT:
-          return 0.95f;
-        case NORMAL:
-        default:
-          return 1.0f;
-        case WIDE:
-          return 1.1f;
-        case EXTRA_WIDE:
-          return 1.2f;
-      }
-    case NOTOSANS:
-      switch (lineSpacing) {
-        case TIGHT:
-          return 0.90f;
-        case NORMAL:
-        default:
-          return 0.95f;
-        case WIDE:
-          return 1.0f;
-        case EXTRA_WIDE:
-          return 1.05f;
-      }
+      return 0.95f;
+    case WIDE:
+      return 1.0f;
+    case EXTRA_WIDE:
+      return 1.05f;
   }
 }
 
@@ -711,7 +711,7 @@ int CrossPointSettings::getReaderFontId() const {
 int CrossPointSettings::smallerReaderFontId() const {
   // SD card family: the manager keeps exactly ONE reader-size face loaded and
   // SdCardFontSystem::resolveFontId() ignores its pointSize argument by design
-  // (src/SdCardFontSystem.cpp:173-178), so there is no smaller SD face to drop to — SD families
+  // (see SdCardFontSystem::resolveFontId), so there is no smaller SD face to drop to — SD families
   // simply have no Smaller option.
   if (sdFontFamilyName[0] != '\0' && sdFontIdResolver) {
     if (sdFontIdResolver(sdFontResolverCtx, sdFontFamilyName, fontPointSize) != 0) return 0;

@@ -26,10 +26,6 @@
 #include "components/icons/headerIcons.h"
 #include "fontIds.h"
 
-freeink::ui::BitmapRef BaseTheme::checkboxIcon(const bool checked) {
-  return freeink::ui::bitmapFromIcon(checked ? icon_checkbox_on_32 : icon_checkbox_off_32);
-}
-
 void BaseTheme::setCheckboxRow(freeink::ui::ListItem& item, const bool checked) {
   item.value = nullptr;
   item.toggle = true;
@@ -983,11 +979,11 @@ void BaseTheme::drawSelectionHandle(const GfxRenderer& renderer, const Rect rect
   renderer.fillRect(left ? rect.x + radius : rect.x, rect.y, radius, radius);
 }
 
-void BaseTheme::drawSelectionActions(const GfxRenderer& renderer, const Rect rect) {
+void BaseTheme::drawSelectionActions(const GfxRenderer& renderer, const Rect rect, const int count) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const char* labels[] = {tr(STR_LOOKUP), tr(STR_CLIP), tr(STR_BOOKMARK_OPTION)};
-  for (int i = 0; i < 3; ++i) {
-    const Rect button = selectionGeometry::button(rect, i, metrics.menuSpacing);
+  for (int i = 0; i < count; ++i) {
+    const Rect button = selectionGeometry::button(rect, i, metrics.menuSpacing, count);
     renderer.fillRoundedRect(button.x, button.y, button.width, button.height, metrics.controlRadius, Color::White);
     renderer.drawRoundedRect(button.x, button.y, button.width, button.height, 1, metrics.controlRadius, true);
     UITheme::drawCenteredWrappedText(renderer, button, uiScaleSpec().smallFontId, labels[i], 2, true,

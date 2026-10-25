@@ -47,6 +47,7 @@ void ChapterHtmlSlimParser::makePagesInterlinearMode() {
       flushBufferedOriginal();
     }
     bufferedOriginalParagraphIdx = currentBlockParagraphIdx;
+    bufferedOriginalInlineSize = inlineSize;  // startNewTextBlock resets it for the next block
     // The block's footnote ledger goes into the buffer WITH it — see makePagesTableMode.
     bufferedOriginalFootnotes.swap(pendingFootnotes);
     bufferedOriginalWordsExtracted = wordsExtractedInBlock;
@@ -360,6 +361,7 @@ void ChapterHtmlSlimParser::placeInterlinearRow(std::unique_ptr<TextBlock> row, 
 void ChapterHtmlSlimParser::emitInterlinearPair(std::vector<InterlinearRun>& runs, std::unique_ptr<TextBlock> srcLine,
                                                 const int stripHeight, const int srcRowHeight, const int16_t leftInset,
                                                 const uint32_t sourceOffset) {
+  if (stopRequested) return;  // the build was stopped at the last page break: there is no page to fill
   // ATOMIC FIT, over a FIXED group: one strip plus one source line, every time -- except for a TAIL
   // strip, where srcLine is null because the paragraph's source is already fully emitted and only
   // translation is left (see the tail drain in renderInterlinear). Such a group is the strip alone.
@@ -373,13 +375,11 @@ void ChapterHtmlSlimParser::emitInterlinearPair(std::vector<InterlinearRun>& run
   const uint16_t srcWordCount = hasSource ? srcLine->wordCount() : 0;
   if (!currentPage->elements.empty() && currentPageNextY + groupHeight > viewportHeight) {
     setCurrentPageVisibleOffset(sourceOffset);
-    completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex, currentPageVisibleOffset);
-    completedPageCount++;
-    currentPage.reset(new Page());
-    currentPageNextY = 0;
-    currentPageVisibleOffsetSet = false;
+    completeCurrentPage();
+    if (stopRequested) return;
   }
   setCurrentPageVisibleOffset(sourceOffset);
+  noteContent(currentPageNextY, currentPageNextY + groupHeight);  // an open border box wraps the group
 
   // THE STRIP. Reserved unconditionally, drawn only if something landed on it. A blank strip emits
   // no PageLine at all -- no arena, no serialized bytes, no render call -- while still advancing y,
@@ -399,7 +399,7 @@ void ChapterHtmlSlimParser::emitInterlinearPair(std::vector<InterlinearRun>& run
     currentPageNextY += srcRowHeight;
   }
 
-  // FOOTNOTES, attributed to the page carrying the anchor exactly as addLineToPage (:1828-1834) does
+  // FOOTNOTES, attributed to the page carrying the anchor exactly as addLineToPage's footnote drain does
   // it. Interlinear needs its own copy because a PAIRED paragraph never reaches addLineToPage, and
   // under this layout essentially every paragraph pairs: without this, pendingFootnotes accumulated
   // for the whole chapter and was either dumped wholesale onto whatever page happened to be current at
@@ -496,6 +496,10 @@ void ChapterHtmlSlimParser::renderInterlinear(std::unique_ptr<ParsedText> origBl
     currentPageNextY = 0;
     currentPageVisibleOffsetSet = false;
   }
+  // The paired rows are placed directly, outside addLineToPage's record of the page's trailing lines,
+  // so no line laid before them may be carried across a later page break (keep-with-next, widows).
+  recentLineCount = 0;
+  keepWithNextLines = 0;
 
   const int annotationFont = fontIdForRole(LineFontRole::Annotation);
   // BY VALUE, not by reference: origBlock is released the moment its lines are out (see there), and
@@ -604,7 +608,7 @@ void ChapterHtmlSlimParser::renderInterlinear(std::unique_ptr<ParsedText> origBl
         srcLines.push_back(std::move(line));
         sourceOffsets.push_back(offset);
       },
-      /*includeLastLine=*/true, characterSpacing, wordSpacingPercent, &sentencePos);
+      /*includeLastLine=*/true, characterSpacing, wordSpacingPercent, SIZE_MAX, &stopRequested, &sentencePos);
   if (origBlock->hadDroppedWords()) layoutOom = true;
   if (srcLines.empty()) return;
 

@@ -10,11 +10,14 @@
 #include <string>
 #include <vector>
 
+#include "src/ReaderFontSizes.h"
+
 #define class struct
 #define private public
 #include "Epub/parsers/ChapterHtmlSlimParser.h"
 #undef private
 #undef class
+#include "../../src/fontIds.h"
 
 namespace {
 
@@ -266,6 +269,186 @@ TEST_F(InterlinearCarryTest, DrainsTheCarryOverFollowingStrips) {
   }
 
   EXPECT_TRUE(stream.isEmpty());
+}
+
+// ── Lingua hooks in upstream's layout pass ──────────────────────────────────
+//
+// Elements are fed straight to the expat callbacks, as upstream's ChapterBlockDecorationTest does.
+class LinguaLayoutHooksTest : public ::testing::Test {
+ protected:
+  GfxRenderer renderer;
+  CssParser cssParser{"/tmp"};
+  std::string filepath = "unused.xhtml";
+  std::vector<std::unique_ptr<Page>> pages;
+  std::unique_ptr<ChapterHtmlSlimParser> parser;
+
+  void start(const LinguaLayout layout, const int fontId = 0) {
+    pages.clear();
+    parser = std::make_unique<ChapterHtmlSlimParser>(
+        nullptr, filepath, renderer, fontId, 1.0f, false, 0, static_cast<uint16_t>(renderer.getScreenWidth()),
+        static_cast<uint16_t>(renderer.getScreenHeight()), false, false,
+        [this](std::unique_ptr<Page> page, uint16_t, uint16_t, uint32_t) { pages.push_back(std::move(page)); }, true,
+        "", "", 0, std::vector<std::string>{}, nullptr, &cssParser, layout, "en");
+    // No file behind it: beginParse fails at the open, after setting up the layout state the
+    // callbacks below need (as upstream's ChapterBlockDecorationTest relies on).
+    parser->beginParse();
+  }
+  void open(const char* tag, const char* style = nullptr, const char* lang = nullptr) {
+    const XML_Char* attributes[5] = {};
+    int n = 0;
+    if (style) {
+      attributes[n++] = "style";
+      attributes[n++] = style;
+    }
+    if (lang) {
+      attributes[n++] = "lang";
+      attributes[n++] = lang;
+    }
+    ChapterHtmlSlimParser::startElement(parser.get(), tag, n ? attributes : nullptr);
+  }
+  void text(const std::string& value) {
+    ChapterHtmlSlimParser::characterData(parser.get(), value.c_str(), static_cast<int>(value.size()));
+  }
+  void close(const char* tag) { ChapterHtmlSlimParser::endElement(parser.get(), tag); }
+  void finish() { ASSERT_TRUE(parser->finishParse()); }
+  std::vector<const PageElement*> elementsWithTag(const PageElementTag tag) const {
+    std::vector<const PageElement*> found;
+    for (const auto& page : pages) {
+      for (const auto& element : page->elements) {
+        if (element->getTag() == tag) found.push_back(element.get());
+      }
+    }
+    return found;
+  }
+  const PageLine* lineStarting(const char* word) const {
+    for (const PageElement* element : elementsWithTag(TAG_PageLine)) {
+      const auto* line = static_cast<const PageLine*>(element);
+      if (line->getBlock()->wordCount() > 0 && std::string(line->getBlock()->wordText(0)) == word) return line;
+    }
+    return nullptr;
+  }
+};
+
+// The default EdsLab family has built-in sizes, so headings and CSS font sizes scale under it too.
+TEST_F(LinguaLayoutHooksTest, EdsLabBlockFontScaleUsesItsBuiltinSizes) {
+  renderer.setFontVariantProvider({&renderer, [](void* ctx, const int fontId, const float scale) {
+                                     const int variant = builtinReaderFontVariant(fontId, scale);
+                                     return static_cast<GfxRenderer*>(ctx)->getFontMap().count(variant) ? variant : 0;
+                                   }});
+  for (const int id : {EDSLAB_12_FONT_ID, EDSLAB_14_FONT_ID, EDSLAB_16_FONT_ID, EDSLAB_18_FONT_ID}) {
+    renderer.fontMap.emplace(id, EpdFontFamily(nullptr));
+  }
+  start(LinguaLayout::Both, EDSLAB_14_FONT_ID);
+  EXPECT_EQ(parser->fontIdForScale(1.0f), EDSLAB_14_FONT_ID);
+  EXPECT_EQ(parser->fontIdForScale(2.0f), EDSLAB_18_FONT_ID);
+  EXPECT_EQ(parser->fontIdForScale(1.17f), EDSLAB_16_FONT_ID);
+  EXPECT_EQ(parser->fontIdForScale(0.83f), EDSLAB_12_FONT_ID);
+}
+
+// A bordered block whose words the layout drops draws no empty frame; the same block shown draws one.
+TEST_F(LinguaLayoutHooksTest, FilteredBorderedBlockDrawsNoFrame) {
+  for (const LinguaLayout layout : {LinguaLayout::OriginalOnly, LinguaLayout::Both}) {
+    start(layout);
+    open("div", "border: 2px solid black", "uk");
+    open("p");
+    text("Привіт");
+    close("p");
+    close("div");
+    open("p");
+    text("Hello");
+    close("p");
+    finish();
+    EXPECT_EQ(elementsWithTag(TAG_PageBorderBox).size(), layout == LinguaLayout::Both ? 1u : 0u);
+  }
+}
+
+// A <br> in a block whose words were all dropped is not a blank line: Calibre's
+// "Orig.<br/><span lang>Trans.</span>" under TranslationOnly, verse under OriginalOnly.
+TEST_F(LinguaLayoutHooksTest, BreakInAFilteredBlockAddsNoBlankLine) {
+  const auto translationY = [this](const bool withOriginal) {
+    start(LinguaLayout::TranslationOnly);
+    open("p", nullptr, "uk");
+    text("Перший");
+    close("p");
+    open("p");
+    if (withOriginal) {
+      text("Orig.");
+      open("br");
+      close("br");
+    }
+    open("span", nullptr, "uk");
+    text("Переклад");
+    close("span");
+    close("p");
+    finish();
+    const PageLine* line = lineStarting("Переклад");
+    return line ? static_cast<int>(line->yPos) : -1;
+  };
+  EXPECT_GT(translationY(false), 0);
+  EXPECT_EQ(translationY(true), translationY(false));
+
+  const auto nextY = [this](const bool withVerse) {
+    start(LinguaLayout::OriginalOnly);
+    open("p");
+    text("First");
+    close("p");
+    if (withVerse) {
+      open("p", nullptr, "uk");
+      text("a");
+      open("br");
+      close("br");
+      text("b");
+      close("p");
+    }
+    open("p");
+    text("Next");
+    close("p");
+    finish();
+    const PageLine* line = lineStarting("Next");
+    return line ? static_cast<int>(line->yPos) : -1;
+  };
+  EXPECT_GT(nextY(false), 0);
+  EXPECT_EQ(nextY(true), nextY(false));
+}
+
+// An original the pairing layout buffered is laid out at its OWN inline size when it turns out to
+// be unpaired, not at the size of the block that was open when it was flushed.
+TEST_F(LinguaLayoutHooksTest, BufferedOriginalKeepsItsInlineSize) {
+  renderer.setFontVariantProvider({&renderer, [](void* ctx, const int fontId, const float scale) {
+                                     const int variant = fontId * 1000 + static_cast<int>(scale * 100 + 0.5f);
+                                     static_cast<GfxRenderer*>(ctx)->fontMap.emplace(variant, EpdFontFamily(nullptr));
+                                     return variant;
+                                   }});
+  start(LinguaLayout::Interlinear, 7);
+  open("p");
+  open("span", "font-size: 2em");
+  text("Big");
+  close("span");
+  close("p");
+  open("p");
+  text("Plain");
+  close("p");
+  finish();
+  const PageLine* big = lineStarting("Big");
+  ASSERT_NE(big, nullptr);
+  EXPECT_EQ(big->getBlock()->getBlockStyle().fontId, 7200);
+  const PageLine* plain = lineStarting("Plain");
+  ASSERT_NE(plain, nullptr);
+  EXPECT_EQ(plain->getBlock()->getBlockStyle().fontId, 0);
+}
+
+// A dropped word has no initial letter: a translated drop-cap span under OriginalOnly is not drawn.
+TEST_F(LinguaLayoutHooksTest, FilteredSpanIsNotCapturedAsADropCap) {
+  start(LinguaLayout::OriginalOnly);
+  open("p");
+  open("span", "float: left; font-size: 3em", "uk");
+  text("Т");
+  close("span");
+  text("Hello world");
+  close("p");
+  finish();
+  EXPECT_TRUE(elementsWithTag(TAG_PageDropCap).empty());
+  EXPECT_NE(lineStarting("Hello"), nullptr);
 }
 
 }  // namespace

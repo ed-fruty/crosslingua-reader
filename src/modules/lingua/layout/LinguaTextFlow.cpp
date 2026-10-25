@@ -44,7 +44,8 @@ void ChapterHtmlSlimParser::classifyBrOpenedBlock() {
   // word is about to land (an empty flush must not consume a paragraph index), and isEmpty() stops
   // the second and later words of the same block from re-stamping it.
   if (partWordBufferIndex == 0 || !currentTextBlock || !currentTextBlock->isEmpty()) return;
-  if (!currentTextBlock->getBlockStyle().fromBrElement) return;
+  if (!currentBlockOpenedByBr) return;
+  currentBlockOpenedByBr = false;
 
   claimParagraphIndex(!inlineStyleStack.empty() && inlineStyleStack.back().isTranslatedBlock);
 }

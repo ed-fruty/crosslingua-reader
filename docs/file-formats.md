@@ -236,54 +236,131 @@ rebuilding. The device reads only `source`, `target`, `file`, `bytes` and
 
 ## `section.bin`
 
-### Version 61
+### Version 65 (CrossLingua)
 
-The version 60 layout below. Only the parser output changes: a word still
-buffered when a block element opens (`text<ol>`, `text<div>`, `text<h2>`, with no
-whitespace before the tag) now ends in the preceding block instead of being glued
-onto the new block's first word, so chapters with that markup lay out
-differently. Every v60 file is rejected and rebuilt.
+CrossLingua merge of upstream version 64. The serialized layout is upstream's
+version 64 layout plus the CrossLingua additions:
+
+- a Lingua block in the header, before `pageCount` (the version 53
+  (CrossLingua) header below, with `wordLensKey` added in fork version 60):
+
+  ```
+  s32 translationFontId; s32 annotationFontId; u32 wordLensKey; u8 linguaLayout;  // Lingua
+  bool translatedSource; bool embeddedTranslation;                                // Lingua
+  ```
+
+- after each `PageLine`'s TextBlock: `s16 paragraphIdx`, `u8 fontRole`, and a
+  translated-words record: `u8 encoding` (0 = no translated word, 1 = every
+  word translated, 2 = mixed) and, for 2 only, a bitmask of
+  `ceil(wordCount / 8)` bytes, bit `i` (LSB first) marking word `i` in the
+  TextBlock's visual order. The flag is not a bit of the per-word style byte;
+- after each page's footnotes: `s16 firstParagraphIdx, lastParagraphIdx`.
+
+`linguaLayout` 5 is WordLens: the source is broken exactly as under
+OriginalOnly and every source line is preceded by one annotation strip
+(`LineFontRole::Annotation`, an ordinary `PageLine` whose words are the glosses
+at their centred x); a strip with nothing on it emits no `PageLine` and only
+advances y, unless Empty Strips is set to Hide, in which case a line with no
+hard word gets no strip and no space. `wordLensKey` (pack content hash, reader
+level, Empty Strips choice) is non-zero only under WordLens, and
+`annotationFontId` is keyed under WordLens and Interlinear. WordLens does not
+fall back to Both on an untranslated chapter.
+
+Earlier CrossLingua versions, all rebuilt: 57 (merge of upstream 56, the
+translated-word record above), 58 (development only), 59 (sidecar offset rules,
+see the sidecar format above), 60 (`wordLensKey`), 61 (a word buffered when a
+block opens ends in the block before it; upstream 60 makes the same fix).
+
+### Version 64
+
+Version 64 preserves the binary layout but rebuilds completed and partial
+sections for corrected explicit font-weight/font-style inheritance. It retains
+version 63's GIF rendering and paragraph-boundary fixes. CSS cache version 19 stores
+`inherit` as value 2 in the existing font-style and font-weight bytes; the
+winning declaration is resolved against the parent before applying the element's
+style. Older CSS caches are rebuilt. Book metadata and reading progress are
+unchanged.
+
+### Version 63
+
+Version 63 retains the version 60 rendering format and rebuilds completed and
+partial sections to include previously omitted GIFs and their alternative text.
+Earlier GIF/table development builds used versions 60 through 62; their caches
+also rebuild to preserve both the current rendering format and corrected
+paragraph boundaries. The partial-build sentinel remains derived from the final
+section version. Book metadata and saved progress are kept, but pagination can
+change as GIFs become visible.
 
 ### Version 60
 
-CrossLingua Word Lens. One field joins the Lingua block, after `annotationFontId`:
-
-```
-s32 translationFontId; s32 annotationFontId; u32 wordLensKey; u8 linguaLayout;  // Lingua
-bool translatedSource; bool embeddedTranslation;                                // Lingua
-```
-
-`linguaLayout` gains `5 = WordLens`: the source is broken exactly as under
-OriginalOnly and every source line is preceded by one annotation strip
-(`LineFontRole::Annotation`, an ordinary `PageLine` whose TextBlock words are the
-glosses at their centred x); a strip with nothing on it emits no `PageLine` and
-only advances y, unless Empty Strips is set to Hide, in which case a line with no
-hard word gets no strip and no space at all. `wordLensKey` identifies the gloss
-pack (its content hash), the reader level and the Empty Strips choice
-(`wordLensCacheKey`); it is non-zero only under the WordLens layout, and
-`annotationFontId` is keyed under WordLens as well as Interlinear. Unlike the
-other bilingual layouts, WordLens does not fall back to Both on an untranslated
-chapter. Every v59 file is rejected and rebuilt.
+The serialized layout is unchanged. Text that runs straight into a block or
+heading start (`text<div>…`) now stays in its own paragraph instead of being
+joined to the first word of the new block. Older completed and partial section
+caches rebuild automatically; book metadata and reading progress are kept.
 
 ### Version 59
 
-The version 57 layout below. Version 58 was a development layout with an extra
-`sourceKind` byte at the end of the Lingua header block; it is gone again.
-Version 59 also changes what a sidecar's offsets count (see the sidecar format
-above), so earlier caches rebuild.
+The serialized layout is unchanged. Stored CSS rules now apply even below
+48 KiB free heap. Older completed and partial sections rebuild because they may
+contain missing styles, different line breaks, or content that should be hidden.
+Book metadata, CSS rule caches, and reading progress are kept.
+
+### Version 58
+
+The serialized layout is unchanged. Completed and partial sections rebuild for
+corrected rendering layout and footnote placement. Book metadata and reading
+progress are kept.
 
 ### Version 57
 
-CrossLingua merge of upstream version 56. The serialized layout is upstream's
-version 56 layout with the CrossLingua additions described under version 53
-(CrossLingua) below: the Lingua header block before `pageCount`, and the Lingua
-fields after each `PageLine`'s TextBlock. The translated-word flag is no longer
-stored as a bit of the per-word style byte, whose bits now match upstream
-(64 = ruby follower, 128 = discretionary hyphen). Instead each `PageLine` ends
-with a translated-words record after `fontRole`: `u8 encoding` (0 = no
-translated word, 1 = every word translated, 2 = mixed) and, for 2 only, a
-bitmask of `ceil(wordCount / 8)` bytes, bit `i` (LSB first) marking word `i`
-in the TextBlock's visual order.
+Version 57 combines the rendering layout below with line breaks after explicit
+hyphens and dashes. It invalidates version 56 caches from both branches, which
+used different layouts under the same version. Completed and partial sections
+are rebuilt.
+
+### Version 56
+
+Version 56 adds the rendering layout below on top of version 55.
+
+Each TextBlock's BlockStyle stores a signed 32-bit `fontId` after
+`characterSpacing`: the renderer font the line was laid out in, or 0 for the
+section font. Each TextBlock ends with a `hasWordFonts` flag. When set, it is
+followed by three signed 32-bit font ids and one slot byte per word: 0 draws the
+word in the block's font, `n` in font `n - 1`; bit 0x80 of a slot marks CSS
+small caps (the word text keeps its original case). Mixed-size words share the baseline
+of the tallest font. SD (.cpfont) and vector fonts use sized variants for
+headings, CSS font-size blocks, inline runs and drop caps. A font-size span
+holding a whole paragraph sizes that paragraph.
+
+Pages gain two element types. `TAG_PageDropCap` (4) is an initial letter drawn
+scaled up from a font's glyph: position (its `yPos` is the baseline of the last
+spanned line), the renderer font id, the scale in 1/256ths, the word style and
+up to 12 bytes of UTF-8 text. `TAG_PageBorderBox` (5) is a CSS border and/or
+background shade around one page's slice of a block element: position, size,
+width and style for the top, right, bottom and left edges (a side split off by a
+page break has width 0), and a shade flag.
+
+Layout changes keep headings with following content and avoid leaving a
+paragraph's first line alone at a page bottom or its last line alone at a page
+top. Preserved whitespace and inherited block emphasis affect word placement
+and styles. Inline `<br>` breaks omit paragraph spacing, while standalone and
+consecutive breaks add blank lines.
+
+Table columns are sized from a markup pre-scan rather than equal widths.
+Bordered tables frame each grid cell with `PageBorderBox` elements. Cells honor
+CSS padding in grid and stacked layouts. Plain-text rows share a 160-token /
+2 KB budget; rows containing blocks or images use full-width flow to preserve
+paragraphs and illustrations. Older sections are rebuilt for the serialized
+font data, page elements and layout changes.
+
+CSS cache version 16 adds a boolean `preserveWhitespace` byte after `initialLetter`
+and uses defined-property bit 30 for `white-space`.
+CSS cache version 17 stores rules in source order and retains nonadjacent repeated
+selectors so equal-specificity declarations cascade in stylesheet order.
+
+CSS cache version 18 adds a border-component byte after the four border sides.
+Bits 0-3 mark declared widths and bits 4-7 mark declared styles, in top, right,
+bottom, left order. Width and style declarations cascade independently.
 
 ### Version 55
 
@@ -343,6 +420,11 @@ The serialized layout is unchanged. Missing full-block (`U+2588`) and black-squa
 (`U+25A0`) symbols now use font-sized solid rectangles instead of replacement
 glyphs. Rebuild older sections so cached line breaks and word positions match
 their new widths.
+
+### Version 51
+
+The serialized layout is unchanged. Paragraph continuity and top spacing are
+preserved across soft flushes. Older sections are rebuilt for the updated layout.
 
 ### Version 50
 
@@ -475,7 +557,7 @@ import std.mem;
 import std.string;
 import std.core;
 
-#define EXPECTED_VERSION 61
+#define EXPECTED_VERSION 65
 #define MAX_STRING_LENGTH 65535
 #define FOOTNOTE_NUMBER_LEN 32
 #define FOOTNOTE_HREF_LEN 256
@@ -495,7 +577,9 @@ fn format_string(String s) {
 enum PageElementTag : u8 {
     TAG_PageLine = 1,
     TAG_PageImage = 2,
-    TAG_PageHorizontalRule = 3
+    TAG_PageHorizontalRule = 3,
+    TAG_PageDropCap = 4,
+    TAG_PageBorderBox = 5
 };
 
 enum WordStyle : u8 {
@@ -506,7 +590,8 @@ enum WordStyle : u8 {
     UNDERLINE = 4,
     STRIKETHROUGH = 8,
     SUP = 16,
-    SUB = 32
+    SUB = 32,
+    DISCRETIONARY_HYPHEN = 128  // trailing hyphen inserted by line breaking
 };
 
 enum TextAlign : u8 {
@@ -533,6 +618,7 @@ struct BlockStyle {
     bool isRtl;
     bool directionDefined;
     s8 characterSpacing;
+    s32 fontId;
 };
 
 struct TextBlock {
@@ -554,6 +640,11 @@ struct TextBlock {
     }
 
     BlockStyle blockStyle;
+    u8 hasWordFonts;
+    if (hasWordFonts != 0) {
+        s32 wordFonts[3];
+        u8 wordFontSlot[wordCount] [[comment("0 = block font, n = wordFonts[n - 1]; bit 0x80 = small caps")]];
+    }
 };
 
 struct ImageBlock {
@@ -588,6 +679,30 @@ struct PageHorizontalRule {
     u8 thickness;
 };
 
+struct PageDropCap {
+    s16 xPos;
+    s16 yPos;  // baseline of the last spanned line
+    s32 fontId;
+    u16 scale256;
+    WordStyle style;
+    u8 length;
+    char text[length];
+};
+
+struct BorderSide {
+    u8 width;
+    u8 style;  // 0 none, 1 solid, 2 double, 3 dotted, 4 dashed
+};
+
+struct PageBorderBox {
+    s16 xPos;
+    s16 yPos;
+    u16 width;
+    u16 height;
+    BorderSide sides[4];  // top, right, bottom, left
+    bool shaded;
+};
+
 struct PageElement {
     PageElementTag pageElementType;
     if (pageElementType == TAG_PageLine) {
@@ -596,6 +711,10 @@ struct PageElement {
         PageImage pageImage [[inline]];
     } else if (pageElementType == TAG_PageHorizontalRule) {
         PageHorizontalRule horizontalRule [[inline]];
+    } else if (pageElementType == TAG_PageDropCap) {
+        PageDropCap dropCap [[inline]];
+    } else if (pageElementType == TAG_PageBorderBox) {
+        PageBorderBox borderBox [[inline]];
     } else {
         std::error(std::format("Unknown page element type: {}", pageElementType));
     }

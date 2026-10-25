@@ -51,6 +51,7 @@ void ChapterHtmlSlimParser::makePagesTableMode() {
       flushBufferedOriginal();
     }
     bufferedOriginalParagraphIdx = currentBlockParagraphIdx;
+    bufferedOriginalInlineSize = inlineSize;  // startNewTextBlock resets it for the next block
     // The block's footnote ledger goes into the buffer WITH it: its anchor indices are relative to its
     // own words, and startNewTextBlock is about to zero that base for the next block. The buffered
     // ledger is empty here by construction — flushBufferedOriginal above, and every other consumer of
@@ -73,6 +74,10 @@ void ChapterHtmlSlimParser::renderSideBySide(std::unique_ptr<ParsedText> sourceB
     currentPageNextY = 0;
     currentPageVisibleOffsetSet = false;
   }
+  // The paired rows are placed directly, outside addLineToPage's record of the page's trailing lines,
+  // so no line laid before them may be carried across a later page break (keep-with-next, widows).
+  recentLineCount = 0;
+  keepWithNextLines = 0;
 
   // Both columns are laid out AND drawn in the body FONT: the pairing is what distinguishes the two
   // languages here, and shrinking one column would break the lockstep row geometry this loop relies
@@ -135,20 +140,16 @@ void ChapterHtmlSlimParser::renderSideBySide(std::unique_ptr<ParsedText> sourceB
   uint32_t rowOffset = sourceOffsets.empty() ? visibleTextOffset : sourceOffsets.front();
   for (size_t i = 0; i < maxLines; i++) {
     if (i < sourceOffsets.size()) rowOffset = sourceOffsets[i];
-    // Page-break check: v2 uses the 3-arg completePageFn + explicit page counter.
     if (currentPageNextY + lineHeight > viewportHeight) {
       setCurrentPageVisibleOffset(rowOffset);
-      completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex, currentPageVisibleOffset);
-      completedPageCount++;
-      currentPage.reset(new Page());
-      currentPageNextY = 0;
-      // Without this the flag stayed latched for the rest of the chapter, so every later page
-      // reported the FIRST page's offset and a reposition jumped back to the chapter's start.
-      currentPageVisibleOffsetSet = false;
+      // Resets the page's visible-offset latch too: left set, every later page reported the FIRST
+      // page's offset and a reposition jumped back to the chapter's start.
+      completeCurrentPage();
+      if (stopRequested) return;
     }
     setCurrentPageVisibleOffset(rowOffset);
 
-    // FOOTNOTES, attributed to the page carrying the anchor exactly as addLineToPage (:1828-1834) does
+    // FOOTNOTES, attributed to the page carrying the anchor exactly as addLineToPage's footnote drain does
     // it. SideBySide needs its own copy because a PAIRED paragraph never reaches addLineToPage, and
     // under this layout every translated paragraph pairs: without this, pendingFootnotes accumulated
     // for the whole chapter and was either dumped wholesale onto whatever page happened to be current at
@@ -165,7 +166,7 @@ void ChapterHtmlSlimParser::renderSideBySide(std::unique_ptr<ParsedText> sourceB
     // that block's ledger (adoptBufferedFootnoteLedger) before calling: both the entries and the base
     // below are the buffered original's own, and the in-flight block's are parked out of reach. Relying
     // instead on "startNewTextBlock zeroed the counter and nothing advances it" was not sound — the soft
-    // flush (:1452) advances it for any block over 750 words (320 with embedded CSS), and the entries of
+    // flush in characterData advances it for any block over 750 words (320 with embedded CSS), and the entries of
     // an as-yet-unlaid block sat in the same list. The pre-layout anchor index vs post-layout
     // wordCount() mismatch is addLineToPage's own approximation, kept identical here.
     if (i < sourceLines.size()) {
@@ -213,6 +214,7 @@ void ChapterHtmlSlimParser::renderSideBySide(std::unique_ptr<ParsedText> sourceB
       currentPage->lastParagraphIdx = bufferedOriginalParagraphIdx;
     }
 
+    noteContent(currentPageNextY, currentPageNextY + lineHeight);  // an open border box wraps the row
     currentPageNextY += lineHeight;
   }
 

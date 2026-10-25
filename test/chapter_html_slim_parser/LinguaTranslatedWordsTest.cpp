@@ -184,6 +184,20 @@ TEST_F(TranslatedWordsParserTest, WholeParagraphsUseTheCompactEncodings) {
   EXPECT_TRUE(loadedLines[1]->getBlock()->linguaTranslatedWords().all());
 }
 
+// A styled block pushes an upstream style entry on top of the Lingua marker; the translated state
+// must survive it, in the block itself and in a styled child of a translated container.
+TEST_F(TranslatedWordsParserTest, StyledBlocksKeepTheTranslatedState) {
+  parse(
+      "<html><body><p lang=\"uk\" style=\"font-style:italic\">Привіт</p>"
+      "<div lang=\"uk\"><p style=\"text-align:center\">світ</p></div>"
+      "<p style=\"text-align:center\">Hello</p></body></html>");
+  const auto lines = allLines();
+  ASSERT_EQ(lines.size(), 3u);
+  EXPECT_TRUE(lines[0]->getBlock()->linguaTranslatedWords().all());
+  EXPECT_TRUE(lines[1]->getBlock()->linguaTranslatedWords().all());
+  EXPECT_FALSE(lines[2]->getBlock()->linguaTranslatedWords().any());
+}
+
 // Ruby inside a translated block: the follower keeps upstream's RUBY_CONTINUE bit (which used to be
 // the fork's TRANSLATED bit) while every word is still flagged translated, so the ruby group draws
 // its annotation once, over the leader.

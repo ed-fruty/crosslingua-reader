@@ -32,6 +32,8 @@ void ChapterHtmlSlimParser::flushBufferedOriginal() {
   auto savedBlock = std::move(currentTextBlock);
   const int16_t savedParagraphIdx = currentBlockParagraphIdx;
   const bool savedIsTranslated = currentBlockIsTranslated;
+  // The in-flight block's inline size; the buffered block is laid out at its own.
+  const InlineSizeState savedInlineSize = inlineSize;
   // The footnote ledger travels with the block for the same reason the paragraph index does, and it is
   // load-bearing HERE above all: the in-flight block that TRIGGERED this flush (the next original) has
   // usually already pushed anchors of its own, and its indices restart from base 0 exactly as the
@@ -44,6 +46,7 @@ void ChapterHtmlSlimParser::flushBufferedOriginal() {
   currentTextBlock = std::move(bufferedOriginalBlock);
   currentBlockParagraphIdx = bufferedOriginalParagraphIdx;
   currentBlockIsTranslated = false;
+  inlineSize = bufferedOriginalInlineSize;
 
   appendSideBySideNoTranslationMarkerIfUnpaired();
   makePages();
@@ -52,6 +55,7 @@ void ChapterHtmlSlimParser::flushBufferedOriginal() {
   currentTextBlock = std::move(savedBlock);
   currentBlockParagraphIdx = savedParagraphIdx;
   currentBlockIsTranslated = savedIsTranslated;
+  inlineSize = savedInlineSize;
 }
 
 // Lingua (SideBySide, mode 5): lay a SOURCE block and its paired TRANSLATION block into
@@ -103,6 +107,18 @@ void ChapterHtmlSlimParser::releaseFootnoteLedger(FootnoteLedger& parked) {
   bufferedOriginalWordsExtracted = 0;
   pendingFootnotes.swap(parked.pending);
   wordsExtractedInBlock = parked.wordBase;
+}
+
+void ChapterHtmlSlimParser::makePagesForFlushedBlock(const bool paragraphEnd) {
+  // currentBlockIsTranslated / currentBlockParagraphIdx are stamped AFTER this flush by the caller,
+  // so here they still describe the block being flushed -- exactly what the pairing builders inspect.
+  if (linguaLayout == LinguaLayout::SideBySide) {
+    makePagesTableMode();
+  } else if (linguaLayout == LinguaLayout::Interlinear) {
+    makePagesInterlinearMode();
+  } else {
+    makePages(true, paragraphEnd);
+  }
 }
 
 void ChapterHtmlSlimParser::makePagesForTrailingBlock() {

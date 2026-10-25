@@ -10,6 +10,7 @@ add_executable(WordLensLayoutTest
   ${REPO_ROOT}/lib/Epub/Epub/ParsedText.cpp
   ${REPO_ROOT}/lib/Epub/Epub/WordStore.cpp
   ${REPO_ROOT}/lib/Epub/Epub/converters/ImageDimsProbe.cpp
+  ${REPO_ROOT}/lib/Epub/Epub/converters/ImageToFramebufferDecoder.cpp
   ${REPO_ROOT}/lib/Utf8/Utf8.cpp
   ${REPO_ROOT}/src/modules/lingua/layout/LinguaTextFlow.cpp
   ${REPO_ROOT}/src/modules/lingua/layout/PairedLayoutCoordinator.cpp

@@ -45,11 +45,8 @@ for face in ${EDSLAB_EXTRA_FACES[@]}; do
   echo "Generated $output_path"
 done
 
-# Noto Serif is no longer a built-in family: EdsLab took the serif slot, because
-# the app partition has room for two reader families, not three. The TTFs stay in
-# builtinFonts/source/NotoSerif — to bring it back, copy the loop below with
-# NOTOSERIF_FONT_SIZES / source/NotoSerif/NotoSerif-${style}.ttf and re-add its
-# includes, globals, ids and settings enum entry (same checklist as EdsLab above).
+# Noto Serif is not built in: EdsLab took the serif slot. It ships as the
+# optional NotoSerif SD font instead (see sd-fonts.yaml).
 for size in ${NOTOSANS_FONT_SIZES[@]}; do
   for style in ${READER_FONT_STYLES[@]}; do
     font_name="notosans_${size}_$(echo $style | tr '[:upper:]' '[:lower:]')"
@@ -139,11 +136,14 @@ for size in ${LEGACY_UI_FONT_SIZES[@]}; do
   done
 done
 
-python fontconvert.py notosans_8_regular 8 \
+# The small UI face is Ubuntu too, so UI text stays in one family at every size.
+python fontconvert.py ubuntu_8_regular 8 \
+  ../builtinFonts/source/Ubuntu/Ubuntu-Regular.ttf \
   ../builtinFonts/source/NotoSans/NotoSans-Regular.ttf \
   ../builtinFonts/source/NotoSansHebrew/NotoSansHebrew-Regular.ttf \
   ../builtinFonts/source/NotoSansArabic/NotoSansArabic-Regular.ttf \
-  --additional-intervals 0x05D0,0x05EA "${ARABIC_INTERVALS[@]}" > ../builtinFonts/notosans_8_regular.h
+  ../builtinFonts/source/Ubuntu/Ubuntu-Vietnamese-Regular.ttf \
+  --additional-intervals 0x05D0,0x05EA "${ARABIC_INTERVALS[@]}" > ../builtinFonts/ubuntu_8_regular.h
 
 echo ""
 echo "Running compression verification..."

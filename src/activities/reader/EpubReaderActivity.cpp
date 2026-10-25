@@ -73,19 +73,28 @@ constexpr size_t initialBookmarkCacheCapacity = 16;
 constexpr float bookmarkProgressEpsilon = 0.0001f;
 constexpr int CLIP_SELECTION_PAGE_WINDOW = 3;
 
+// Word i's font: headings and CSS font-size runs can differ from the section font.
+int clippingWordFont(const GfxRenderer& renderer, const int fontId, const TextBlock& block, const uint16_t i) {
+  return TextBlock::renderFontId(renderer, block.wordFontId(i, fontId), fontId);
+}
+
 Rect clippingWordRect(const GfxRenderer& renderer, const int fontId, const PageLine& line, const uint16_t i,
                       const int top, const int left, const int wordWidth) {
   const auto& block = line.getBlock();
+  const int wordFont = clippingWordFont(renderer, fontId, *block, i);
   const char* text = block->wordText(i);
   const auto style = static_cast<EpdFontFamily::Style>(block->wordStyle(i) & ~EpdFontFamily::UNDERLINE);
-  const int skipX = clippingText::hasEmSpacePrefix(text) ? renderer.getTextAdvanceX(fontId, "\xe2\x80\x83", style) : 0;
+  const int skipX =
+      clippingText::hasEmSpacePrefix(text) ? renderer.getTextAdvanceX(wordFont, "\xe2\x80\x83", style) : 0;
   int width = wordWidth - skipX;
   if (i + 1 < block->wordCount() && block->wordXpos(i + 1) > block->wordXpos(i)) {
     width = std::min(width, static_cast<int>(block->wordXpos(i + 1) - block->wordXpos(i) - skipX));
   }
+  const int lineFont = TextBlock::renderFontId(renderer, block->blockFontId(fontId), fontId);
   return Rect{left + line.xPos + block->wordXpos(i) + skipX,
-              top + line.yPos + block->getRubyShift(renderer.getFontAscenderSize(fontId)), width,
-              renderer.getLineHeight(fontId)};
+              top + line.yPos + block->getRubyShift(renderer.getFontAscenderSize(lineFont)) +
+                  block->wordYOffset(renderer, fontId, i),
+              width, renderer.getLineHeight(wordFont)};
 }
 
 int clampPercent(int percent) {
@@ -502,7 +511,9 @@ void EpubReaderActivity::startClipSelection(const int initialX, const int initia
         requestUpdate();
         return;
       }
-      startActivityForResult(std::move(lookup), [this](const ActivityResult&) { openDictionaryWordSelect(); });
+      startActivityForResult(std::move(lookup), [this](const ActivityResult& result) {
+        if (!result.isCancelled) openDictionaryWordSelect();
+      });
       return;
     }
     const uint16_t paragraphIndex =
@@ -1268,6 +1279,8 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
 }
 
 unsigned long EpubReaderActivity::confirmLongPressThreshold() const {
+  // The setting is hidden on these boards, so a stale stored value must not act.
+  if (BoardConfig::hasTouch()) return 0;
   switch (SETTINGS.longPressMenuFunction) {
     case CrossPointSettings::LP_MENU_BOOKMARK:
     case CrossPointSettings::LP_MENU_DICTIONARY:
@@ -2292,7 +2305,8 @@ int EpubReaderActivity::clippingAtPoint(const Page& page, const int x, const int
       const char* text = block->wordText(i);
       if (!clippingText::hasVisibleText(text)) continue;
       const auto style = static_cast<EpdFontFamily::Style>(block->wordStyle(i) & ~EpdFontFamily::UNDERLINE);
-      const int width = renderer.getTextAdvanceX(fontId, text, style, block->getBlockStyle().characterSpacing);
+      const int width = renderer.getTextAdvanceX(clippingWordFont(renderer, fontId, *block, i), text, style,
+                                                 block->getBlockStyle().characterSpacing);
       if (width <= 0) continue;
       const uint16_t index = wordIndex++;
       const Rect rect =
@@ -2364,7 +2378,8 @@ void EpubReaderActivity::drawClippingHighlights(const Page& page, const int font
       const char* text = block->wordText(i);
       if (!clippingText::hasVisibleText(text)) continue;
       const auto style = static_cast<EpdFontFamily::Style>(block->wordStyle(i) & ~EpdFontFamily::UNDERLINE);
-      int width = renderer.getTextAdvanceX(fontId, text, style, block->getBlockStyle().characterSpacing);
+      int width = renderer.getTextAdvanceX(clippingWordFont(renderer, fontId, *block, i), text, style,
+                                           block->getBlockStyle().characterSpacing);
       if (width <= 0) continue;
       const uint16_t wordIndex = pageWordIndex++;
       if (!isHighlighted(wordIndex, block->wordSourceRange(i))) {
@@ -3030,19 +3045,22 @@ void EpubReaderActivity::paintOverlayPopup() {
 }
 
 void EpubReaderActivity::applyReaderTextSettings() {
+  {
+    RenderLock lock;
+    if (section) {
+      rememberCurrentContentOffset();
+      cachedSpineIndex = currentSpineIndex;
+      cachedChapterTotalPageCount = section->pageCount;
+      nextPageNumber = section->currentPage;
+    }
+    // Release the old parser and page table before settings serialization needs heap.
+    section.reset();  // force re-pagination with the new settings
+  }
   SETTINGS.saveToFile();
   // (Re)load or unload the selected SD-card font for the current family/size.
   // The reader otherwise only loads SD fonts on book open, so without this an
   // in-reader font change wouldn't take effect until re-opening the book.
   sdFontSystem.ensureLoaded(renderer);
-  RenderLock lock;
-  if (section) {
-    rememberCurrentContentOffset();
-    cachedSpineIndex = currentSpineIndex;
-    cachedChapterTotalPageCount = section->pageCount;
-    nextPageNumber = section->currentPage;
-  }
-  section.reset();  // force re-pagination with the new settings
 }
 
 // The More panel carries everything the classic list menu offers except the

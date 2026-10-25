@@ -11,6 +11,7 @@ class CssParser;
 // Host stub for the Lingua Section tests: one spine item, no TOC, no CSS, files under cachePath.
 class Epub {
  public:
+  static inline bool enableGifProbeForTest = false;  // read by the parser suite's link stubs
   struct SpineEntry {
     std::string href;
   };

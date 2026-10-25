@@ -69,7 +69,7 @@ void letterSpan(const char* word, size_t& first, size_t& end) {
 
 }  // namespace
 
-void ChapterHtmlSlimParser::makePagesWordLens(const bool includeLastLine) {
+void ChapterHtmlSlimParser::makePagesWordLens(const bool includeLastLine, const bool paragraphEnd) {
   if (currentTextBlock->hadDroppedWords()) layoutOom = true;
   if (!currentPage) {
     currentPage.reset(new (std::nothrow) Page());
@@ -81,8 +81,13 @@ void ChapterHtmlSlimParser::makePagesWordLens(const bool includeLastLine) {
     currentPageNextY = 0;
     currentPageVisibleOffsetSet = false;
   }
+  if (!currentTextBlock->isEmpty()) applyPendingPageBreak();
+  if (stopRequested) return;
 
   ParsedText& block = *currentTextBlock;
+  // The block's own size (a heading, a CSS font-size), resolved as makePages() resolves it.
+  const int layoutFontId =
+      prepareBlockFont(block, inlineSize.valid ? inlineSize.scale : block.getBlockStyle().fontScale);
   const BlockStyle blockStyle = block.getBlockStyle();
   const int horizontalInset = blockStyle.totalHorizontalInset();
   const uint16_t effectiveWidth =
@@ -144,12 +149,12 @@ void ChapterHtmlSlimParser::makePagesWordLens(const bool includeLastLine) {
   lines.reserve(8);
   offsets.reserve(8);
   block.layoutAndExtractLines(
-      renderer, fontId, effectiveWidth,
+      renderer, layoutFontId, effectiveWidth,
       [&lines, &offsets](std::unique_ptr<TextBlock> line, const uint32_t offset) {
         lines.push_back(std::move(line));
         offsets.push_back(offset);
       },
-      includeLastLine, characterSpacing, wordSpacingPercent, &positions);
+      includeLastLine, characterSpacing, wordSpacingPercent, SIZE_MAX, &stopRequested, &positions);
   block.setTrackedWords({});
   if (block.hadDroppedWords()) layoutOom = true;
   if (positions.size() != wordLensPending.size()) positions.clear();
@@ -157,8 +162,8 @@ void ChapterHtmlSlimParser::makePagesWordLens(const bool includeLastLine) {
   // STEP 3 -- one strip per line, the line's glosses centred over their words.
   const int annotationFont = fontIdForRole(LineFontRole::Annotation);
   const int stripHeight = renderer.getLineHeight(annotationFont, lineCompression);
-  const int bodyLineHeight = renderer.getLineHeight(fontId, lineCompression);
-  const int bodyAscender = renderer.getFontAscenderSize(fontId);
+  const int bodyLineHeight = renderer.getLineHeight(layoutFontId, lineCompression);
+  const int bodyAscender = renderer.getFontAscenderSize(layoutFontId);
   const int minGap = renderer.getSpaceWidth(annotationFont, EpdFontFamily::REGULAR);
   MeasureCtx measure{&renderer, annotationFont};
   BlockStyle stripStyle;
@@ -198,11 +203,11 @@ void ChapterHtmlSlimParser::makePagesWordLens(const bool includeLastLine) {
       size_t first = 0;
       size_t end = 0;
       letterSpan(line->wordText(w), first, end);
-      const int x0 =
-          line->wordXpos(w) + prefixAdvance(renderer, fontId, line->wordText(w), first, line->wordStyle(w), tracking);
+      const int x0 = line->wordXpos(w) +
+                     prefixAdvance(renderer, layoutFontId, line->wordText(w), first, line->wordStyle(w), tracking);
       letterSpan(line->wordText(last), first, end);
       const int x1 = line->wordXpos(last) +
-                     prefixAdvance(renderer, fontId, line->wordText(last), end, line->wordStyle(last), tracking);
+                     prefixAdvance(renderer, layoutFontId, line->wordText(last), end, line->wordStyle(last), tracking);
       if (strip.empty()) {
         strip.reserve(8);
         markers.reserve(8);
@@ -263,19 +268,11 @@ void ChapterHtmlSlimParser::makePagesWordLens(const bool includeLastLine) {
     // per page instead.
     const int lineStrip = (markers.empty() && !wordLensSource->keepEmptyStrips()) ? 0 : stripHeight;
     // Strip and line are one group: a strip never ends a page with its line on the next one.
-    const int lineHeight = bodyLineHeight + line->getRubyShift(bodyAscender);
+    const int lineHeight = bodyLineHeight + line->extraAscent(renderer, fontId) + line->getRubyShift(bodyAscender);
     if (!currentPage->elements.empty() && currentPageNextY + lineStrip + lineHeight > viewportHeight) {
       setCurrentPageVisibleOffset(offsets[lineIndex]);
-      completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex, currentPageVisibleOffset);
-      completedPageCount++;
-      currentPage.reset(new (std::nothrow) Page());
-      if (!currentPage) {
-        LOG_ERR("WLN", "OOM: Page");
-        layoutOom = true;
-        return;
-      }
-      currentPageNextY = 0;
-      currentPageVisibleOffsetSet = false;
+      completeCurrentPage();
+      if (stopRequested) return;
     }
     if (stripBlock) {
       auto pageLine = makeUniqueNoThrow<PageLine>(std::move(stripBlock), blockStyle.leftInset(),
@@ -283,6 +280,7 @@ void ChapterHtmlSlimParser::makePagesWordLens(const bool includeLastLine) {
       if (pageLine) {
         stampLinguaLine(*pageLine, LineFontRole::Annotation);
         currentPage->elements.push_back(std::move(pageLine));
+        noteContent(currentPageNextY, currentPageNextY + lineStrip);
       } else {
         LOG_ERR("WLN", "OOM: strip PageLine");
       }
@@ -297,6 +295,7 @@ void ChapterHtmlSlimParser::makePagesWordLens(const bool includeLastLine) {
       for (const auto& [idx, fn] : pendingFootnotes) currentPage->addFootnote(fn.number, fn.href);
       pendingFootnotes.clear();
     }
+    if (!paragraphEnd) return;
     if (blockStyle.marginBottom > 0) currentPageNextY += blockStyle.marginBottom;
     if (blockStyle.paddingBottom > 0) currentPageNextY += blockStyle.paddingBottom;
     if (extraParagraphSpacing) currentPageNextY += bodyLineHeight / 2;

@@ -198,25 +198,23 @@ namespace {
 // v53: Persist per-word source ranges alongside the redaction layout changes.
 // v54: Source ranges retain codepoints absorbed by NFC composition.
 // v55: Persist the first logical word of each paragraph for clipping separators.
-// v56: Split hyphen and dash tokens (e.g "foo—bar" into "foo—" and "bar") in standard reading mode
-// (CrossLingua) v46 and v47 were also used by this fork, with its own header layout: v46 for the
-//      Interlinear annotation carry/tail strips, v47 for the Lingua paragraph-index fix after tables
-//      and image alt text. Both are superseded by v53.
-// (CrossLingua) v53: merge of upstream v52. The header is upstream's v52 header with the fork's
-//      translationFontId, annotationFontId, linguaLayout, translatedSource and embeddedTranslation
-//      inserted as one block before pageCount; PageLine carries paragraphIdx and fontRole; <ul>/<ol>
-//      are layout blocks. A later upstream merge takes max(ours, upstream) + 1.
-// v57: CrossLingua merge of upstream v56. Upstream's v56 layout plus the fork's v53 Lingua header
-//      block and PageLine fields; the translated-word flag is no longer a style-byte bit.
-// v58: (development builds only) a sourceKind byte at the end of the Lingua header block.
-// v59: v58 without the sourceKind byte. A translated sidecar's inserted translation blocks
-//      (data-translation="true") count no visible-text offset and no XPath paragraph / list item, and
-//      their words carry no source range, so offsets mean the same position as in the chapter itself.
-// v60: (CrossLingua) Word Lens: LinguaLayout::WordLens and a wordLensKey:uint32 (pack identity, reader
-//      level, empty-strip choice) in the Lingua header block, after annotationFontId.
-// v61: v60 layout. A word buffered when a block element opens ("text<ol>") ends in the block before
-//      it instead of gluing onto the new block's first word, so affected chapters lay out differently.
-constexpr uint8_t SECTION_FILE_VERSION = 61;
+// v56: Rendering layout (fonts per word, drop caps, border boxes).
+// v57: Includes explicit hyphen/dash line breaks and invalidates both v56 layouts.
+// v58: Rebuild sections for corrected rendering layout and footnote placement.
+// v59: Preserve stored CSS styles during low-heap layout.
+// v60: Text running into a block or heading start stays in its own paragraph.
+// Earlier GIF/table development builds also used versions 60 through 62.
+// v63: Rebuild for corrected paragraph boundaries and supported static GIF images.
+// v64: Explicit font inheritance preserves parent emphasis and changes text layout.
+// (CrossLingua) Fork versions, each a full rebuild: v46/v47 (superseded by v53); v53 merge of upstream
+//      v52, adding the Lingua header block (translationFontId, annotationFontId, linguaLayout,
+//      translatedSource, embeddedTranslation) before pageCount and paragraphIdx/fontRole on PageLine;
+//      v57 merge of upstream v56, translated-word flag moved out of the style byte; v58 dev-only;
+//      v59 sidecar inserted translations count no offset/XPath and carry no source range; v60 Word Lens
+//      wordLensKey after annotationFontId; v61 block-start word flush.
+// v65: (CrossLingua) merge of upstream v64: upstream's v64 layout plus the fork's Lingua header block and
+//      PageLine fields. A later upstream merge takes max(ours, upstream) + 1.
+constexpr uint8_t SECTION_FILE_VERSION = 65;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
@@ -240,7 +238,7 @@ constexpr uint8_t SECTION_FILE_INCOMPLETE_VERSION = 0;
 // one-off invalidation a version bump costs finalized files.
 constexpr uint8_t SECTION_FILE_PARTIAL_VERSION = 0xFE - (SECTION_FILE_VERSION - 28);
 // The derivation only stays a distinct sentinel while the two ranges have not met; assert it rather
-// than trusting a future bump to notice. At 60 the sentinel is 0xDE (222) = 0xFE - (60 - 28):
+// than trusting a future bump to notice. At 65 the sentinel is 0xD9 (217) = 0xFE - (65 - 28):
 // comfortably above the version, and only a version past 140 could close the gap.
 static_assert(SECTION_FILE_PARTIAL_VERSION > SECTION_FILE_VERSION &&
                   SECTION_FILE_PARTIAL_VERSION != SECTION_FILE_INCOMPLETE_VERSION,

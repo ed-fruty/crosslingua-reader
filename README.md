@@ -12,7 +12,7 @@ then choose how much of each language you want to see.
 **Runs on:** Xteink [X3](https://www.xteink.com/products/xteink-x3),
 [X4](https://www.xteink.com/products/xteink-x4), X4 Pro, X4 Classic, M5Stack
 Paper Mono, Seeed Studio XIAO ePaper Display Board (Sticky), Metalio E-Ink 4,
-and EEGO Reader A4. Every device except X3/X4 uses a dedicated build with its
+EEGO Reader A4, and BOOX Picco. Every device except X3/X4 uses a dedicated build with its
 device-specific display, touch, key, power, and frontlight integrations.
 
 <table>
@@ -204,10 +204,10 @@ recent, alphabetical and per-author views), EPUB 2/3 rendering, `.xtc/.xtch`, `.
 support, images, embedded styles, hyphenation, kerning, footnotes, bookmarks,
 StarDict dictionaries, chapter navigation, go-to-percent, focus reading,
 auto page turn, orientation control, screenshots, custom fonts, themes,
-button remapping, KOReader progress sync, OPDS 1 and 2, SD-card plugins, a Bluetooth page
-turner (X3/X4), WebDAV, Calibre wireless
+button remapping, KOReader progress sync, OPDS 1 and 2, SD-card plugins, WebDAV, Calibre wireless
 transfer, a web file manager and settings UI, EPUB optimization, OTA updates,
-24 UI languages and RTL support.
+34 UI languages and RTL support. CrossPoint's Bluetooth page turner is left out of
+CrossLingua builds to save flash and RAM on the X3/X4.
 
 ## Roadmap
 
@@ -250,10 +250,11 @@ release tagged `v1.5.0+crosspoint.1.6.5`:
 | Seeed Studio XIAO ePaper Display Board (Sticky) | `crosslingua-<version>-sticky.bin` | ESP32-S3 |
 | Metalio E-Ink 4 | `crosslingua-<version>-metalio_eink4.bin` | ESP32-S3 |
 | EEGO Reader A4 | `crosslingua-<version>-eego_a4.bin` | ESP32-S3 |
+| BOOX Picco | `crosslingua-<version>-picco.bin` | ESP32-S3 |
 
 Each release also carries the same binaries under their pre-1.5 names
 (`firmware.bin` for X3/X4, `firmware-<board>.bin` for the others, e.g.
-`firmware-x4pro.bin`). They exist so devices still running CrossLingua 1.4 or
+`firmware-x4pro.bin`; BOOX Picco has no pre-1.5 name). They exist so devices still running CrossLingua 1.4 or
 older can find the update over the air; for a manual install, either name
 works.
 
@@ -314,7 +315,11 @@ pio run -e papermono -t upload      # M5Stack Paper Mono
 pio run -e sticky -t upload         # Seeed Sticky
 pio run -e metalio_eink4 -t upload  # Metalio E-Ink 4
 pio run -e eego_a4 -t upload        # EEGO Reader A4
+pio run -e picco -t upload          # BOOX Picco (writes only the stock app slot)
 ```
+
+The BOOX Picco has no in-device firmware updater (no Check for updates and no
+SD-card update), so it is always flashed with PlatformIO.
 
 Connect only the target device while uploading. Board-specific USB boot mode,
 drivers, and connection steps depend on the hardware revision; follow the

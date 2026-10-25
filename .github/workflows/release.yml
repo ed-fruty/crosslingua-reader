@@ -47,6 +47,9 @@ jobs:
           - pio_env: eego_a4-gh_release
             device: eego_a4
             legacy_asset: firmware-eego_a4.bin
+          # No legacy name: CrossLingua <= 1.4.x never ran on the Picco.
+          - pio_env: picco-gh_release
+            device: picco
     steps:
       - uses: actions/checkout@v6
         with:
@@ -121,7 +124,9 @@ jobs:
           version="${version%%+*}"
           mkdir -p dist/firmware
           cp ".pio/build/${{ matrix.pio_env }}/firmware.bin" "dist/firmware/crosslingua-${version}-${{ matrix.device }}.bin"
-          cp ".pio/build/${{ matrix.pio_env }}/firmware.bin" "dist/firmware/${{ matrix.legacy_asset }}"
+          if [ -n "${{ matrix.legacy_asset }}" ]; then
+            cp ".pio/build/${{ matrix.pio_env }}/firmware.bin" "dist/firmware/${{ matrix.legacy_asset }}"
+          fi
 
       - name: Install font tools
         if: matrix.pio_env == 'gh_release'
@@ -185,15 +190,15 @@ jobs:
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
           version="${version%%+*}"
-          for device in x3-x4 sticky x4pro x4c papermono metalio_eink4 eego_a4; do
+          for device in x3-x4 sticky x4pro x4c papermono metalio_eink4 eego_a4 picco; do
             test -f "dist/firmware/crosslingua-${version}-${device}.bin"
           done
           for legacy in firmware.bin firmware-sticky.bin firmware-x4pro.bin firmware-x4c.bin \
                         firmware-papermono.bin firmware-metalio_eink4.bin firmware-eego_a4.bin; do
             test -f "dist/firmware/${legacy}"
           done
-          test "$(find dist/firmware -maxdepth 1 -type f -name '*.bin' | wc -l)" -eq 14
-          test "$(find dist/firmware -maxdepth 1 -type f | wc -l)" -eq 14
+          test "$(find dist/firmware -maxdepth 1 -type f -name '*.bin' | wc -l)" -eq 15
+          test "$(find dist/firmware -maxdepth 1 -type f | wc -l)" -eq 15
 
       - name: Generate changelog
         id: git_cliff
