@@ -16,6 +16,7 @@
 #include "I18n.h"
 #include "RecentBooksStore.h"
 #include "clippings/SelectionGeometry.h"
+#include "components/CrossLinguaCoverLogo.h"  // CrossLingua
 #include "components/HeaderBackTapTarget.h"
 #include "components/UIScale.h"
 #include "components/UITheme.h"
@@ -137,6 +138,8 @@ void BaseTheme::drawCoverPlaceholder(const GfxRenderer& renderer, Rect rect) {
   const int topHeight = rect.height / 3;
   renderer.fillRect(rect.x, rect.y, rect.width, rect.height, false);
   renderer.fillRect(rect.x, rect.y + topHeight, rect.width, rect.height - topHeight, true);
+  crosslingua::drawCoverPlaceholderLogo(
+      renderer, Rect{rect.x, rect.y + topHeight, rect.width, rect.height - topHeight});  // CrossLingua
   renderer.drawRect(rect.x, rect.y, rect.width, rect.height, true);
   constexpr int ICON_SIZE = 32;
   if (rect.width >= ICON_SIZE + 4 && topHeight >= ICON_SIZE + 4) {

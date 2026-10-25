@@ -105,9 +105,13 @@ void drawCell(GfxRenderer& renderer, const CoverGridStyle& style, Rect rect, int
 
   if (isDirectory(index)) {
     drawFolderGlyph(renderer, thumbX, thumbY, thumbWidth, thumbHeight, inkState);
-  } else if (!drawCellCover(renderer, getThumbPath(index), thumbX, thumbY, thumbWidth, thumbHeight) &&
-             isPending(index)) {
-    drawLoadingGlyph(renderer, thumbX, thumbY, thumbWidth, thumbHeight, inkState);
+  } else if (!drawCellCover(renderer, getThumbPath(index), thumbX, thumbY, thumbWidth, thumbHeight)) {
+    if (isPending(index)) {
+      drawLoadingGlyph(renderer, thumbX, thumbY, thumbWidth, thumbHeight, inkState);
+    } else {
+      // A processed book without a drawable cover gets the same placeholder as the home screen.
+      BaseTheme::drawCoverPlaceholder(renderer, Rect{thumbX, thumbY, thumbWidth, thumbHeight});
+    }
   }
 
   const std::string title = getTitle(index);
