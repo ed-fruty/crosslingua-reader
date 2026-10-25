@@ -16,14 +16,16 @@ using covergrid::GRID_COLS;
 using covergrid::GRID_ROWS;
 using covergrid::GRID_TITLE_AREA;
 
-// Lyra's rounded pill radius, matching the constant its theme draws every other surface with.
+// Rounded light-gray selection radii, matching the constants each theme draws its own tiles with.
 constexpr int LYRA_SELECTION_RADIUS = 6;
+constexpr int ROUNDED_RAFF_SELECTION_RADIUS = 20;  // RoundedRaffTheme kRowRadius
 
 // Blit the cached cover thumb into a cell, letterboxed to preserve aspect. Returns false when no
 // drawable BMP was available (0-byte negative-cache sentinel, unparseable header, or open failure)
-// so the caller can fall back to a folder/placeholder glyph.
+// so the caller can fall back to a folder/placeholder glyph. `clearBehind` whitens the cover's own
+// footprint first: drawBitmap skips white pixels, so on a black selection fill the cover would vanish.
 bool drawCellCover(GfxRenderer& renderer, const std::string& thumbPath, int thumbX, int thumbY, int thumbWidth,
-                   int thumbHeight) {
+                   int thumbHeight, bool clearBehind) {
   if (thumbPath.empty()) return false;
   HalFile file;
   bool drew = false;
@@ -40,6 +42,13 @@ bool drawCellCover(GfxRenderer& renderer, const std::string& thumbPath, int thum
             coverY = thumbY + (thumbHeight - static_cast<int>(thumbWidth / imgRatio)) / 2;
           } else {
             coverX = thumbX + (thumbWidth - static_cast<int>(thumbHeight * imgRatio)) / 2;
+          }
+          if (clearBehind) {
+            // drawBitmap only scales down, never up.
+            const float scale = std::min(1.0f, std::min(static_cast<float>(thumbWidth) / bitmap.getWidth(),
+                                                        static_cast<float>(thumbHeight) / bitmap.getHeight()));
+            renderer.fillRect(coverX, coverY, static_cast<int>(bitmap.getWidth() * scale),
+                              static_cast<int>(bitmap.getHeight() * scale), false);
           }
         }
         renderer.drawBitmap(bitmap, coverX, coverY, thumbWidth, thumbHeight);
@@ -105,11 +114,13 @@ void drawCell(GfxRenderer& renderer, const CoverGridStyle& style, Rect rect, int
 
   if (isDirectory(index)) {
     drawFolderGlyph(renderer, thumbX, thumbY, thumbWidth, thumbHeight, inkState);
-  } else if (!drawCellCover(renderer, getThumbPath(index), thumbX, thumbY, thumbWidth, thumbHeight)) {
+  } else if (!drawCellCover(renderer, getThumbPath(index), thumbX, thumbY, thumbWidth, thumbHeight, !inkState)) {
     if (isPending(index)) {
       drawLoadingGlyph(renderer, thumbX, thumbY, thumbWidth, thumbHeight, inkState);
     } else {
-      // A processed book without a drawable cover gets the same placeholder as the home screen.
+      // A processed book without a drawable cover gets the same placeholder as the home screen. Its
+      // white part needs a white ground on a black selection fill.
+      if (!inkState) renderer.fillRect(thumbX, thumbY, thumbWidth, thumbHeight, false);
       BaseTheme::drawCoverPlaceholder(renderer, Rect{thumbX, thumbY, thumbWidth, thumbHeight});
     }
   }
@@ -125,12 +136,17 @@ void drawCell(GfxRenderer& renderer, const CoverGridStyle& style, Rect rect, int
 }  // namespace
 
 CoverGridStyle activeCoverGridStyle() {
-  // Lyra (and the 3-covers variant that derives from it) paints a rounded light-gray selection and
-  // keeps its cell content black; every other theme uses the square black fill with inverted content.
-  const bool lyra =
-      SETTINGS.uiTheme == CrossPointSettings::LYRA || SETTINGS.uiTheme == CrossPointSettings::LYRA_3_COVERS;
-  if (!lyra) return CoverGridStyle{};
-  return CoverGridStyle{LYRA_SELECTION_RADIUS, /*invertSelectedContent=*/false};
+  // Lyra, its 3-covers variant and RoundedRaff paint a rounded light-gray selection and keep their
+  // cell content black; every other theme uses the square black fill with inverted content.
+  switch (SETTINGS.uiTheme) {
+    case CrossPointSettings::LYRA:
+    case CrossPointSettings::LYRA_3_COVERS:
+      return CoverGridStyle{LYRA_SELECTION_RADIUS, /*invertSelectedContent=*/false};
+    case CrossPointSettings::ROUNDEDRAFF:
+      return CoverGridStyle{ROUNDED_RAFF_SELECTION_RADIUS, /*invertSelectedContent=*/false};
+    default:
+      return CoverGridStyle{};
+  }
 }
 
 void drawCoverGrid(GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex, int pageOffset,
