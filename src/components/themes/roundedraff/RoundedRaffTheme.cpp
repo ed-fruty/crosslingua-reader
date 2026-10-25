@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "RecentBooksStore.h"
+#include "components/CrossLinguaCoverLogo.h"  // CrossLingua
 #include "components/UITheme.h"
 #include "components/icons/cover.h"
 #include "fontIds.h"
@@ -112,6 +113,9 @@ void RoundedRaffTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, con
         renderer.fillRect(tileX + (tileWidth - coverWidth) / 2, imgY + (RoundedRaffMetrics::values.homeCoverHeight / 3),
                           coverWidth, 2 * RoundedRaffMetrics::values.homeCoverHeight / 3, true);
         renderer.drawIcon(CoverIcon, tileX + (tileWidth - coverWidth) / 2 + 24, imgY + 24, 32);
+        crosslingua::drawCoverPlaceholderLogo(
+            renderer, Rect{tileX + (tileWidth - coverWidth) / 2, imgY + RoundedRaffMetrics::values.homeCoverHeight / 3,
+                           coverWidth, 2 * RoundedRaffMetrics::values.homeCoverHeight / 3});  // CrossLingua
         renderer.maskRoundedRectOutsideCorners(tileX + (tileWidth - coverWidth) / 2, imgY, coverWidth,
                                                RoundedRaffMetrics::values.homeCoverHeight, kCoverRadius,
                                                Color::LightGray);
